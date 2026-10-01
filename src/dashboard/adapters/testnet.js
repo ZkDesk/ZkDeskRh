@@ -221,7 +221,7 @@ function validate(state, type, values) {
   const position = state.positions.find((p) => p.id === values.id);
   const ledger = m.ledger;
   const fee = ledger ? 0 : m.fee; // treasury actions are relayed without a fee
-  const zkOrBlank = (key) => { if (values[key]?.trim() && !parseZkAddress(values[key])) errors[key] = 'Enter a ZKDesk address (zkd:…) or leave blank for yourself.'; };
+  const zkOrBlank = (key) => { if (values[key]?.trim() && !parseZkAddress(values[key])) errors[key] = 'Enter a ZKdesk address (zkd:…) or leave blank for yourself.'; };
   if (ledger && ['allocate', 'deallocate', 'deposit'].includes(type) && !['Owner', 'Treasurer'].includes(state.role)) return { general: `${state.role} cannot ${type === 'deposit' ? 'add funds' : type} in this treasury.` };
   if (ledger && ['send', 'withdraw'].includes(type) && !['Owner', 'Treasurer', 'Payer'].includes(state.role)) return { general: 'The Auditor role can view the treasury but cannot move funds.' };
   switch (type) {
@@ -233,7 +233,7 @@ function validate(state, type, values) {
     case 'send': case 'withdraw':
       if (amount + fee > state.cash + 1e-9) errors.amount = fee ? `Not enough available private balance (a ${fee} ${USD_SYMBOL} relay fee applies).` : 'Not enough available treasury balance.';
 
-      if (type === 'send' && !parseZkAddress(values.recipient)) errors.recipient = 'Enter a ZKDesk address (zkd:…).';
+      if (type === 'send' && !parseZkAddress(values.recipient)) errors.recipient = 'Enter a ZKdesk address (zkd:…).';
       if (type === 'withdraw' && !isAddress(values.recipient || '')) errors.recipient = 'Enter a wallet address (0x…).';
       break;
     case 'allocate':

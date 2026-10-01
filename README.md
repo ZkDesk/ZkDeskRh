@@ -87,7 +87,8 @@ ZKdesk is a **client-proved** system:
 ```
 
 - **Proving:** Noir circuits are compiled to ACIR and proven with Barretenberg's UltraHonk backend, which needs no per-circuit trusted setup. Proofs run in a dedicated Web Worker and are verified on-chain by generated Solidity verifiers.
-- **Networks:** the same build serves Robinhood Chain mainnet (`4663`) and testnet (`46630`). Mainnet endpoints live under `/api/mainnet/*`.
+- **Networks:** the same build serves Robinhood Chain mainnet (`4663`) and testnet (`46630`). Mainnet endpoints live under `/api/mainnet/*`. Mainnet uses real USDG and Robinhood stock tokens with Chainlink price feeds; testnet uses mock tokens, feeds, market maker and vault.
+- **Liquidation venue:** on mainnet, `UniswapV3Venue` sells liquidated collateral for USDG through Uniswap v3.
 - **Scheduled work:** cron functions advance rate checkpoints, attest desk health epochs and execute due mandate pulls.
 
 ## Repository layout
@@ -103,7 +104,7 @@ ZKdesk is a **client-proved** system:
 │   ├── src/              Pool, credit desk, lending pool, treasury ledger, mandates, guardian
 │   ├── script/           Deployment scripts and ABI export
 │   └── test/             Forge tests driven by real UltraHonk proofs
-├── public/               Static assets: brand, fonts
+├── public/               Static assets: brand artwork and logo
 ├── scripts/              Local server, privacy check, receipt verifier, operational e2e drills
 ├── src/
 │   ├── dashboard/        Dashboard UI and state model
@@ -150,9 +151,9 @@ pnpm dev          # http://127.0.0.1:5184
 | `pnpm build` | Production build into `dist/` |
 | `pnpm preview` | Serve the production build locally |
 | `pnpm test` | Dashboard model and ZK primitive test suites |
-| `pnpm privacy` | Privacy check on mirror columns, logging, browser storage and bundle secrets |
-| `pnpm zk:fixtures` | Regenerate circuit fixtures |
-| `pnpm abis` | Export contract ABIs into `src/lib/chain/abis` |
+| `pnpm privacy` | Static privacy checks: mirror column names, server logging, browser storage and secret names in the bundle (run after `pnpm build`) |
+| `pnpm zk:fixtures` | Regenerate circuit artifacts, Solidity verifiers and test fixtures from `circuits/target` (after `nargo compile`) |
+| `pnpm abis` | Export contract ABIs from `contracts/out` into `src/lib/chain/abis` (after `forge build`) |
 
 ## Configuration
 
@@ -160,16 +161,16 @@ The frontend runs without any secrets. Server functions read their configuration
 
 | Variable | Scope | Purpose |
 | --- | --- | --- |
-| `VITE_ZKDESK_MODE` | Build | Dashboard data source: `demo` (default) or `testnet` |
+| `VITE_ZKDESK_MODE` | Build | Dashboard data source: `demo` (local sample data, the default) or `testnet` (live chain mode: Robinhood Chain mainnet by default, with a switch to testnet) |
 | `VITE_ZKDESK_CA` | Build | Token contract address shown on the site |
 | `SUPABASE_DB_URL` | Server | Postgres connection for the event mirror |
 | `RPC_URL_SERVER` | Server | Server-side RPC endpoint |
 | `RELAYER_PRIVATE_KEY` | Server | Relayer account that submits private actions |
-| `DESK_OPERATOR_SK` | Server | Desk operator key used for health epochs |
-| `SCHEDULER_SEED` | Server | Seed for the mandate scheduler |
+| `DESK_OPERATOR_SK` | Server | Desk operator key used to prove health epochs and liquidation batches |
+| `SCHEDULER_SEED` | Server | Key seed for the opt-in mandate scheduler |
 | `CRON_SECRET` | Server | Authenticates scheduled invocations |
 
-Mainnet functions read the same server names with a `MAINNET_` prefix (for example `MAINNET_RPC_URL_SERVER`).
+Mainnet functions read `RPC_URL_SERVER`, `RELAYER_PRIVATE_KEY`, `DESK_OPERATOR_SK` and `SCHEDULER_SEED` with a `MAINNET_` prefix. `SUPABASE_DB_URL` and `CRON_SECRET` are shared, and mainnet data lives in a separate `mainnet` database schema. Contract deployment scripts also read `DEPLOYER_PRIVATE_KEY`, `RELAYER_ADDRESS`, `DESK_OPERATOR_PK_X` and `DESK_OPERATOR_PK_Y` (with `MAINNET_` variants). All names are listed in `.env.example`.
 
 ## Smart contracts
 
@@ -180,16 +181,18 @@ forge install foundry-rs/forge-std@v1.16.2 --no-git
 forge test
 ```
 
-The test suite verifies real UltraHonk proofs generated from `circuits/fixtures`. Deployed addresses for each network are tracked in `src/lib/chain/deployments/`.
+Most suites verify real UltraHonk proofs generated from `circuits/fixtures`. `MainnetFork.t.sol` runs only when `MAINNET_FORK` is set. Deployed addresses for each network are tracked in `src/lib/chain/deployments/`.
 
 ## Circuits
 
 ```sh
 cd circuits
 nargo compile --workspace
+cd ..
+pnpm zk:fixtures
 ```
 
-Compiled artifacts used by the browser prover live in `src/lib/zk/artifacts/`. The Noir and Barretenberg versions must change together as a matched pair; see `circuits/VERSIONS`.
+`pnpm zk:fixtures` regenerates the prover artifacts in `src/lib/zk/artifacts/`, the Solidity verifiers in `contracts/src/verifiers/` and the test fixtures. A changed circuit therefore needs its verifier redeployed. The Noir and Barretenberg versions must change together as a matched pair; see `circuits/VERSIONS`.
 
 ## Public API
 
@@ -197,15 +200,15 @@ All endpoints are served from the site origin. Mainnet equivalents live under `/
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
-| `GET` | `/api/transparency` | Public protocol aggregates (cached up to 30 s) |
-| `GET` | `/api/relay` | Relayer availability and base fee |
+| `GET` | `/api/transparency` | Public protocol aggregates (CDN-cached for 30 s, then served stale for up to 60 s while revalidating) |
+| `GET` | `/api/relay` | Relayer address, availability and minimum relay fee (USDG base units) |
 | `POST` | `/api/relay` | Submit a proven private action |
 | `GET` | `/api/ops/:id` | Status of a relayed operation |
 | `GET` / `POST` | `/api/requests` | Sealed treasury approval requests (readable only by members) |
 
 ## Testing and CI
 
-Every push and pull request runs on GitHub Actions:
+Pushes to `main` and every pull request run on GitHub Actions:
 
 1. **App:** install, `pnpm test`, `pnpm build` and the privacy check.
 2. **Contracts:** `forge test` with real proofs.

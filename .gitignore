@@ -9,6 +9,7 @@ outputs/verification/
 .vercel
 
 .env*
+!.env.example
 
 # Contracts / circuits build output
 contracts/lib/

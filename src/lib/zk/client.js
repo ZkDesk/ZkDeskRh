@@ -94,7 +94,7 @@ export function createClient({ publicClient, walletClient = null, address = null
     const balance = await read(asset, token.abi, 'balanceOf', [address]);
     if (balance < amount && MAINNET) throw new Error('Your wallet does not hold enough of this token for that deposit.');
     if (balance < amount) await wallet('Confirm the test-token faucet in your wallet…', token, 'faucet', [amount - balance]);
-    if ((await read(asset, token.abi, 'allowance', [address, deployment.pool])) < amount) await wallet('Approve ZKDesk in your wallet…', token, 'approve', [deployment.pool, MAINNET ? amount : maxUint256]);
+    if ((await read(asset, token.abi, 'allowance', [address, deployment.pool])) < amount) await wallet('Approve ZKdesk in your wallet…', token, 'approve', [deployment.pool, MAINNET ? amount : maxUint256]);
     await sync();
     const body = await transactBody({ asset, inputs: [], outputs: [{ amount, ...to }], ext: { extAmount: amount } });
     const p = body.proof;
@@ -191,7 +191,7 @@ export function createClient({ publicClient, walletClient = null, address = null
 
   /**
    * New treasury with you as Owner. treasurer/payer/auditor: {owner, encPub} (a ZKDesk address;
-   * default yourself). allocCap / dualThreshold in tUSDG base units. Returns the ledger id.
+   * default yourself). allocCap / dualThreshold in USDG base units. Returns the ledger id.
    */
   async function createLedger({ name, treasurer, payer, auditor, allocCap, dualThreshold }) {
     await sync();
@@ -321,7 +321,7 @@ export function createClient({ publicClient, walletClient = null, address = null
     return submitLedger(rebuilt.built, request.ext);
   }
 
-  /** Treasury statement: the ledger's assets cover `liabilities` (tUSDG base units). Publishes only that. */
+  /** Treasury statement: the ledger's assets cover `liabilities` (USDG base units). Publishes only that. */
   async function ledgerAttest(ledger, liabilities) {
     await sync();
     const [assets, prices] = await read(deployment.ledger, abis.ledger, 'attestPrices');
@@ -346,7 +346,7 @@ export function createClient({ publicClient, walletClient = null, address = null
 
   /**
    * New mandate from a treasury. kind: 'Payroll' | 'Invoice' | 'Vendor'; to: {owner, encPub} (a
-   * ZKDesk address); cap in tUSDG base units (per pull; stock mandates convert at the mark);
+   * ZKdesk address); cap in USDG base units (per pull; stock mandates convert at the mark);
    * period: 'Monthly' | 'Weekly' | 'One-time'; expiry: unix seconds; reference: invoice text.
    */
   async function createMandate(ledger, role, { kind, to, label = '', asset = deployment.usdg, cap, period, expiry, reference = '' }) {

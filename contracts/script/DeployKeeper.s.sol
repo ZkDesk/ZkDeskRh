@@ -8,7 +8,7 @@ import {FeedKeeper} from "../src/mocks/FeedKeeper.sol";
 import {MockAggregatorV3} from "../src/mocks/MockAggregatorV3.sol";
 
 /// Adds the testnet FeedKeeper to an existing M2 deployment: feeds are updated through it, and
-/// marks stay usable for 1 hour (the cron refreshes every 30 minutes to save test gas).
+/// marks stay usable for 1 hour (the cron refreshes every 25 minutes to save test gas).
 contract DeployKeeper is Script {
     using stdJson for string;
 

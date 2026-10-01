@@ -1,5 +1,5 @@
 // Rebuilds pool state from chain events (source of truth) and finds the notes a key set owns.
-// Supabase mirrors these events for speed; clients still check the rebuilt root against the pool.
+// Supabase mirrors these events for speed; clients rebuild the tree from events, check its size against the pool, and the contract rejects any unknown root.
 import { LeanIMT } from '@zk-kit/lean-imt';
 import { parseAbi, parseAbiItem } from 'viem';
 import { hash2, mandateCommit, noteCommitment, nullifier, policyHash, positionCommitment, receiptLeaf } from './notes.js';

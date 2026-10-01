@@ -22,7 +22,7 @@ import {MockAMM} from "../src/mocks/MockAMM.sol";
 /// DESK_OPERATOR_PK_X / _Y (Grumpkin public key of DESK_OPERATOR_SK).
 /// ponytail: governance/screener are the deployer EOA until the Safe + timelock move (plan M6).
 contract Deploy is Script {
-    uint64 constant STANDBY = 60; // testnet screening window (brief: 15 min on mainnet)
+    uint64 constant STANDBY = 60; // screening standby; mainnet uses the same 60 s
     uint64 constant MARK_MAX_AGE = 10 minutes;
     uint256 constant SEED_LIQUIDITY = 50_000e6;
 
