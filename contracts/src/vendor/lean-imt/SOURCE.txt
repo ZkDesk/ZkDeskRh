@@ -1,0 +1,1 @@
+Vendored from @zk-kit/lean-imt.sol 2.0.1 (npm), unmodified. Foundry cannot remap a package directory whose name ends in ".sol".

@@ -1,0 +1,44 @@
+/* Runtime states only. The source geometry, typography, palette, and media rules
+   remain in source.css exactly as extracted from the supplied page. */
+.baseline-reveal {
+  transition: none;
+}
+.baseline-visible {
+  opacity: var(--baseline-opacity, 1) !important;
+  visibility: visible !important;
+}
+.baseline-product-image {
+  opacity: 0;
+  visibility: hidden;
+  transition: none;
+}
+.baseline-product-image.baseline-product-active {
+  opacity: 1;
+  visibility: visible;
+}
+.baseline-search-results {
+  padding: 0 2rem 2rem;
+}
+.baseline-no-results {
+  padding: 2rem 0;
+  text-align: center;
+  font-size: 1.4rem;
+  opacity: .5;
+}
+@media (min-width: 834px) {
+  .menu.search-open .nav-sub-items.search {
+    backdrop-filter: blur(20px);
+    background-color: rgba(120, 120, 120, .1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Word wrappers preserve spaces and inline semantics; motion is runtime-only. */
+source-motion-word { display: inline-block; }
+.home-about-item > .line, .home-company-details .item-head-line, .home-company-details .bottom-line { transform-origin: left center; }

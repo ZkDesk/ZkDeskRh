@@ -1,0 +1,9 @@
+# Pinned toolchain. Change only as a matched pair
+# (source: AztecProtocol/aztec-packages barretenberg/bbup/bb-versions.json).
+# Install in WSL: noirup -v $NARGO && bbup -v $BB
+NARGO=1.0.0-beta.22
+BB=5.0.0-nightly.20260522
+# Browser/Node packages must match the same pair:
+NOIR_JS=1.0.0-beta.22
+BB_JS=5.0.0-nightly.20260522
+FOUNDRY=1.8.3

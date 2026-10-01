@@ -1,0 +1,36 @@
+.zk-docs { color:#1d1e20; background:#fdfdfd; min-height:100vh; font:350 16px/1.5 'PP Neue Montreal',sans-serif; }
+.docs-header { height:104px; margin:0 4.796163vw; border-bottom:1px solid #1d1e2014; display:flex; align-items:center; justify-content:space-between; }
+.docs-brand { display:flex; align-items:center; gap:12px; font-size:23px; }
+.docs-brand svg { width:22px; height:24px; }
+.docs-header nav { display:flex; gap:30px; align-items:center; font-size:14px; }
+.docs-header .docs-primary { border-radius:99px; border:1px solid #0071e3; color:#0071e3; padding:8px 17px; }
+.docs-layout { margin:0 4.796163vw; display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:2.39808vw; padding:96px 0 50px; }
+.docs-layout aside { grid-column:1; align-self:start; position:sticky; top:42px; }
+.docs-layout aside p,.docs-version { color:#92969b; font-size:12px; }
+.docs-layout aside nav { display:flex; flex-direction:column; gap:17px; margin:33px 0 60px; font-size:14px; }
+.docs-layout a:hover { color:#0071e3; }
+.docs-layout a:focus-visible { outline:2px solid #0071e3; outline-offset:5px; }
+.docs-layout article { grid-column:3/6; padding-right:4vw; }
+.docs-kicker { color:#0071e3; font-size:13px; }
+.docs-intro h1 { font-size:54px; font-weight:300; line-height:1.1; letter-spacing:-2px; margin:25px 0; }
+.docs-intro>p { color:#868b92; font-size:20px; max-width:390px; }
+.docs-intro { padding-bottom:75px; }
+.docs-layout section { scroll-margin-top:40px; border-top:1px solid #1d1e201c; padding:40px 0 64px; }
+.docs-layout section>span { color:#9ca0a5; font-size:12px; }
+.docs-layout h2 { font-size:27px; font-weight:350; line-height:1.16; margin:22px 0 28px; letter-spacing:-.6px; }
+.docs-layout section p { margin-bottom:18px; color:#6b7077; max-width:610px; }
+.docs-layout section>a,.docs-actions a { display:inline-block; margin-top:12px; color:#0071e3; }
+.docs-layout section b { font-weight:350; margin-left:9px; }
+.docs-layout dl { margin:30px 0; }
+.docs-layout dl div { display:grid; grid-template-columns:120px 1fr; padding:13px 0; border-top:1px solid #1d1e2010; }
+.docs-layout dt { font-size:14px; }
+.docs-layout dd { color:#767b82; font-size:14px; }
+.docs-note { background:#f2f2f4; padding:26px; border:1px solid #ffffff; border-radius:16px; margin-top:30px; }
+.docs-note strong { font-weight:350; display:block; margin-bottom:15px; }
+.docs-note p { font-size:14px; margin-bottom:0!important; }
+.docs-actions { display:flex; gap:30px; flex-wrap:wrap; }
+.docs-layout footer { display:flex; align-items:center; border-top:1px solid #1d1e201a; gap:18px; padding:40px 0; font-size:14px; }
+.docs-layout footer>svg { width:26px; height:30px; }
+.docs-layout footer p span { font-size:12px; color:#969aa0; }
+.docs-layout footer .zk-sound { margin-left:auto; }
+@media(max-width:833px) { .docs-header { height:90px; margin:0 5.128vw; } .docs-header nav { gap:12px; font-size:12px; } .docs-brand { font-size:20px; gap:7px; } .docs-header .docs-primary { padding:7px 11px; } .docs-layout { display:block; margin:0 5.128vw; padding-top:44px; } .docs-layout aside { position:static; } .docs-layout aside nav { flex-direction:row; overflow:auto; padding:15px 0; margin:10px 0 28px; gap:20px; white-space:nowrap; } .docs-version { display:none; } .docs-layout article { padding:0; } .docs-intro h1 { font-size:43px; } .docs-intro { padding-bottom:50px; } .docs-layout section { padding:30px 0 40px; } .docs-layout h2 { font-size:25px; } .docs-layout dl div { grid-template-columns:100px 1fr; } }

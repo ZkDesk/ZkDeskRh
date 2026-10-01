@@ -1,0 +1,55 @@
+{
+  "assetGate": "0x7e4dF4E701Ac2FED31840C39B23f0325Fa7fFB04",
+  "chainId": 46630,
+  "deployedAt": 1790550390,
+  "deployer": "0xc69d4E99d0d61e9876BF0a26ad9790FE4884F86A",
+  "desk": "0xc5FEe4546De8dd7C04619113d951B175fECc3aC3",
+  "lending": "0xb3ff87951Ac2F2D7A5CAfFd070E8D54c4Ed486Ca",
+  "markMaxAge": 3600,
+  "marker": "0x1E20fC5d338C5AC0eD541F80d74E6d772291Bdf2",
+  "pool": "0xb8e0Baf526D1724740B666070F214B84b7fBefF6",
+  "relayer": "0x35C3e49C64D14F19Dc79B86263720fC4CB619f60",
+  "standbySeconds": 60,
+  "stocks": {
+    "tNVDA": {
+      "feed": "0x13F11aC7C57f157d4b2b8a8d189F35c9896D2010",
+      "liqBps": 5500,
+      "ltvBps": 4500,
+      "token": "0xb5b10290FE47901c6f53C13624ED1beC37Eb2259"
+    },
+    "tQQQ": {
+      "feed": "0xFc2AE38c9D5328f7F3746186B6902aE9bA143925",
+      "liqBps": 7000,
+      "ltvBps": 6000,
+      "token": "0x02eA542af05987987ecf8ac2278a75e92A62dbc3"
+    },
+    "tSPY": {
+      "feed": "0x565d4818d7CEEde4E5196f6A9fD2e5269fCFB6e5",
+      "liqBps": 7000,
+      "ltvBps": 6000,
+      "token": "0xB00061914f48B367B985eB31c7f26d5Dc0daAEe2"
+    },
+    "tTSLA": {
+      "feed": "0x30caa1dBDd44BDC6050fe14eF3030d866b1896a6",
+      "liqBps": 5500,
+      "ltvBps": 4500,
+      "token": "0x0cEB7cad8A9BB649079877691a6bF0969d52D10F"
+    }
+  },
+  "usdg": "0xBBC145314B503Ce761f8B0431E24f7A79a16a9ae",
+  "feedKeeper": "0x2D4C5BE42841442d0C4fC7adCC2d6D7c510B652B",
+  "deployBlock": 125405454,
+  "amm": "0xDA9510a5433377EFe149a508E956F3C257B0eE71",
+  "deskBlock": 125676890,
+  "ledger": "0x6f942fD8E37dc1A2A3faa990A11f07dfFfA6dd5D",
+  "vault": "0xeFCAcdCFa89754EB52CFe1D285f61070A038F5bC",
+  "ledgerBlock": 125699882,
+  "mandates": "0xF0A115F56aF20d968732B3336E928ee98a9e8BA0",
+  "mandatesBlock": 125714710,
+  "zkd": "0x37774d582ac232E111D59e2f72c6516Bb8911D73",
+  "staking": "0xA0354F97f4a84b0b1f7Bcb0357f77425d15C3da9",
+  "safe": "0x4094C46Ba252cbe75382A8C8c995bcf711516456",
+  "timelock": "0x0AeB3Ab89F0bc1C45060aF64ba0414b3E6a9721D",
+  "deskGuardian": "0xa18394Ac69593fE89623f6e52d56a2de1aE19CCC",
+  "scheduler": "zkd:218164973f6fcb9ba8486b8b900f25661651ba5c96a937b5d7771325a72e75540e8d9fa736934cf0c5f914864b24e7a36bb69a5a232a977ef7672cba731bfa61"
+}

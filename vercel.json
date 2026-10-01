@@ -1,0 +1,127 @@
+{
+  "framework": "vite",
+  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "pnpm build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/((?!api/)(?!.*[.]).*)",
+      "destination": "/index.html"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/tick",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/desk",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/pulls",
+      "schedule": "5 * * * *"
+    },
+    {
+      "path": "/api/mainnet/cron/tick",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/mainnet/cron/desk",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/mainnet/cron/pulls",
+      "schedule": "35 * * * *"
+    }
+  ],
+  "functions": {
+    "api/relay.js": {
+      "maxDuration": 60
+    },
+    "api/mainnet/relay.js": {
+      "maxDuration": 60
+    },
+    "api/ops/*.js": {
+      "maxDuration": 60
+    },
+    "api/mainnet/ops/*.js": {
+      "maxDuration": 60
+    },
+    "api/cron/tick.js": {
+      "maxDuration": 60
+    },
+    "api/mainnet/cron/tick.js": {
+      "maxDuration": 60
+    },
+    "api/cron/desk.js": {
+      "maxDuration": 300,
+      "includeFiles": "node_modules/.pnpm/@aztec+bb.js@5.0.0-nightly.20260522/node_modules/@aztec/bb.js/dest/node/**"
+    },
+    "api/mainnet/cron/desk.js": {
+      "maxDuration": 300,
+      "includeFiles": "node_modules/.pnpm/@aztec+bb.js@5.0.0-nightly.20260522/node_modules/@aztec/bb.js/dest/node/**"
+    },
+    "api/transparency.js": {
+      "maxDuration": 30
+    },
+    "api/mainnet/transparency.js": {
+      "maxDuration": 30
+    },
+    "api/requests.js": {
+      "maxDuration": 30
+    },
+    "api/mainnet/requests.js": {
+      "maxDuration": 30
+    },
+    "api/cron/pulls.js": {
+      "maxDuration": 300,
+      "includeFiles": "node_modules/.pnpm/@aztec+bb.js@5.0.0-nightly.20260522/node_modules/@aztec/bb.js/dest/node/**"
+    },
+    "api/mainnet/cron/pulls.js": {
+      "maxDuration": 300,
+      "includeFiles": "node_modules/.pnpm/@aztec+bb.js@5.0.0-nightly.20260522/node_modules/@aztec/bb.js/dest/node/**"
+    }
+  },
+  "headers": [
+    {
+      "source": "/dashboard",
+      "headers": [
+        {
+          "key": "Cross-Origin-Opener-Policy",
+          "value": "same-origin"
+        },
+        {
+          "key": "Cross-Origin-Embedder-Policy",
+          "value": "credentialless"
+        }
+      ]
+    },
+    {
+      "source": "/dashboard/(.*)",
+      "headers": [
+        {
+          "key": "Cross-Origin-Opener-Policy",
+          "value": "same-origin"
+        },
+        {
+          "key": "Cross-Origin-Embedder-Policy",
+          "value": "credentialless"
+        }
+      ]
+    },
+    {
+      "source": "/assets/(.*)",
+      "headers": [
+        {
+          "key": "Cross-Origin-Embedder-Policy",
+          "value": "credentialless"
+        },
+        {
+          "key": "Cross-Origin-Resource-Policy",
+          "value": "same-origin"
+        }
+      ]
+    }
+  ]
+}

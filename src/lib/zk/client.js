@@ -1,0 +1,466 @@
+// One private-account client for the dashboard and ops scripts. It reads chain state, picks notes,
+// builds witnesses and ciphertexts, then hands proofs to injected `prove(kind, witness)` and
+// `relay(body)` (browser: worker + fetch; Node: bb.js + in-process handler).
+import { maxUint256, zeroAddress } from 'viem';
+import { abis, deployment, explorerTx, MAINNET, minRelayFee, NETWORK_NAME, stocks } from '../chain/config.js';
+import { encryptConfig, encryptKeyShare, encryptMandate, encryptNote, encryptPosition, openRequest, sealRequest, textToField } from './crypto.js';
+import { buildMandateAuth, buildPull, buildReceipt, currentPeriod, KINDS, MANDATE_ACTIONS, PERIODS, rawForUsdg } from './mandate.js';
+import { ACTIONS, AUTH, authExtHash, buildAttest, buildLedger, buildRoleAuth, ledgerKeys, rolesOf } from './ledger.js';
+import { policyHash, randomField } from './notes.js';
+import { buildTransact } from './transact.js';
+import { buildPosition, debtOf, maxDebt, valueOf } from './position.js';
+import { balanceOf, freeSlot, ledgerMandates, myLedgers, myNotes, myPositions, myReceipts, syncPool } from './wallet.js';
+
+const USDG = BigInt(deployment.usdg);
+const hexId = (id) => '0x' + id.toString(16).padStart(64, '0');
+const LENDING = BigInt(deployment.lending);
+const big = (a) => BigInt(a);
+const s = (x) => x.toString();
+
+/** requests: optional mailbox {list(ledgerIdHex), post(ledgerIdHex, ciphertext)} for approval requests (api/requests.js). */
+export function createClient({ publicClient, walletClient = null, address = null, keys, prove, relay, requests = null, onStatus = () => {} }) {
+  let state = null;
+  let lastBlock = 0n;
+  const status = (m) => onStatus(m);
+  const read = (addr, abi, functionName, args = []) => publicClient.readContract({ address: addr, abi, functionName, args });
+
+  async function sync(minBlock = lastBlock) {
+    state = await syncPool(publicClient, deployment, { minBlock });
+    return state;
+  }
+  const notes = () => myNotes(state, keys);
+  const unspent = (asset) => notes().filter((n) => n.asset === big(asset) && n.status === 'unspent').sort((a, b) => (b.amount > a.amount ? 1 : -1));
+
+  function pickInputs(asset, needed, list = unspent(asset)) {
+    if (needed === 0n) return [];
+    if (list[0]?.amount >= needed) return [list[0]];
+    if (list.length > 1 && list[0].amount + list[1].amount >= needed) return list.slice(0, 2);
+    const total = list.reduce((t, n) => t + n.amount, 0n);
+    throw new Error(total >= needed
+      ? 'This amount spans more than two private notes. Use a smaller amount first to combine them.'
+      : 'Not enough available private balance.');
+  }
+
+  /** The relay fee is paid in the spent asset. */
+  async function relayFee(asset) {
+    const info = await relay(null);
+    if (!info.available) throw new Error('The relayer is unavailable right now. Please try again shortly.');
+    return { fee: minRelayFee(asset), relayer: info.relayer };
+  }
+
+  async function submitRelay(body) {
+    status('Submitting through the relayer…');
+    const r = await relay(body);
+    if (r.status !== 'confirmed') throw new Error(friendly(r.errorCode || (r.status === 'submitted' || r.status === 'queued' ? 'pending_long' : r.message || r.error)));
+    lastBlock = big(r.block ?? 0);
+    return r;
+  }
+
+  /** Proves a transact with both outputs encrypted; returns the relay/tx body. */
+  async function transactBody({ asset, outAsset = asset, publicAmountOut = 0n, inputs, outputs, ext }) {
+    const full = { recipient: zeroAddress, extAmount: 0n, relayer: zeroAddress, fee: 0n, converter: zeroAddress, ...ext };
+    const args = { tree: state.tree, sk: keys.sk, asset: big(asset), outAsset: big(outAsset), publicAmountOut, inputs, outputs };
+    const draft = buildTransact({ ...args, ext: { ...full, encryptedOutput1: '0x', encryptedOutput2: '0x' } });
+    const [o1, o2] = draft.outputs;
+    const finalExt = { ...full, encryptedOutput1: encryptNote(o1, o1.encPub ?? keys.encPub), encryptedOutput2: encryptNote(o2, o2.encPub ?? keys.encPub) };
+    const tx = buildTransact({ ...args, outputs: draft.outputs, ext: finalExt });
+    status('Generating proof…');
+    const { proof } = await prove('transact', tx.witness);
+    const p = tx.public;
+    const hexAddr = (x) => '0x' + x.toString(16).padStart(40, '0');
+    return {
+      kind: 'transact',
+      proof: { proof, root: s(p.root), publicAmount: s(p.publicAmount), extDataHash: s(p.extDataHash), asset: hexAddr(p.asset), outAsset: hexAddr(p.outAsset), publicAmountOut: s(p.publicAmountOut), inputNullifiers: p.inputNullifiers.map(s), outputCommitments: p.outputCommitments.map(s) },
+      ext: { ...finalExt, extAmount: s(finalExt.extAmount), fee: s(finalExt.fee) },
+    };
+  }
+
+  async function wallet(label, target, functionName, args) {
+    if (!walletClient) throw new Error('Connect your wallet first.');
+    status(label);
+    const hash = await walletClient.writeContract({ ...target, functionName, args });
+    const r = await publicClient.waitForTransactionReceipt({ hash });
+    if (r.status !== 'success') throw new Error(`${functionName} failed: ${explorerTx(hash)}`);
+    lastBlock = r.blockNumber;
+    return r;
+  }
+
+  /**
+   * Public token -> private notes, from the connected wallet (standby applies). On testnet it faucets test tokens if
+   * short; on mainnet a short wallet is refused and the approval is for this amount only. to: {owner, encPub} of another private account or a treasury (default: yourself).
+   */
+  async function deposit(asset, amount, to = { owner: keys.owner, encPub: keys.encPub }) {
+    const token = { address: asset, abi: big(asset) === USDG ? abis.usdg : abis.stock };
+    const balance = await read(asset, token.abi, 'balanceOf', [address]);
+    if (balance < amount && MAINNET) throw new Error('Your wallet does not hold enough of this token for that deposit.');
+    if (balance < amount) await wallet('Confirm the test-token faucet in your wallet…', token, 'faucet', [amount - balance]);
+    if ((await read(asset, token.abi, 'allowance', [address, deployment.pool])) < amount) await wallet('Approve ZKDesk in your wallet…', token, 'approve', [deployment.pool, MAINNET ? amount : maxUint256]);
+    await sync();
+    const body = await transactBody({ asset, inputs: [], outputs: [{ amount, ...to }], ext: { extAmount: amount } });
+    const p = body.proof;
+    const args = [{ ...p, root: big(p.root), publicAmount: big(p.publicAmount), extDataHash: big(p.extDataHash), publicAmountOut: 0n, inputNullifiers: p.inputNullifiers.map(big), outputCommitments: p.outputCommitments.map(big) }, { ...body.ext, extAmount: amount, fee: 0n }];
+    await wallet('Confirm the private deposit in your wallet…', { address: deployment.pool, abi: abis.pool }, 'transact', args);
+  }
+
+  /** Private transfer to a ZKDesk address ({owner, encPub}) or withdrawal to a public address. */
+  async function send({ asset = deployment.usdg, amount, to = null, recipient = null }) {
+    const { fee, relayer } = await relayFee(asset);
+    await sync();
+    const inputs = pickInputs(asset, amount + fee);
+    const change = inputs.reduce((t, n) => t + n.amount, 0n) - amount - fee;
+    const self = { owner: keys.owner };
+    const outputs = to ? [{ amount, ...to }, { amount: change, ...self }] : [{ amount: change, ...self }];
+    const ext = to ? { relayer, fee } : { recipient, extAmount: -amount, relayer, fee };
+    return submitRelay(await transactBody({ asset, inputs, outputs, ext }));
+  }
+
+  /** Private USDG -> lending shares (lend) or shares -> USDG (redeem). */
+  async function convert(direction, amount) {
+    const [assetIn, assetOut] = direction === 'lend' ? [deployment.usdg, deployment.lending] : [deployment.lending, deployment.usdg];
+    const { fee, relayer } = await relayFee(assetIn);
+    await sync();
+    const quote = direction === 'lend'
+      ? await read(deployment.lending, abis.lending, 'previewDeposit', [amount])
+      : await read(deployment.lending, abis.lending, 'previewRedeem', [amount]);
+    const minOut = (quote * 9_999n) / 10_000n; // 0.01% slack for interest accrued between quote and execution
+    const inputs = pickInputs(assetIn, amount + fee);
+    const change = inputs.reduce((t, n) => t + n.amount, 0n) - amount - fee;
+    return submitRelay(await transactBody({
+      asset: assetIn, outAsset: assetOut, publicAmountOut: minOut, inputs,
+      outputs: [{ amount: change, owner: keys.owner }, { amount: minOut, owner: keys.owner }],
+      ext: { extAmount: -amount, relayer, fee, converter: deployment.lending },
+    }));
+  }
+
+  let operatorPk = null;
+  async function market(symbol) {
+    const token = stocks[symbol].token;
+    operatorPk ??= await Promise.all([0n, 1n].map((i) => read(deployment.desk, abis.desk, 'operatorPk', [i])));
+    const [[price], index] = await Promise.all([read(deployment.marker, abis.marker, 'current', [token]), read(deployment.desk, abis.desk, 'index')]);
+    return { token, mark: big(price), ltvBps: stocks[symbol].ltvBps, liqBps: stocks[symbol].liqBps, index, operatorPk };
+  }
+
+  /** Desk epoch status: last attestation, whether new draws are halted, epoch count. */
+  async function deskHealth() {
+    const [lastAttestedAt, healthy, epoch] = await Promise.all(['lastAttestedAt', 'healthy', 'epoch'].map((f) => read(deployment.desk, abis.desk, f)));
+    return { lastAttestedAt: Number(lastAttestedAt), healthy, epoch: Number(epoch) };
+  }
+
+  /** One credit step. position: from positions() or null to open. */
+  async function credit({ symbol, position = null, collIn = 0n, collOut = 0n, draw = 0n, repay = 0n }) {
+    await sync();
+    const m = await market(symbol);
+    const payAsset = repay ? deployment.usdg : m.token;
+    const inputs = pickInputs(payAsset, collIn + repay);
+    const slot = position ? position.slot : freeSlot(state);
+    if (slot === null) throw new Error('The credit desk is full. Please try again later.');
+    const old = position && { collateral: position.collateral, debtScaled: position.debtScaled, blinding: position.blinding };
+    const args = { tree: state.tree, sk: keys.sk, collAsset: big(m.token), usdgAsset: USDG, mark: m.mark, ltvBps: m.ltvBps, rateIndex: m.index, operatorPk: m.operatorPk, old, collIn, collOut, draw, repay, inputs };
+    const empty = { relayer: zeroAddress, fee: 0n, encryptedOutput1: '0x', encryptedOutput2: '0x', encryptedPosition: '0x' };
+    const draft = buildPosition({ ...args, ext: empty });
+    const [o1, o2] = draft.outputs;
+    const ext = { ...empty, encryptedOutput1: encryptNote(o1, keys.encPub), encryptedOutput2: encryptNote(o2, keys.encPub), encryptedPosition: draft.position ? encryptPosition(draft.position, keys.encPub) : '0x' };
+    // Rebuild with the final ext hash and the draft's blindings so the ciphertexts describe what is proven.
+    const built = buildPosition({ ...args, ext, blindings: { position: draft.position?.blinding, outputs: draft.outputs.map((o) => o.blinding) } });
+    status('Generating proof…');
+    const { proof } = await prove('position', built.witness);
+    const p = built.public;
+    const hexAddr = (x) => '0x' + x.toString(16).padStart(40, '0');
+    return submitRelay({
+      kind: 'position',
+      proof: { proof, slot, root: s(p.root), extDataHash: s(p.extDataHash), collAsset: hexAddr(p.collAsset), inAsset: hexAddr(p.inAsset), mark: s(p.mark), rateIndex: s(p.rateIndex), oldLeaf: s(p.oldLeaf), newLeaf: s(p.newLeaf), collIn: s(p.collIn), collOut: s(p.collOut), draw: s(p.draw), repay: s(p.repay), drawScaled: s(p.drawScaled), repayScaled: s(p.repayScaled), inputNullifiers: p.inputNullifiers.map(s), outputCommitments: p.outputCommitments.map(s), operatorEph: p.operatorEph.map(s), operatorCipher: p.operatorCipher.map(s) },
+      ext: { ...ext, fee: '0' },
+    });
+  }
+
+  // ---- Treasury ledgers ----
+
+  const ledgers = () => myLedgers(state, keys);
+  const ledgerNotes = (ledger) => myNotes(state, ledger);
+  const ledgerUnspent = (ledger, asset) => ledgerNotes(ledger).filter((n) => n.asset === big(asset) && n.status === 'unspent').sort((a, b) => (b.amount > a.amount ? 1 : -1));
+
+  async function relayAuth({ ledger, config, action, newValue = 0n, shares = [], configCt = '0x' }) {
+    const built = buildRoleAuth({ ledger, sk: keys.sk, config, action, newValue, extHash: authExtHash(shares, configCt) });
+    status('Generating proof…');
+    const { proof } = await prove('role_auth', built.witness);
+    const p = built.public;
+    return submitRelay({ kind: 'ledger_auth', proof: { proof, ledgerId: s(p.ledgerId), rolesCommit: s(p.rolesCommit), policyHash: s(p.policyHash), action, newValue: s(newValue) }, ext: { shares, config: configCt } });
+  }
+
+  const shareTo = (lsk, members) => [...new Map(members.map((m) => [m.owner, m])).values()].map((m) => encryptKeyShare(lsk, m.encPub));
+
+  /**
+   * New treasury with you as Owner. treasurer/payer/auditor: {owner, encPub} (a ZKDesk address;
+   * default yourself). allocCap / dualThreshold in tUSDG base units. Returns the ledger id.
+   */
+  async function createLedger({ name, treasurer, payer, auditor, allocCap, dualThreshold }) {
+    await sync();
+    const self = { owner: keys.owner, encPub: keys.encPub };
+    const members = [self, treasurer ?? self, payer ?? self, auditor ?? self];
+    const lsk = randomField();
+    const ledger = ledgerKeys(lsk);
+    const config = { name, owner: self.owner, treasurer: members[1].owner, payer: members[2].owner, auditor: members[3].owner, rolesSalt: randomField(), allocCap, dualThreshold, policySalt: randomField() };
+    await relayAuth({ ledger, config, action: AUTH.create, shares: shareTo(lsk, members), configCt: encryptConfig(config, ledger.encPub) });
+    return ledger.owner;
+  }
+
+  /** Owner: replace members ({owner, encPub}; omitted = unchanged) and/or change the policy. */
+  async function updateLedger(ledger, { treasurer, payer, auditor, allocCap = ledger.config.allocCap, dualThreshold = ledger.config.dualThreshold }) {
+    let current = ledger.config;
+    const changed = { treasurer, payer, auditor };
+    const roles = Object.fromEntries(Object.entries(changed).filter(([k, m]) => m && m.owner !== current[k]).map(([k, m]) => [k, m.owner]));
+    if (Object.keys(roles).length) {
+      const next = { ...current, ...roles, rolesSalt: randomField() };
+      const joining = Object.entries(changed).filter(([k]) => k in roles).map(([, m]) => m);
+      await relayAuth({ ledger, config: current, action: AUTH.rotate, newValue: rolesOf(next), shares: shareTo(ledger.lsk, joining), configCt: encryptConfig(next, ledger.encPub) });
+      current = next;
+    }
+    if (allocCap !== current.allocCap || dualThreshold !== current.dualThreshold) {
+      const next = { ...current, allocCap, dualThreshold, policySalt: randomField() };
+      await relayAuth({ ledger, config: current, action: AUTH.setPolicy, newValue: policyHash(next), configCt: encryptConfig(next, ledger.encPub) });
+    }
+  }
+
+  /**
+   * One treasury action as `role`: allocate / deallocate (tUSDG <-> vault shares) or transfer
+   * (to a ZKDesk address `to` = {owner, encPub}, or unshield to a public `recipient`). Above the
+   * dual-control threshold a non-owner needs the Owner's approval; if you hold Owner too, it is
+   * given first automatically.
+   */
+  async function ledgerAct(ledger, role, { action, amount, asset = deployment.usdg, to = null, recipient = null }) {
+    await sync();
+    let args;
+    if (action === 'allocate' || action === 'deallocate') {
+      const [from, into] = action === 'allocate' ? [deployment.usdg, deployment.vault] : [deployment.vault, deployment.usdg];
+      const quote = await read(deployment.vault, abis.vault, action === 'allocate' ? 'previewDeposit' : 'previewRedeem', [amount]);
+      args = { action: ACTIONS[action], asset: big(from), outAsset: big(into), inputs: pickInputs(from, amount, ledgerUnspent(ledger, from)), out: { amount: (quote * 9_999n) / 10_000n }, ext: { extAmount: -amount } };
+    } else {
+      args = { action: ACTIONS.transfer, asset: big(asset), inputs: pickInputs(asset, amount, ledgerUnspent(ledger, asset)),
+        out: to ? { amount, owner: to.owner } : { amount: 0n, owner: ledger.owner }, ext: to ? {} : { recipient, extAmount: -amount } };
+    }
+    const base = { tree: state.tree, ledger, sk: keys.sk, role, ...args };
+    const empty = { recipient: zeroAddress, extAmount: 0n, encryptedOutput1: '0x', encryptedOutput2: '0x', ...args.ext };
+    const draft = buildLedger({ ...base, ext: empty });
+    const [o1, o2] = draft.outputs;
+    const ext = { ...empty, encryptedOutput1: encryptNote(o1, ledger.encPub), encryptedOutput2: encryptNote(o2, to?.encPub ?? ledger.encPub) };
+    const built = buildLedger({ ...base, ext, blindings: { outputs: draft.outputs.map((o) => o.blinding) } });
+    if (built.needsOwner) {
+      if (!ledger.roles.includes('Owner')) {
+        if (!requests) throw new Error('This is above the dual-control threshold: the treasury Owner must approve it.');
+        // Dual control across members: park the exact transfer for the Owner (no gas).
+        status('Sending the request to the treasury Owner…');
+        const request = {
+          v: 1, from: keys.owner, role, asset: big(asset), amount, to, recipient, at: Date.now(), intent: built.intent,
+          inputs: args.inputs.map((n) => n.commitment), outputs: built.outputs.map((o) => o.blinding), dummies: built.dummies, ext,
+        };
+        await requests.post(hexId(ledger.owner), sealRequest(request, ledger.requestKey));
+        return { requested: true, intent: built.intent };
+      }
+      status('Approving as Owner (dual control)…');
+      await relayAuth({ ledger, config: ledger.config, action: AUTH.approve, newValue: built.intent });
+    }
+    return submitLedger(built, ext);
+  }
+
+  async function submitLedger(built, ext) {
+    status('Generating proof…');
+    const { proof } = await prove('ledger', built.witness);
+    const p = built.public;
+    const hexAddr = (x) => '0x' + x.toString(16).padStart(40, '0');
+    return submitRelay({
+      kind: 'ledger',
+      proof: { proof, root: s(p.root), ledgerId: s(p.ledgerId), action: Number(p.action), asset: hexAddr(p.asset), outAsset: hexAddr(p.outAsset), publicAmount: s(p.publicAmount), publicAmountOut: s(p.publicAmountOut), extDataHash: s(p.extDataHash), inputNullifiers: p.inputNullifiers.map(s), outputCommitments: p.outputCommitments.map(s), cosignIntent: s(p.cosignIntent) },
+      ext: { ...ext, extAmount: s(ext.extAmount) },
+    });
+  }
+
+  /** Rebuilds a request exactly as proposed; null if it does not reproduce its intent. */
+  function rebuildRequest(ledger, r, sk, check) {
+    const notes = ledgerNotes(ledger);
+    const inputs = r.inputs.map((c) => notes.find((n) => n.commitment === c));
+    if (inputs.some((n) => !n)) return null;
+    const out = r.to ? { amount: r.amount, owner: r.to.owner } : { amount: 0n, owner: ledger.owner };
+    try {
+      const built = buildLedger({ tree: state.tree, ledger, sk, role: r.role, action: ACTIONS.transfer, asset: r.asset, inputs, out, ext: r.ext, blindings: { outputs: r.outputs, dummies: r.dummies }, check });
+      return built.intent === r.intent && built.needsOwner ? { built, inputs } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Approval requests for a treasury, newest first, verified against the chain: Awaiting Owner,
+   * Approved (the requester can complete it), Completed, or Expired (its notes moved otherwise).
+   */
+  async function ledgerRequests(ledger) {
+    if (!requests) return [];
+    const rows = await requests.list(hexId(ledger.owner));
+    const out = [];
+    for (const row of rows) {
+      const r = openRequest(row.ciphertext, ledger.requestKey);
+      if (!r || r.v !== 1) continue;
+      const rebuilt = rebuildRequest(ledger, r, keys.sk, false);
+      if (!rebuilt) continue;
+      const spent = rebuilt.inputs.some((n) => n.status === 'spent');
+      const approved = ledger.approved.has(r.intent);
+      const statusText = spent ? (approved ? 'Completed' : 'Expired') : approved ? 'Approved' : 'Awaiting Owner';
+      out.push({ ...r, id: row.id, status: statusText, mine: r.from === keys.owner });
+    }
+    return out;
+  }
+
+  /** Owner: approve the exact transfer in a request. */
+  const approveRequest = (ledger, request) => relayAuth({ ledger, config: ledger.config, action: AUTH.approve, newValue: request.intent });
+
+  /** Requester: send an approved request (re-proven on the current tree with the same blindings). */
+  async function completeRequest(ledger, request) {
+    await sync();
+    if (request.from !== keys.owner) throw new Error('Only the member who requested this transfer can complete it.');
+    const rebuilt = rebuildRequest(ledger, request, keys.sk, true);
+    if (!rebuilt) throw new Error('This request no longer matches the treasury notes.');
+    return submitLedger(rebuilt.built, request.ext);
+  }
+
+  /** Treasury statement: the ledger's assets cover `liabilities` (tUSDG base units). Publishes only that. */
+  async function ledgerAttest(ledger, liabilities) {
+    await sync();
+    const [assets, prices] = await read(deployment.ledger, abis.ledger, 'attestPrices');
+    const built = buildAttest({ tree: state.tree, ledger, notes: ledgerNotes(ledger), assets: [...assets], prices: [...prices], liabilities });
+    status('Generating proof…');
+    const { proof } = await prove('treasury_attest', built.witness);
+    const p = built.public;
+    return submitRelay({ kind: 'ledger_attest', proof: { proof, root: s(p.root), ledgerId: s(p.ledgerId), liabilities: s(liabilities), nullifiers: p.nullifiers.map(s) } });
+  }
+
+  // ---- Payment mandates and receipts ----
+
+  const mandates = (ledger) => ledgerMandates(state, ledger);
+  const chainTime = async () => (await publicClient.getBlock({ blockTag: 'latest' })).timestamp;
+
+  async function relayMandateAuth(ledger, role, action, mandate, ciphertext = '0x') {
+    const built = buildMandateAuth({ ledger, sk: keys.sk, role, action, mandate, ciphertext });
+    status('Generating proof…');
+    const { proof } = await prove('mandate_auth', built.witness);
+    return submitRelay({ kind: 'mandate_auth', proof: { proof, ledgerId: s(ledger.owner), action, mandateCommit: s(built.commit) }, ext: { ciphertext } });
+  }
+
+  /**
+   * New mandate from a treasury. kind: 'Payroll' | 'Invoice' | 'Vendor'; to: {owner, encPub} (a
+   * ZKDesk address); cap in tUSDG base units (per pull; stock mandates convert at the mark);
+   * period: 'Monthly' | 'Weekly' | 'One-time'; expiry: unix seconds; reference: invoice text.
+   */
+  async function createMandate(ledger, role, { kind, to, label = '', asset = deployment.usdg, cap, period, expiry, reference = '' }) {
+    const k = KINDS.indexOf(kind);
+    const mandate = {
+      kind: BigInt(k), recipient: to.owner, recipientEncPub: to.encPub, asset: big(asset), cap, period: k === 1 ? 0n : PERIODS[period],
+      start: await chainTime(), expiry: BigInt(expiry), reference: reference ? textToField(reference) : 0n, salt: randomField(), label,
+    };
+    await relayMandateAuth(ledger, role, MANDATE_ACTIONS.commit, mandate, encryptMandate(mandate, ledger.encPub));
+    return mandate;
+  }
+
+  /** action: 'revoke' | 'pause' | 'resume'. */
+  const manageMandate = (ledger, role, mandate, action) => relayMandateAuth(ledger, role, MANDATE_ACTIONS[action], mandate);
+
+  /** Pays the current period of a mandate (usdgAmount ≤ cap). Stock mandates convert at the pinned mark. */
+  async function payMandate(ledger, role, mandate, usdgAmount) {
+    await sync();
+    const t = await chainTime();
+    const k = currentPeriod(mandate, t);
+    if (mandate.paid.has(k)) throw new Error('This mandate is already paid for the current period.');
+    const usdgAsset = mandate.asset === USDG;
+    const mark = usdgAsset ? 0n : big((await read(deployment.marker, abis.marker, 'current', ['0x' + mandate.asset.toString(16).padStart(40, '0')]))[0]);
+    const raw = rawForUsdg(usdgAmount, mark);
+    const inputs = pickInputs(mandate.asset, raw, ledgerUnspent(ledger, mandate.asset));
+    const base = { tree: state.tree, ledger, sk: keys.sk, role, mandate, k, t, usdgAmount, mark, inputs };
+    const draft = buildPull({ ...base, ext: {} });
+    const [o1, o2] = draft.outputs;
+    const ext = { encryptedOutput1: encryptNote(o1, ledger.encPub), encryptedOutput2: encryptNote(o2, mandate.recipientEncPub) };
+    const built = buildPull({ ...base, ext, blindings: { outputs: draft.outputs.map((o) => o.blinding) } });
+    status('Generating proof…');
+    const { proof } = await prove('mandate_pull', built.witness);
+    const p = built.public;
+    const hexAddr = (x) => '0x' + x.toString(16).padStart(40, '0');
+    return submitRelay({
+      kind: 'mandate_pull',
+      proof: { proof, root: s(p.root), ledgerId: s(p.ledgerId), mandateCommit: s(p.mandateCommit), asset: hexAddr(p.asset), mark: s(p.mark), k: s(p.k), t: s(p.t), pullNullifier: s(p.pullNullifier), receiptLeaf: s(p.receiptLeaf), extDataHash: s(p.extDataHash), inputNullifiers: p.inputNullifiers.map(s), outputCommitments: p.outputCommitments.map(s) },
+      ext,
+    });
+  }
+
+  /** Payments you received under mandates (personal notes). */
+  const receipts = () => myReceipts(state, notes());
+
+  /**
+   * A receipt proof for a received payment, addressed to `verifier` (a 0x address or number),
+   * disclosing only what you choose. Returns a JSON-safe record anyone can check with verifyReceipt.
+   */
+  async function proveReceipt(receipt, { verifier, discloseAmount = false, discloseOwner = false }) {
+    await sync();
+    const built = buildReceipt({ receipts: state.receipts, sk: keys.sk, payment: receipt.note, ledgerId: receipt.ledgerId, k: receipt.k, leafIndex: receipt.leafIndex, verifier: big(verifier), discloseAmount, discloseOwner });
+    status('Generating proof…');
+    const { proof } = await prove('receipt', built.witness);
+    const p = built.public;
+    return {
+      type: 'ZKDesk payment receipt', chainId: publicClient.chain?.id, registry: deployment.mandates,
+      proof: { proof, receiptRoot: s(p.receiptRoot), ledgerId: s(p.ledgerId), k: s(p.k), asset: '0x' + p.asset.toString(16).padStart(40, '0'), verifier: s(p.verifier), discloseAmount, amount: s(p.amountOut), discloseOwner, owner: s(p.ownerOut) },
+    };
+  }
+
+  function positions() {
+    return myPositions(state, keys).map((p) => {
+      const symbol = Object.keys(stocks).find((k) => big(stocks[k].token) === p.asset);
+      return { ...p, symbol, ltvBps: stocks[symbol]?.ltvBps };
+    });
+  }
+
+  return {
+    sync, notes, positions, deposit, send, credit, deskHealth,
+    ledgers, ledgerNotes, createLedger, updateLedger, ledgerAct, ledgerAttest, ledgerRequests, approveRequest, completeRequest,
+    mandates, createMandate, manageMandate, payMandate, receipts, proveReceipt,
+    ledgerBalance: (ledger, asset, st = 'unspent') => balanceOf(ledgerNotes(ledger), big(asset), st),
+    lend: (amount) => convert('lend', amount),
+    redeem: (shares) => convert('redeem', shares),
+    balance: (asset, st = 'unspent') => balanceOf(notes(), big(asset), st),
+    market, get state() { return state; },
+  };
+}
+
+
+const FRIENDLY = {
+  NullifierSpent: 'These funds were already spent. Your balance has been refreshed.',
+  UnknownRoot: 'The pool moved on while your proof was being made. Please try again.',
+  ExtDataHashMismatch: 'The transaction details changed after proving and were rejected.',
+  InvalidProof: 'The proof was rejected by the verifier.',
+  MarkUnusable: 'The price is stale or paused, so new borrowing is blocked for now. Repaying still works.',
+  StaleIndex: 'Rates were just updated. Please try again.',
+  SlotMismatch: 'That position changed. Please refresh and try again.',
+  ExposureCap: 'This collateral class is at its exposure cap.',
+  DeskPaused: 'New borrowing is paused. Repaying and closing still work.',
+  AlreadyPaid: 'This mandate is already paid for this period.',
+  NotActive: 'This mandate is paused or revoked.',
+  StaleTime: 'The payment proof took too long. Please try again.',
+  BadMandate: 'This mandate cannot change to that state.',
+  NotApproved: 'The treasury Owner has not approved this transfer yet.',
+  StaleRoles: 'The treasury roles or policy changed. Please refresh and try again.',
+  NoteSpent: 'Treasury funds moved while the statement was being proven. Please try again.',
+  HealthStale: 'The desk health attestation is overdue, so new borrowing is paused. Repaying and closing still work.',
+  InsufficientLiquidity: 'The lending pool does not have enough USDG right now.',
+  relayer_unavailable: 'The relayer is unavailable right now. Please try again shortly.',
+  pending_long: 'Submitted, but not confirmed yet. It is checked automatically; refresh in a minute before retrying.',
+  replaced: 'The relayed transaction was replaced before it confirmed, so nothing moved. Please try again.',
+  send_uncertain: 'The relayer could not confirm sending your transaction. It will be checked automatically; refresh in a minute.',
+  'HTTP request failed.': `${NETWORK_NAME} is not reachable right now (RPC). Check your connection and try again.`,
+  'Failed to fetch': `${NETWORK_NAME} is not reachable right now (RPC). Check your connection and try again.`,
+};
+export const friendly = (code) => FRIENDLY[code] || code || 'The transaction failed.';
+export { debtOf, maxDebt, valueOf, LENDING };
+
+/** Checks an exported receipt (proveReceipt output) against the MandateRegistry. No keys needed. */
+export async function verifyReceipt(publicClient, record) {
+  const p = record.proof;
+  return publicClient.readContract({
+    address: record.registry ?? deployment.mandates, abi: abis.mandates, functionName: 'verifyReceipt',
+    args: [{ ...p, receiptRoot: BigInt(p.receiptRoot), ledgerId: BigInt(p.ledgerId), k: BigInt(p.k), verifier: BigInt(p.verifier), amount: BigInt(p.amount), owner: BigInt(p.owner) }],
+  });
+}

@@ -1,0 +1,8 @@
+[package]
+name = "mandate_auth"
+type = "bin"
+authors = ["ZKDesk"]
+
+[dependencies]
+lib = { path = "../lib" }
+poseidon = { tag = "v0.3.0", git = "https://github.com/noir-lang/poseidon" }

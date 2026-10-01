@@ -1,0 +1,3 @@
+[workspace]
+members = ["lib", "transact", "position", "health_epoch", "liquidate", "ledger", "role_auth", "treasury_attest", "mandate_auth", "mandate_pull", "receipt"]
+default-member = "transact"

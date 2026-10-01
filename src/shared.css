@@ -1,0 +1,13 @@
+:root { --zk-blue:#0071e3; --zk-ink:#1d1e20; }
+.zk-not-found { min-height:100vh; background:#fdfdfd; padding:15vh 9.6vw; font:350 16px 'PP Neue Montreal',sans-serif; }
+.zk-not-found>span { font-size:23px; }
+.zk-not-found h1 { font-size:40px; font-weight:300; margin:90px 0 20px; }
+.zk-not-found p { color:#727b86; margin-bottom:40px; }
+.zk-not-found a { color:#0071e3; margin-right:30px; }
+.zk-sound { display:inline-flex; align-items:center; justify-content:center; gap:9px; border:1px solid rgba(160,168,180,.25); background:rgba(255,255,255,.68); color:#383e47; box-shadow:inset 0 1px 0 white,0 4px 16px #1327420b; backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); padding:11px 14px; border-radius:40px; font:350 12px 'PP Neue Montreal',sans-serif; cursor:pointer; transition:transform .22s,background .22s; }
+.zk-sound:hover { background:rgba(255,255,255,.9); transform:translateY(-2px); }
+.zk-sound:active { transform:scale(.97); }
+.zk-sound svg { width:15px; height:15px; }
+.zk-sound:focus-visible { outline:2px solid #0071e3; outline-offset:4px; }
+.zk-sound-float { position:fixed; right:25px; bottom:22px; z-index:80; }
+@media(max-width:833px) { .zk-sound-float { right:20px; bottom:20px; padding:12px; } .zk-sound-float span { display:none; } }

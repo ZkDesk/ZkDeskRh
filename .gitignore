@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+outputs/verification/
+.vercel
+
+.env*
+
+# Contracts / circuits build output
+contracts/lib/
+contracts/out/
+contracts/cache/
+circuits/target/

@@ -1,0 +1,53 @@
+{
+  "assetGate": "0x389b778176C4A22380693e168fBDBc0Cf5CfDb07",
+  "chainId": 4663,
+  "deployedAt": 1790639713,
+  "deployer": "0xbaBd4faA54794B7d2AAcaE75B4EdD3468e81079D",
+  "desk": "0x46fA7e2Ab30f16Cc27CB013f7828fDC58f57Ba5b",
+  "deskGuardian": "0xdA6669a9a8B3dA036451eD18130C8Bb33AD54b7b",
+  "ledger": "0x3378dC51f510b43BFa3834663514038d6662c1B6",
+  "lending": "0x3A14E9cED873b8268c72e10FE4842260d055edf8",
+  "mandates": "0xe475Fa5033b80754422FA54E02C9020893982a77",
+  "markMaxAge": 90000,
+  "marker": "0xC3061368E66b5a4253E5E98346677c6Ce093A735",
+  "pool": "0x804170e2A552EFF5b29710E9378E7c7Df31D607A",
+  "relayer": "0x2ee0b254A052d513ACfb5584919394e11213A50E",
+  "safe": "0x1abAE714C8A68c73627b021F18FB3A68d9BE4EF8",
+  "standbySeconds": 60,
+  "stocks": {
+    "NVDA": {
+      "feed": "0x379EC4f7C378F34a1B47E4F3cbeBCbAC3E8E9F15",
+      "liqBps": 5500,
+      "ltvBps": 4500,
+      "token": "0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC"
+    },
+    "QQQ": {
+      "feed": "0x80901d846d5D7B030F26B480776EE3b29374C2ae",
+      "liqBps": 7000,
+      "ltvBps": 6000,
+      "token": "0xD5f3879160bc7c32ebb4dC785F8a4F505888de68"
+    },
+    "SPY": {
+      "feed": "0x319724394D3A0e3669269846abE664Cd621f9f6A",
+      "liqBps": 7000,
+      "ltvBps": 6000,
+      "token": "0x117cc2133c37B721F49dE2A7a74833232B3B4C0C"
+    },
+    "TSLA": {
+      "feed": "0x4A1166a659A55625345e9515b32adECea5547C38",
+      "liqBps": 5500,
+      "ltvBps": 4500,
+      "token": "0x322F0929c4625eD5bAd873c95208D54E1c003b2d"
+    }
+  },
+  "timelock": "0xe89b6689d8C1C30fD9FF47b4dbcFe5c4b790c0fF",
+  "timelockDelay": 86400,
+  "usdg": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+  "vault": "0xBeEff033F34C046626B8D0A041844C5d1A5409dd",
+  "venue": "0x88DBaCa90Fed480A8937fDDF3A00a130Cf5e00C9",
+  "deployBlock": 75209100,
+  "deskBlock": 75209306,
+  "ledgerBlock": 75209487,
+  "mandatesBlock": 75209595,
+  "scheduler": "zkd:008d03fc43a7963a9da962fcca5fc0962542475f3b68df7f1cb6bcc4cc54a48b0e36ea31cef354b6d44e4192297d93d3a551ead14e4a83baba23f34b3d58d141"
+}

@@ -1,0 +1,46 @@
+/* Live dashboard (mainnet / testnet) top-bar controls. Loaded only by the live adapter. */
+.desk-app .desk-net-switch{display:inline-flex;align-items:center;gap:2px;padding:3px;border-radius:999px;background:#f3f5f7;border:1px solid #eceff3}
+.desk-app .desk-net-switch button{display:inline-flex;align-items:center;gap:7px;height:26px;padding:0 12px;border:0;border-radius:999px;background:transparent;color:#8a919b;font:inherit;font-size:12px;letter-spacing:-.1px;cursor:pointer;transition:background .18s ease,color .18s ease,box-shadow .18s ease}
+.desk-app .desk-net-switch button:hover:not(.on):not(:disabled){color:#515762}
+.desk-app .desk-net-switch button.on{background:#fff;color:#1f2329;box-shadow:0 1px 2px rgba(20,28,40,.08),0 0 0 1px rgba(20,28,40,.04);cursor:default}
+.desk-app .desk-net-switch button:disabled{opacity:.45;cursor:not-allowed}
+.desk-app .desk-net-dot{width:6px;height:6px;border-radius:50%;background:#c3c8cf;flex-shrink:0}
+.desk-app .desk-net-switch button.on .desk-net-dot.mainnet{background:#28a745;box-shadow:0 0 0 3px rgba(40,167,69,.16)}
+.desk-app .desk-net-switch button.on .desk-net-dot.testnet{background:#f5a623;box-shadow:0 0 0 3px rgba(245,166,35,.18)}
+.desk-app .desk-role-pill-label{font-size:9px;letter-spacing:1.2px;text-transform:uppercase;color:#9aa1ab}
+.desk-app .desk-net-switch button:focus-visible,.desk-app .desk-role-pill:focus-visible{outline:2px solid #0071e3;outline-offset:2px}
+.desk-app .desk-role-menu{position:relative}
+.desk-app .desk-role-pill{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 12px 0 13px;border:1px solid #e6e9ee;border-radius:999px;background:#fff;font:inherit;color:#1f2329;cursor:pointer;transition:border-color .18s ease,box-shadow .18s ease}
+.desk-app .desk-role-pill:hover:not(:disabled),.desk-app .desk-role-menu.open .desk-role-pill{border-color:#d3d8df;box-shadow:0 1px 2px rgba(20,28,40,.06)}
+.desk-app .desk-role-pill:disabled{cursor:default}
+.desk-app .desk-role-pill-value{font-size:12px}
+.desk-app .desk-role-pill>svg{color:#8a919b;transition:transform .18s ease}
+.desk-app .desk-role-menu.open .desk-role-pill>svg{transform:rotate(180deg)}
+.desk-app .desk-role-list{position:absolute;right:0;top:calc(100% + 8px);z-index:40;width:264px;margin:0;padding:6px;list-style:none;background:rgba(255,255,255,.96);backdrop-filter:blur(18px) saturate(1.4);-webkit-backdrop-filter:blur(18px) saturate(1.4);border:1px solid #e8ebf0;border-radius:14px;box-shadow:0 14px 36px rgba(20,28,40,.12),0 2px 6px rgba(20,28,40,.05);animation:desk-role-in .16s ease-out;transform-origin:top right}
+.desk-app .desk-role-list-head{padding:8px 10px 6px;font-size:9px;letter-spacing:1.2px;text-transform:uppercase;color:#9aa1ab}
+.desk-app .desk-role-list [role=option]{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 10px;border-radius:9px;cursor:pointer}
+.desk-app .desk-role-list [role=option].active{background:#f3f6fa}
+.desk-app .desk-role-list [role=option]>span{display:flex;flex-direction:column;gap:3px;min-width:0}
+.desk-app .desk-role-list strong{font-size:12px;font-weight:350;color:#1f2329}
+.desk-app .desk-role-list small{font-size:10px;color:#8a919b}
+.desk-app .desk-role-list [role=option].selected strong{color:#0071e3}
+.desk-app .desk-role-list [role=option]>svg{color:#0071e3;flex-shrink:0}
+@keyframes desk-role-in{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.desk-app .desk-role-list{animation:none}.desk-app .desk-role-pill>svg{transition:none}}
+@media(max-width:600px){
+  .desk-app .desk-breadcrumb{font-size:0;gap:0}
+  .desk-app .desk-breadcrumb>span{display:none}
+  .desk-app .desk-breadcrumb strong{font-size:11px}
+  .desk-app .desk-topbar-divider{display:none}
+  .desk-app .desk-topbar-actions{gap:8px}
+  .desk-app .desk-net-switch{padding:2px}
+  .desk-app .desk-net-switch button{height:24px;padding:0 8px;gap:5px;font-size:11px}
+  .desk-app .desk-role-pill{height:28px;padding:0 10px 0 11px;gap:6px}
+  .desk-app .desk-role-pill-label{display:none}
+  .desk-app .desk-role-pill-value{font-size:11px}
+  .desk-app .desk-role-list{width:236px}
+}
+@media(max-width:380px){
+  .desk-app .desk-breadcrumb{display:none}
+  .desk-app .desk-topbar{justify-content:flex-end}
+}

@@ -1,0 +1,398 @@
+import React, { useEffect, useState } from 'react';
+import { ZMark } from '../brand/identity.jsx';
+import './developer-docs.css';
+
+// Public developer documentation for the live ZKdesk dashboard (/docs). Deliberately contains no
+// contract addresses, explorer links, keys, infrastructure identifiers or internal endpoints.
+
+const NAV = [
+  ['Getting started', [['introduction', 'Introduction'], ['quickstart', 'Quickstart'], ['networks', 'Networks']]],
+  ['Core concepts', [['architecture', 'Architecture'], ['keys', 'Accounts and keys'], ['notes', 'Private notes'], ['proofs', 'Zero-knowledge proofs'], ['relayer', 'Relayer and operations']]],
+  ['Product guides', [['balance', 'Private balance'], ['lending', 'Lending pool'], ['credit', 'Private credit'], ['health', 'Health epochs and liquidation'], ['treasury', 'Treasury'], ['payments', 'Payments and receipts'], ['transparency', 'Transparency']]],
+  ['Security', [['privacy', 'Privacy model'], ['governance', 'Governance and safety'], ['status', 'Security status and limitations'], ['eligibility', 'Eligibility']]],
+  ['Reference', [['parameters', 'Protocol parameters'], ['api', 'Public API'], ['states', 'Operation states and errors'], ['stack', 'Technology stack'], ['glossary', 'Glossary']]],
+];
+const IDS = NAV.flatMap(([, items]) => items.map(([id]) => id));
+
+function Callout({ tone = 'note', title, children }) {
+  return <aside className={`zd-callout ${tone}`} role="note"><strong>{title}</strong><div>{children}</div></aside>;
+}
+function Table({ head, rows, caption }) {
+  return <div className="zd-table"><table>{caption && <caption>{caption}</caption>}<thead><tr>{head.map((h) => <th key={h} scope="col">{h}</th>)}</tr></thead><tbody>{rows.map((r, i) => <tr key={i}>{r.map((c, j) => j === 0 ? <th key={j} scope="row">{c}</th> : <td key={j} data-label={head[j]}>{c}</td>)}</tr>)}</tbody></table></div>;
+}
+function Code({ label, children }) {
+  return <figure className="zd-code">{label && <figcaption>{label}</figcaption>}<pre><code>{children}</code></pre></figure>;
+}
+function Section({ id, eyebrow, title, children }) {
+  return <section id={id} className="zd-section" aria-labelledby={`${id}-title`}><span className="zd-eyebrow">{eyebrow}</span><h2 id={`${id}-title`}><a href={`#${id}`}>{title}</a></h2>{children}</section>;
+}
+const C = ({ children }) => <code className="zd-inline">{children}</code>;
+
+function Diagram() {
+  return <figure className="zd-diagram" aria-label="System architecture">
+    <div className="zd-lane"><span className="zd-lane-label">Your device</span>
+      <div className="zd-box primary"><strong>Browser client</strong><span>Key derivation · note scanning · witness building · proving in a Web Worker</span></div>
+      <div className="zd-box"><strong>Wallet</strong><span>One key-request signature · public deposits</span></div>
+    </div>
+    <div className="zd-arrow" aria-hidden="true"><span>proof + encrypted outputs</span></div>
+    <div className="zd-lane"><span className="zd-lane-label">ZKdesk services</span>
+      <div className="zd-box"><strong>Relayer</strong><span>Validates, simulates and submits proofs; pays gas</span></div>
+      <div className="zd-box"><strong>Scheduled services</strong><span>Indexer · deposit clearing · marks · rate accrual · desk operator</span></div>
+    </div>
+    <div className="zd-arrow" aria-hidden="true"><span>verified transactions</span></div>
+    <div className="zd-lane"><span className="zd-lane-label">Robinhood Chain</span>
+      <div className="zd-box primary"><strong>Protocol contracts</strong><span>Shielded pool · credit desk · lending pool · treasury ledger · mandate registry · marker · verifiers</span></div>
+      <div className="zd-box"><strong>External markets</strong><span>USDG · stock tokens · price feeds · swap venue · yield vault</span></div>
+    </div>
+  </figure>;
+}
+
+export default function DeveloperDocs() {
+  const [active, setActive] = useState(IDS[0]);
+  useEffect(() => {
+    const seen = new Map();
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((e) => seen.set(e.target.id, e.isIntersecting ? e.boundingClientRect.top : Infinity));
+      const top = [...seen].filter(([, y]) => y !== Infinity).sort((a, b) => a[1] - b[1])[0];
+      if (top) setActive(top[0]);
+    }, { rootMargin: '-80px 0px -65% 0px' });
+    IDS.forEach((id) => { const el = document.getElementById(id); if (el) io.observe(el); });
+    return () => io.disconnect();
+  }, []);
+  const nav = (onPick) => NAV.map(([group, items]) => <div className="zd-nav-group" key={group}><p>{group}</p>{items.map(([id, label]) => <a key={id} href={`#${id}`} className={active === id ? 'active' : ''} aria-current={active === id ? 'location' : undefined} onClick={onPick}>{label}</a>)}</div>);
+
+  return <div className="zd-docs">
+    <a className="zd-skip" href="#main">Skip to content</a>
+    <header className="zd-header">
+      <a className="zd-brand" href="/"><ZMark /><span>ZKdesk</span><em>Docs</em></a>
+      <nav aria-label="Site"><a href="/">Website</a><a className="zd-cta" href="/dashboard">Open dashboard <span aria-hidden="true">↗</span></a></nav>
+    </header>
+    <div className="zd-shell">
+      <aside className="zd-sidebar" aria-label="Documentation">{nav()}<span className="zd-version">Documentation · September 2026</span></aside>
+      <details className="zd-mobile-nav"><summary>Contents</summary><nav aria-label="Documentation">{nav((e) => e.currentTarget.closest('details').removeAttribute('open'))}</nav></details>
+      <main id="main" className="zd-main">
+        <div className="zd-hero">
+          <span className="zd-kicker">ZKdesk documentation</span>
+          <h1>Build on a confidential balance.</h1>
+          <p>How the ZKdesk dashboard works end to end: keys, private notes, zero-knowledge proofs, credit, treasury controls, payments and the services that keep them running on Robinhood Chain.</p>
+        </div>
+
+        <Section id="introduction" eyebrow="Getting started" title="Introduction">
+          <p>ZKdesk is a confidential finance workspace. It keeps balances, transfers, credit positions, treasury holdings and payment terms private, and it lets their owners disclose exactly what a counterparty needs with a zero-knowledge proof.</p>
+          <p>Everything you can do in the dashboard is backed by a proof generated in your browser and verified by a smart contract. No ZKdesk service ever receives your keys, your balances or the plaintext of your transactions.</p>
+          <div className="zd-cards">
+            <a href="#balance"><strong>Private balance</strong><span>Deposit, send and withdraw USDG and stock tokens without exposing amounts or counterparties.</span></a>
+            <a href="#credit"><strong>Private credit</strong><span>Borrow USDG against tokenized stocks with confidential positions and proven desk health.</span></a>
+            <a href="#treasury"><strong>Treasury</strong><span>Shared balances with Owner, Treasurer, Payer and Auditor roles, policies and dual control.</span></a>
+            <a href="#payments"><strong>Payments</strong><span>Capped, periodic payment mandates with receipts the recipient can prove to anyone.</span></a>
+          </div>
+          <Callout tone="warning" title="Status">ZKdesk runs on Robinhood Chain mainnet with real assets. The protocol has not yet been independently audited. Use amounts you are prepared to lose and read <a href="#status">Security status and limitations</a> first.</Callout>
+        </Section>
+
+        <Section id="quickstart" eyebrow="Getting started" title="Quickstart">
+          <ol className="zd-steps">
+            <li><strong>Choose a network.</strong> Open the dashboard and pick <em>Mainnet</em> or <em>Testnet</em> in the top bar. Mainnet uses real USDG and stock tokens; testnet uses free test assets.</li>
+            <li><strong>Connect a wallet.</strong> Any browser wallet that exposes an externally owned account works (for example MetaMask). The dashboard asks the wallet to add or switch to the selected Robinhood Chain network.</li>
+            <li><strong>Unlock your private notes.</strong> Sign the ZKdesk key request. It is a typed-data signature: it costs no gas and never leaves your device. Your keys are derived from it (see <a href="#keys">Accounts and keys</a>).</li>
+            <li><strong>Add funds.</strong> Approve the token and confirm the private deposit in your wallet. After a 60-second screening standby the deposit is cleared automatically and becomes spendable.</li>
+            <li><strong>Use the workspace.</strong> Send privately, supply to the lending pool, open credit, set up a treasury or create payment mandates. Each action generates a proof locally, typically in 20 to 80 seconds; keep the page open until it confirms.</li>
+          </ol>
+          <Callout title="Tip">Your private address (<C>zkd:…</C>) is in Settings. Share it to receive private transfers and payments; it reveals no balance. In a treasury workspace, Settings shows the treasury's address instead of yours.</Callout>
+        </Section>
+
+        <Section id="networks" eyebrow="Getting started" title="Networks">
+          <p>The dashboard serves both networks from the same code. The selection is remembered in your browser and can be set explicitly with the <C>?network=mainnet</C> or <C>?network=testnet</C> query parameter. Keys are bound to the chain ID, so the same wallet has different ZKdesk keys and addresses on each network.</p>
+          <Table head={['', 'Mainnet', 'Testnet']} rows={[
+            ['Chain ID', '4663', '46630'],
+            ['Cash asset', 'USDG (6 decimals)', 'tUSDG test token with an in-app faucet'],
+            ['Collateral', 'SPY, QQQ, NVDA, TSLA stock tokens (18 decimals)', 'tSPY, tQQQ, tNVDA, tTSLA test tokens'],
+            ['Prices', 'Chainlink feeds, pinned on-chain', 'Simulated feeds with a small random walk'],
+            ['Liquidation venue', 'Uniswap v3 pools', 'Simulated market maker'],
+            ['Treasury yield', 'Morpho USDG vault (ERC-4626)', 'Simulated ERC-4626 vault'],
+            ['Governance delay', '24 hours', '5 minutes'],
+          ]} />
+        </Section>
+
+        <Section id="architecture" eyebrow="Core concepts" title="Architecture">
+          <p>ZKdesk is a client-proved system. The browser holds the keys and produces every proof; contracts verify proofs and hold the assets; services only move already-authorized data and perform scheduled, publicly verifiable work.</p>
+          <Diagram />
+          <h3>Design principles</h3>
+          <ul>
+            <li><strong>The chain is the source of truth.</strong> The client rebuilds the note tree from contract events and checks the root against the pool before proving. The indexed mirror used by services holds public data only.</li>
+            <li><strong>Proofs authorize, not sessions.</strong> The relayer has no user accounts; a valid proof is the only authorization for a private action.</li>
+            <li><strong>Fail closed.</strong> Stale or paused prices, an overdue health attestation or a paused desk stop new risk, while repay, add collateral, close and withdrawals keep working.</li>
+            <li><strong>Idempotent operations.</strong> Every relayed action is keyed by the nullifiers it spends, so a retry can never execute twice.</li>
+          </ul>
+        </Section>
+
+        <Section id="keys" eyebrow="Core concepts" title="Accounts and keys">
+          <p>ZKdesk keys are derived deterministically from one wallet signature, so nothing needs to be stored or backed up beyond the wallet itself. Signing the same request again restores the same keys.</p>
+          <Code label="Key request (EIP-712, signed with eth_signTypedData_v4)">{`domain:  { name: "ZKDesk", version: "1", chainId }
+type:    KeyRequest { purpose: string }
+message: "Unlock my ZKDesk private notes. This signature never
+          leaves this device and costs no gas."`}</Code>
+          <Table head={['Key', 'Derivation', 'Purpose']} rows={[
+            ['Spend key', 'HKDF-SHA256(signature, "spend"), reduced into the BN254 field', 'Proves ownership inside circuits; never leaves the proving worker'],
+            ['Owner key', 'Derived from the spend key', 'Public owner identifier committed into notes'],
+            ['Nullifier key', 'Derived from the spend key', 'Makes each spent note produce a unique, unlinkable nullifier'],
+            ['Encryption key', 'HKDF-SHA256(signature, "encrypt"), X25519', 'Decrypts notes and positions addressed to you'],
+          ]} />
+          <ul>
+            <li>Keys live only in the account worker and are wiped when the wallet account or chain changes.</li>
+            <li>Only externally owned accounts are supported. Smart-contract wallets cannot produce the deterministic signature the derivation relies on.</li>
+            <li>A private address combines the owner key and the encryption key: <C>zkd:</C> followed by both, encoded.</li>
+          </ul>
+        </Section>
+
+        <Section id="notes" eyebrow="Core concepts" title="Private notes">
+          <p>Balances are held as notes in a shielded pool, in the UTXO style. A note is a commitment to an asset, an amount, an owner and a random blinding factor. Spending a note publishes its nullifier, which the pool records to prevent double spending without revealing which note was spent.</p>
+          <Code label="Commitments">{`commitment = Poseidon(asset, amount, owner, blinding)
+nullifier  = Poseidon(commitment, nullifierKey)
+position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, blinding)`}</Code>
+          <ul>
+            <li>Commitments are appended to an incremental Merkle tree of depth 20 (about one million notes). The pool accepts proofs against any of its 64 most recent roots, so concurrent users do not invalidate each other's proofs.</li>
+            <li>Each new note is encrypted to its recipient with X25519 key agreement and XChaCha20-Poly1305 and posted in a contract event, with a one-byte view tag that lets clients skip notes that are not theirs cheaply.</li>
+            <li>Transfers are 2-in / 2-out join-splits: up to two notes are spent and up to two are created (typically the payment and your change). A payment that needs more than two notes asks you to combine them first.</li>
+          </ul>
+        </Section>
+
+        <Section id="proofs" eyebrow="Core concepts" title="Zero-knowledge proofs">
+          <p>Circuits are written in Noir and proven with Barretenberg's UltraHonk backend, which needs no per-circuit trusted setup. Proofs are generated in the browser in a dedicated Web Worker and verified on-chain by generated Solidity verifiers. The toolchain is pinned as a matched Noir and Barretenberg pair.</p>
+          <Table head={['Circuit', 'Proves']} rows={[
+            ['transact', 'Deposits, private transfers, withdrawals and private conversions (USDG to lending shares and back): 2-in / 2-out with value conservation'],
+            ['position', 'All six credit steps (open, draw, repay, add, withdraw collateral, close) against the pinned mark and the LTV limit; encrypts the new position to the desk operator in-circuit'],
+            ['health_epoch', 'Desk totals over all 64 slots and a commitment to the set of breached positions'],
+            ['liquidate', 'A sealed batch of up to four breached positions sold at one uniform price within a band of the mark'],
+            ['ledger', 'Treasury allocate, deallocate and transfer by role, under the treasury policy'],
+            ['role_auth', 'Owner actions: create a treasury, rotate roles, set policy, approve a transfer intent'],
+            ['treasury_attest', 'A solvency statement: up to eight treasury notes cover a declared liability, revealing only true or false'],
+            ['mandate_auth', 'Commit, pause, resume or revoke a payment mandate by an authorized role'],
+            ['mandate_pull', 'A payment within the mandate cap, period and expiry, at most once per period, producing a receipt leaf'],
+            ['receipt', 'That a recipient was paid under a mandate, to one chosen verifier, with optional amount and recipient disclosure'],
+          ]} />
+          <Callout title="Performance">Browser proving is single-threaded today and usually takes 20 to 80 seconds per action, depending on the device and the circuit. Keep the tab open until the action confirms; navigating away cancels proving.</Callout>
+        </Section>
+
+        <Section id="relayer" eyebrow="Core concepts" title="Relayer and operations">
+          <p>Private actions are submitted by the ZKdesk relayer rather than your wallet, so your public address never appears on them and you do not need gas. Deposits are the exception: they move public tokens into the pool and are sent from your own wallet.</p>
+          <ol className="zd-steps compact">
+            <li>The client builds the proof and encrypted outputs and posts them to the relayer.</li>
+            <li>The relayer checks the request shape, supported assets, fee and ciphertext sizes, and derives an intent hash from the nullifiers being spent.</li>
+            <li>It simulates the call. A simulation failure is returned immediately with the contract's error and nothing is sent.</li>
+            <li>It submits the transaction and waits briefly for the receipt; longer confirmations continue in the background and are reconciled automatically.</li>
+          </ol>
+          <Table head={['Spent asset', 'Minimum relay fee']} rows={[['USDG', '0.01 USDG'], ['Lending shares', '0.01 share (about $0.01)'], ['Stock tokens', '0.00003 share (about one cent)'], ['Credit, treasury and payment steps', 'No fee']]} />
+          <p>The fee is paid privately from the spent asset as part of the proof. Operation status can be polled through the <a href="#api">public API</a>.</p>
+        </Section>
+
+        <Section id="balance" eyebrow="Product guides" title="Private balance">
+          <h3>Add funds</h3>
+          <p>A deposit approves the pool for the exact amount (on mainnet) and calls the pool from your wallet with a proof that creates a note for you. The deposit then waits in a 60-second screening standby. Once the standby passes it is cleared automatically; a flagged deposit can only be refunded to the address it came from.</p>
+          <h3>Send privately</h3>
+          <p>Send to any <C>zkd:</C> address. The recipient's note is encrypted to them; the chain records only nullifiers and new commitments, not the amount, sender or recipient.</p>
+          <h3>Withdraw</h3>
+          <p>Withdrawing spends private notes and pays a public address. The withdrawn amount and the destination address are public by necessity; the notes they came from are not.</p>
+        </Section>
+
+        <Section id="lending" eyebrow="Product guides" title="Lending pool">
+          <p>The USDG lending pool funds credit. <em>Allocate</em> converts private USDG into private lending-pool shares in a single proof, and <em>Move to liquid</em> converts shares back, subject to the pool's available cash. Shares appreciate as borrowers pay interest.</p>
+          <Table head={['Utilization', 'Borrow rate (APR)']} rows={[['0%', '2%'], ['80% (kink)', '10%'], ['100%', '60%']]} caption="Rates are linear between points. 10% of interest accrues to reserves." />
+          <p>A single USDG rate index is checkpointed on-chain at most every ten minutes and at least hourly; proofs may use the latest or previous checkpoint.</p>
+        </Section>
+
+        <Section id="credit" eyebrow="Product guides" title="Private credit">
+          <p>Borrow USDG against stock-token collateral. Each position is a hidden commitment in one of the desk's 64 slots; its collateral, debt and health are known only to its owner and the desk operator.</p>
+          <Table head={['Collateral', 'Max LTV to open or draw', 'Liquidation threshold']} rows={[['SPY', '60%', '70%'], ['QQQ', '60%', '70%'], ['NVDA', '45%', '55%'], ['TSLA', '45%', '55%']]} />
+          <ul>
+            <li><strong>Steps:</strong> open, draw, repay, add collateral, withdraw collateral and close. Each is one proof; closing repays the remaining debt and returns all collateral to your private balance.</li>
+            <li><strong>Marks:</strong> prices are pinned on-chain from the feeds and applied once, including any corporate-action multiplier. On mainnet a pinned mark stays usable for 25 hours; on testnet for one hour.</li>
+            <li><strong>Market hours:</strong> 9:30 to 16:00 New York time on weekdays. Holidays are not yet recognized.</li>
+            <li><strong>Fail-closed:</strong> opening, drawing and withdrawing collateral require a usable mark, a recent health attestation and an unpaused desk. Repaying, adding collateral and closing always work.</li>
+          </ul>
+        </Section>
+
+        <Section id="health" eyebrow="Product guides" title="Health epochs and liquidation">
+          <p>Every 15 minutes during market hours, and hourly outside them, the desk operator proves a health epoch over every slot: the total collateral value, the total debt and a commitment to exactly which positions are below their liquidation threshold. Because the proof covers all slots, a breached position cannot be omitted.</p>
+          <p>If no epoch is attested within three intervals, new borrowing halts until one is.</p>
+          <h3>Sealed liquidation batches</h3>
+          <ul>
+            <li>Up to four breached positions of one collateral class are sold together at one uniform price, which must lie within 2% of the mark during market hours (5% outside them).</li>
+            <li>Close factor: 20% of the debt, or 100% when health is below 95% of the threshold.</li>
+            <li>Liquidation bonus: 2%, or 8% below 95%. Outside market hours only positions below 95% can be liquidated.</li>
+            <li>Unsold collateral stays in the owner's position. The owner sees what was sold and repaid; the public sees batch totals only.</li>
+          </ul>
+        </Section>
+
+        <Section id="treasury" eyebrow="Product guides" title="Treasury">
+          <p>A treasury is a shared private ledger inside the pool. Its members hold personal role keys behind one role commitment, and the treasury's view key is shared with them as encrypted on-chain key shares.</p>
+          <Table head={['Role', 'Can']} rows={[
+            ['Owner', 'Everything, plus creating the treasury, rotating roles, setting policy and approving transfers above the threshold'],
+            ['Treasurer', 'Add funds, allocate to and from the yield vault, move funds and manage mandates'],
+            ['Payer', 'Send, withdraw and pay or manage mandates'],
+            ['Auditor', 'View balances and history; cannot move funds'],
+          ]} />
+          <ul>
+            <li><strong>Policy:</strong> an allocation cap and an Owner-approval threshold. A transfer above the threshold by a non-Owner is sealed as a request; the Owner approves the exact intent and the requester completes it.</li>
+            <li><strong>Yield:</strong> idle USDG can be allocated to an ERC-4626 vault. Vault shares are held by the pool on the treasury's behalf.</li>
+            <li><strong>Solvency statements:</strong> prove that treasury notes cover a declared liability. The statement reveals only that it holds, never the balance.</li>
+            <li><strong>Workspaces:</strong> Settings switches between your personal account and every treasury where you hold a role; the role picker lists only roles you hold.</li>
+          </ul>
+        </Section>
+
+        <Section id="payments" eyebrow="Product guides" title="Payments and receipts">
+          <p>A mandate is a standing permission for a treasury to pay one recipient. Its terms are encrypted to the treasury; only a commitment and status changes are public.</p>
+          <Table head={['Field', 'Description']} rows={[
+            ['Recipient', 'A ZKdesk private address'],
+            ['Asset', 'USDG, or a stock token paid at the pinned mark with the cap expressed in USDG'],
+            ['Cap and period', 'Maximum per payment; monthly, weekly or one-time'],
+            ['Expiry', 'After this date no payment is possible'],
+            ['Invoice reference', 'Optional; bound into the mandate'],
+          ]} />
+          <p>Payments run from a member's browser with <em>Pay now</em>, at most once per period. To automate them, make the ZKdesk scheduler the treasury's Payer; due periods are then paid hourly at the cap. Mandates can be paused, resumed and revoked.</p>
+          <h3>Receipts</h3>
+          <p>Every payment adds a leaf to the receipt tree. The recipient can prove from Activity that they were paid, addressed to one verifier's address, optionally disclosing the amount and themselves. The proof is bound to that verifier and can be checked independently against the chain.</p>
+        </Section>
+
+        <Section id="transparency" eyebrow="Product guides" title="Transparency">
+          <p>The Transparency view, available without a wallet, shows the protocol's public aggregates so anyone can check its health.</p>
+          <ul>
+            <li>Desk epochs with total collateral value and debt, and liquidation batch totals</li>
+            <li>Pool solvency per asset: tokens held versus notes outstanding</li>
+            <li>Lending pool assets, cash, debt, utilization and rate</li>
+            <li>Treasury solvency statements, and mandate and receipt counts</li>
+            <li>Governance delay, multisig threshold and relayer gas status</li>
+          </ul>
+          <p>It never shows a position, balance, owner or amount belonging to a single account.</p>
+        </Section>
+
+        <Section id="privacy" eyebrow="Security" title="Privacy model">
+          <Table head={['', 'Public', 'Private']} rows={[
+            ['Balance', 'Totals per asset held by the pool', 'Your notes, amounts and owners'],
+            ['Deposits and withdrawals', 'Amount, token and public address at the edge of the pool', 'Which notes they fund or spend'],
+            ['Transfers', 'That a transaction occurred, and when', 'Amount, sender and recipient'],
+            ['Credit', 'Desk totals per epoch; batch totals; which slot changed', 'Collateral, debt and health (visible to the desk operator, never to the public)'],
+            ['Treasury', 'The treasury identifier per action; solvency statement results', 'Balances, members, roles and policy values'],
+            ['Payments', 'Mandate commitments, status changes and counts', 'Recipient, terms and amounts'],
+          ]} />
+          <Callout title="Known correlations">Slot numbers, treasury identifiers, mandate commitments and transaction timing are public and can be correlated. Deposits and withdrawals of unusual amounts are easier to link. Waiting between deposit and use, and using round amounts, improves privacy.</Callout>
+        </Section>
+
+        <Section id="governance" eyebrow="Security" title="Governance and safety">
+          <ul>
+            <li><strong>Timelock:</strong> configuration of the protocol contracts is owned by a governance multisig acting through a timelock (24 hours on mainnet), so every change is visible before it takes effect.</li>
+            <li><strong>Guardian:</strong> a guardian can pause new risk on the credit desk immediately. Pausing never blocks repay, add collateral, close or withdrawals.</li>
+            <li><strong>Immutable pool:</strong> the shielded pool itself has no upgrade path; deposits during standby can always be refunded to their origin.</li>
+            <li><strong>Solvency checks:</strong> pool balances are compared with outstanding notes for every asset and published on Transparency.</li>
+            <li><strong>Gas safety:</strong> when relayer gas runs low, desk epochs pause first so user transactions keep going through.</li>
+          </ul>
+        </Section>
+
+        <Section id="status" eyebrow="Security" title="Security status and limitations">
+          <Callout tone="warning" title="Not audited">The circuits, contracts, relayer and key derivation have not been independently audited. An audit is planned. Until then, treat ZKdesk as early software and keep amounts small.</Callout>
+          <ul>
+            <li>The governance multisig currently has a single signer; moving to multiple independent signers is planned.</li>
+            <li>The desk operator can read the contents of credit positions (not who owns them) in order to prove health and run liquidations. Moving the operator into a trusted execution environment is planned.</li>
+            <li>A single relayer submits private actions. If it is unavailable, private actions wait; funds are never at risk from relayer downtime.</li>
+            <li>Deposit screening is a fixed standby; no third-party screening provider is connected yet.</li>
+            <li>Market hours do not yet account for exchange holidays.</li>
+            <li>Only externally owned accounts are supported, and browser proving can take over a minute on slower devices.</li>
+          </ul>
+        </Section>
+
+        <Section id="eligibility" eyebrow="Security" title="Eligibility">
+          <p>Stock tokens are issued by third parties and carry their own eligibility and transfer rules. Under the product specification, Stock Token features are not intended for US persons.</p>
+          <p>ZKdesk does not determine anyone's eligibility. You are responsible for complying with the laws and terms that apply to you and to the assets you hold. Nothing in this documentation is an offer of a financial product.</p>
+        </Section>
+
+        <Section id="parameters" eyebrow="Reference" title="Protocol parameters">
+          <Table head={['Parameter', 'Value']} rows={[
+            ['Note tree depth / accepted recent roots', '20 / 64'],
+            ['Inputs and outputs per transfer', '2 and 2'],
+            ['Deposit screening standby', '60 seconds'],
+            ['Credit desk slots', '64'],
+            ['Health epoch interval', '15 minutes in market hours, 1 hour outside'],
+            ['Borrowing halts after', '3 missed epoch intervals'],
+            ['Liquidation batch size', 'Up to 4 positions of one class'],
+            ['Liquidation price band', '2% in market hours, 5% outside'],
+            ['Close factor', '20%, or 100% below 95% health'],
+            ['Liquidation bonus', '2%, or 8% below 95% health'],
+            ['Interest to reserves', '10%'],
+            ['Solvency statement size', 'Up to 8 treasury notes'],
+            ['Mark validity', '25 hours on mainnet, 1 hour on testnet'],
+            ['Governance delay', '24 hours on mainnet, 5 minutes on testnet'],
+          ]} />
+        </Section>
+
+        <Section id="api" eyebrow="Reference" title="Public API">
+          <p>The dashboard's services expose a small public HTTP API on the site's origin. Mainnet endpoints live under <C>/api/mainnet</C>; testnet endpoints under <C>/api</C>. Responses are JSON. No endpoint returns data about an individual account.</p>
+          <h3><span className="zd-method get">GET</span> /api/mainnet/transparency</h3>
+          <p>Public protocol aggregates, cached for up to 30 seconds.</p>
+          <Code label="Response (abridged)">{`{
+  "at": "2026-09-29T21:08:14.074Z",
+  "desk": { "epoch": 40, "healthy": true, "paused": false, "marketOpen": true,
+            "lastAttestedAt": 1790715654000, "epochs": [...], "batches": [...] },
+  "lending": { "totalAssets": "3000001", "cash": "3000001", "debt": "0",
+               "utilizationBps": 0, "aprBps": 200 },
+  "solvency": [ { "asset": "USDG", "balance": "5969999", "backed": "5969999",
+                  "ok": true, "decimals": 6 } ],
+  "treasuries": { "count": 1, "statements": [...] },
+  "payments": { "mandates": { "revoked": 2 }, "receipts": 1 },
+  "operations": { "relayerStatus": "ok", "timelockDelay": 86400, ... }
+}`}</Code>
+          <h3><span className="zd-method get">GET</span> /api/mainnet/relay</h3>
+          <p>Relayer availability and the base fee: <C>{'{ relayer, minFee, available }'}</C>.</p>
+          <h3><span className="zd-method post">POST</span> /api/mainnet/relay</h3>
+          <p>Submits a private action. The body is produced by the ZKdesk client library and contains a <C>kind</C>, the <C>proof</C> with its public inputs, and <C>ext</C> data (encrypted outputs, recipient, fee). The proof is the only authorization.</p>
+          <Table head={['Status', 'Meaning']} rows={[
+            ['200', 'Confirmed, failed on-chain, or a duplicate of an operation already in flight (returns that operation)'],
+            ['202', 'Submitted; poll the operation for the result'],
+            ['400', 'The request is malformed or does not meet relay rules (for example the fee)'],
+            ['422', 'Simulation failed; errorCode names the contract error; nothing was sent'],
+            ['502', 'Sending was uncertain; the operation stays queued and is reconciled automatically'],
+            ['503', 'The relayer is unavailable'],
+          ]} />
+          <h3><span className="zd-method get">GET</span> /api/mainnet/ops/:id</h3>
+          <p>Status of a relayed operation: <C>{'{ opId, kind, status, txHash, errorCode }'}</C>.</p>
+        </Section>
+
+        <Section id="states" eyebrow="Reference" title="Operation states and errors">
+          <Table head={['State', 'Meaning']} rows={[['queued', 'Accepted; not yet sent, or sending is being confirmed'], ['submitted', 'Sent; waiting for the block'], ['confirmed', 'Included and successful'], ['failed', 'Reverted or refused; nothing moved'], ['replaced', 'The transaction was replaced before confirming; nothing moved']]} />
+          <Table head={['Message', 'What to do']} rows={[
+            ['This amount spans more than two private notes', 'Send a smaller amount first to combine notes, then retry'],
+            ['The desk health attestation is overdue', 'New borrowing is paused until the next epoch; repay and close still work'],
+            ['The lending pool does not have enough USDG right now', 'Try a smaller amount or wait for repayments'],
+            ['The network RPC is behind', 'Wait a moment and retry; the client waits for the node to catch up'],
+            ['Submitted, but not confirmed yet', 'It is checked automatically; refresh in a minute before retrying'],
+          ]} />
+        </Section>
+
+        <Section id="stack" eyebrow="Reference" title="Technology stack">
+          <Table head={['Layer', 'Technology']} rows={[
+            ['Interface', 'React 19, Vite 7'],
+            ['Chain access', 'viem, EIP-6963 wallet discovery'],
+            ['Circuits', 'Noir, Barretenberg UltraHonk (bb.js in the browser)'],
+            ['Hashing', 'Poseidon over BN254 (circuit, client and contract parity)'],
+            ['Encryption', 'X25519, XChaCha20-Poly1305, HKDF-SHA256; Grumpkin for operator encryption in-circuit'],
+            ['Contracts', 'Solidity with Foundry; OpenZeppelin timelock and ERC-4626'],
+            ['Services', 'Serverless functions with scheduled jobs and an indexed Postgres mirror of public events'],
+          ]} />
+        </Section>
+
+        <Section id="glossary" eyebrow="Reference" title="Glossary">
+          <dl className="zd-glossary">
+            <div><dt>Note</dt><dd>A private, encrypted record of an amount of one asset owned by one key.</dd></div>
+            <div><dt>Commitment</dt><dd>The public hash of a note; reveals nothing about its contents.</dd></div>
+            <div><dt>Nullifier</dt><dd>A value published when a note is spent; prevents double spending without identifying the note.</dd></div>
+            <div><dt>Mark</dt><dd>The on-chain price of a collateral asset used by credit proofs.</dd></div>
+            <div><dt>Epoch</dt><dd>A proven snapshot of desk health covering every credit slot.</dd></div>
+            <div><dt>Mandate</dt><dd>A treasury's capped, periodic permission to pay one recipient.</dd></div>
+            <div><dt>Receipt</dt><dd>A proof, addressed to one verifier, that a payment was received.</dd></div>
+            <div><dt>Relayer</dt><dd>The service that submits private actions and pays their gas.</dd></div>
+          </dl>
+        </Section>
+
+        <footer className="zd-footer"><span>ZKdesk documentation</span><span>Information here describes the software as deployed and is not financial advice or an offer.</span></footer>
+      </main>
+    </div>
+  </div>;
+}

@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm build
+      - name: Privacy check (mirror columns, logging, browser storage, secrets in the bundle)
+        run: pnpm privacy
+
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Solidity dependencies
+        working-directory: contracts
+        run: |
+          pnpm install --frozen-lockfile --ignore-workspace
+          forge install foundry-rs/forge-std@v1.16.2 --no-git
+      - name: forge test (real UltraHonk proofs from circuits/fixtures)
+        working-directory: contracts
+        run: forge test
