@@ -22,7 +22,7 @@ interface ISafe {
 }
 
 /// M6 on the live deployment: $ZKD staking (liquidation bonuses flow there; 60/40 stakers/insurance)
-/// and governance. A Safe (testnet: 1-of-1, the deployer; mainnet: 2-of-3 with the owner's signers)
+/// and governance. A Safe (testnet: 1-of-1, the deployer; mainnet: see DeployMainnet, currently 1-of-1)
 /// is the only proposer/executor of a 300 s TimelockController, which owns the gate, marker and
 /// lending pool, and the desk through DeskGuardian (the guardian key may pause new risk at once).
 /// Test mocks (tokens, feeds, FeedKeeper) stay with the deployer for testnet operations.

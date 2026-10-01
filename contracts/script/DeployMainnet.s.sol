@@ -39,7 +39,7 @@ interface ISafe {
 /// choice (2026-09-29): Safe 1-of-1 (the deployer) → 24 h timelock owns the gate, marker, lending
 /// and venue; DeskGuardian owns the desk (the deployer may pause new risk at once).
 /// Writes src/lib/chain/deployments/4663.json. Env: MAINNET_DEPLOYER_PRIVATE_KEY,
-/// MAINNET_RELAYER_ADDRESS (screener's cron, mark pinner), DESK_OPERATOR_PK_X / _Y.
+/// MAINNET_RELAYER_ADDRESS (mark pinner), DESK_OPERATOR_PK_X / _Y.
 contract DeployMainnet is Script {
     uint64 constant STANDBY = 60;
     uint64 constant MARK_MAX_AGE = 25 hours; // Chainlink stock feeds: 24 h heartbeat or a 0.5% move

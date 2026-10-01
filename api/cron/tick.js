@@ -5,7 +5,7 @@
 //   deposits     — clear notes whose screening standby has passed
 //   operations   — reconcile relayed transactions
 //   marker       — testnet mock feeds: ±0.5% random walk + pin via FeedKeeper when marks age 25 min
-//   market hours — NYSE session flag on the Marker (holidays not modelled on testnet)
+//   market hours — NYSE session flag on the Marker (exchange holidays not modelled yet)
 //   rates        — hourly CreditDesk.accrue() (the public-curve rate publisher)
 //   snapshots    — solvency per asset and lending pool state, hourly and after new events
 import { parseAbi } from 'viem';

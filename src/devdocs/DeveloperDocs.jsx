@@ -118,7 +118,7 @@ export default function DeveloperDocs() {
           <Diagram />
           <h3>Design principles</h3>
           <ul>
-            <li><strong>The chain is the source of truth.</strong> The client rebuilds the note tree from contract events and checks the root against the pool before proving. The indexed mirror used by services holds public data only.</li>
+            <li><strong>The chain is the source of truth.</strong> The client rebuilds the note tree from contract events and checks its size against the pool before proving; the contract rejects any root it does not know. The indexed mirror used by services holds public data only.</li>
             <li><strong>Proofs authorize, not sessions.</strong> The relayer has no user accounts; a valid proof is the only authorization for a private action.</li>
             <li><strong>Fail closed.</strong> Stale or paused prices, an overdue health attestation or a paused desk stop new borrowing, while repaying, adding collateral and closing keep working unless governance disables the collateral class.</li>
             <li><strong>Idempotent operations.</strong> Every relayed action is keyed by the nullifiers it spends, so a retry can never execute twice.</li>
@@ -165,7 +165,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
             ['liquidate', 'A sealed batch of up to four breached positions sold at one uniform price within a band of the mark'],
             ['ledger', 'Treasury allocate, deallocate and transfer by role, under the treasury policy'],
             ['role_auth', 'Owner actions: create a treasury, rotate roles, set policy, approve a transfer intent'],
-            ['treasury_attest', 'A solvency statement: up to eight treasury notes cover a declared liability, revealing only true or false'],
+            ['treasury_attest', 'A solvency statement: up to eight treasury notes cover a declared liability; the liability and the covering notes\' nullifiers are public, the balance is not'],
             ['mandate_auth', 'Commit, pause, resume or revoke a payment mandate by an authorized role'],
             ['mandate_pull', 'A payment within the mandate cap, period and expiry, at most once per period, producing a receipt leaf'],
             ['receipt', 'That a recipient was paid under a mandate, to one chosen verifier, with optional amount and recipient disclosure'],
@@ -189,7 +189,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
           <h3>Add funds</h3>
           <p>A deposit approves the pool for the exact amount (on mainnet) and calls the pool from your wallet with a proof that creates a note for you. The deposit then waits in a 60-second screening standby. Once the standby passes it is cleared automatically; a flagged deposit can only be refunded to the address it came from.</p>
           <h3>Send privately</h3>
-          <p>Send to any <C>zkd:</C> address. The recipient's note is encrypted to them; the chain records only nullifiers and new commitments, not the amount, sender or recipient.</p>
+          <p>Send to any <C>zkd:</C> address. The recipient's note is encrypted to them; the chain records nullifiers, new commitments, the asset and the relay fee, not the amount, sender or recipient.</p>
           <h3>Withdraw</h3>
           <p>Withdrawing spends private notes and pays a public address. The withdrawn amount and the destination address are public by necessity; the notes they came from are not.</p>
         </Section>
@@ -235,7 +235,8 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
           <ul>
             <li><strong>Policy:</strong> an allocation cap and an Owner-approval threshold. A transfer above the threshold by a non-Owner is sealed as a request; the Owner approves the exact intent and the requester completes it.</li>
             <li><strong>Yield:</strong> idle USDG can be allocated to an ERC-4626 vault. Vault shares are held by the pool on the treasury's behalf.</li>
-            <li><strong>Solvency statements:</strong> prove that treasury notes cover a declared liability. The statement reveals only that it holds, never the balance.</li>
+            <li><strong>Solvency statements:</strong> prove that treasury notes cover a declared liability. The statement reveals that it holds and the declared liability, never the balance; the covering notes' nullifiers are published, so later spends of those notes can be linked to it.</li>
+            <li><strong>Access:</strong> every role, including Auditor and a scheduler acting as Payer, receives the treasury key. Rotating roles changes permissions but not the key, so former members can still read the treasury.</li>
             <li><strong>Workspaces:</strong> Settings switches between your personal account and every treasury where you hold a role; the role picker lists only roles you hold.</li>
           </ul>
         </Section>
@@ -309,7 +310,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
         </Section>
 
         <Section id="eligibility" eyebrow="Security" title="Eligibility">
-          <p>Stock tokens are issued by third parties and carry their own eligibility and transfer rules. Under the product specification, Stock Token features are not intended for US persons.</p>
+          <p>Stock tokens are issued by third parties and carry their own eligibility and transfer rules. Stock Token features are not intended for US persons.</p>
           <p>ZKdesk does not determine anyone's eligibility. You are responsible for complying with the laws and terms that apply to you and to the assets you hold. Nothing in this documentation is an offer of a financial product.</p>
         </Section>
 
@@ -320,7 +321,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
             ['Deposit screening standby', '60 seconds'],
             ['Credit desk slots', '64'],
             ['Health epoch interval', '15 minutes in market hours, 1 hour outside'],
-            ['Borrowing halts after', '3 missed epoch intervals'],
+            ['Borrowing halts after', '3 epoch lengths without an attestation (45 minutes in market hours, 3 hours outside)'],
             ['Liquidation batch size', 'Up to 4 positions of one class'],
             ['Liquidation price band', '2% in market hours, 5% outside'],
             ['Close factor', '20%, or 100% below 95% health'],
@@ -369,7 +370,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
         </Section>
 
         <Section id="states" eyebrow="Reference" title="Operation states and errors">
-          <Table head={['State', 'Meaning']} rows={[['queued', 'Accepted; not yet sent, or sending is being confirmed'], ['submitted', 'Sent; waiting for the block'], ['confirmed', 'Included and successful'], ['failed', 'Reverted or refused; nothing moved'], ['replaced', 'The transaction was replaced before confirming; nothing moved']]} />
+          <Table head={['State', 'Meaning']} rows={[['queued', 'Accepted; not yet sent, or sending is being confirmed'], ['submitted', 'Sent; waiting for the block'], ['confirmed', 'Included and successful'], ['failed', 'Reverted or refused; nothing moved']]} />
           <Table head={['Message', 'What to do']} rows={[
             ['This amount spans more than two private notes', 'Send a smaller amount first to combine notes, then retry'],
             ['The desk health attestation is overdue', 'New borrowing is paused until the next epoch; repay and close still work'],

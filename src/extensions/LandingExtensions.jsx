@@ -52,7 +52,7 @@ function PaymentsMiniature() {
 
 const products = [
   { key: 'credit', number: '01', title: 'Credit', heading: 'Capital, without the exposure.', description: 'Access USDG against tokenized assets. Keep individual positions confidential.', miniature: CreditMiniature, action: 'Explore credit' },
-  { key: 'treasury', number: '02', title: 'Treasury', heading: 'Every role. One treasury.', description: 'Give your team precise permissions. Share a solvency proof, with scoped disclosure.', miniature: TreasuryMiniature, action: 'Explore treasury' },
+  { key: 'treasury', number: '02', title: 'Treasury', heading: 'Every role. One treasury.', description: 'Give your team precise permissions. Share a solvency proof without revealing your balance.', miniature: TreasuryMiniature, action: 'Explore treasury' },
   { key: 'payments', number: '03', title: 'Payments', heading: 'Pay privately. Prove precisely.', description: 'Bound payroll and invoices with clear mandates. Share receipts on your terms.', miniature: PaymentsMiniature, action: 'Explore payments' },
 ];
 
@@ -143,7 +143,7 @@ export function HowItWorks() {
 }
 
 const phases = [
-  { number: '01', status: 'Live', title: 'Confidential foundation', description: 'Shielded asset notes, selective disclosure, and solvency proof infrastructure.', details: ['Confidential asset ledger', 'Scoped disclosure and view keys', 'Solvency proof infrastructure'], icon: 'lock' },
+  { number: '01', status: 'Live', title: 'Confidential foundation', description: 'Shielded asset notes, selective disclosure, and solvency proof infrastructure.', details: ['Confidential asset ledger', 'Selective receipts and view access', 'Solvency proof infrastructure'], icon: 'lock' },
   { number: '02', status: 'Live', title: 'Private credit', description: 'Tokenized-stock collateral, USDG borrowing, private lender shares, and sealed liquidation batches.', details: ['Supported Stock Token collateral', 'USDG credit and lender shares', 'Sealed liquidation batches'], icon: 'credit' },
   { number: '03', status: 'Live', title: 'Treasury controls', description: 'Role-based ledgers, supported vault allocations, and treasury attestations.', details: ['Owner, treasurer, payer and auditor roles', 'Supported vault allocations', 'Treasury attestations'], icon: 'treasury' },
   { number: '04', status: 'Live', title: 'Payments and receipts', description: 'Bounded payroll and invoice mandates with selectively disclosable payment receipts.', details: ['Revocable payment mandates', 'Payroll and invoice schedules', 'Selectively disclosable receipts'], icon: 'payment' },
@@ -168,7 +168,7 @@ export function RoadmapSection() {
 const questions = [
   ['What is ZKdesk?', 'ZKdesk is a confidential workspace for collateralized credit, treasury management, and business payments, live on Robinhood Chain mainnet. The protocol has not yet been independently audited.'],
   ['What stays private?', 'Your keys never leave your browser, and balances, transfer amounts and counterparties stay confidential. Deposits, withdrawals and credit step amounts are public, and the desk operator can read loan positions. The documentation lists exactly who sees what.'],
-  ['Can an auditor see our records?', 'The role model includes a view-only auditor key. Scoped disclosure allows authorized parties to inspect the information they need, without granting permission to move funds.'],
+  ['Can an auditor see our records?', 'The Auditor role can read the whole treasury but cannot move funds. To share less, prove a single payment with a receipt.'],
   ['How do payment permissions work?', 'Mandates define a recipient, asset, spending cap, schedule, and expiry. They can be revoked, and each period can be paid only once.'],
   ['Can I prove I received a payment?', 'The receipt design supports a proof to a chosen verifier, with optional amount disclosure. Recipients generate the proof from the Activity view in the dashboard.'],
   ['Which assets are supported?', 'USDG, with SPY, QQQ, NVDA, and TSLA Stock Tokens as collateral. Registered treasury tokens are part of a later expansion. Stock Tokens carry their own eligibility and transfer rules.'],
