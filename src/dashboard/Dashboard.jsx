@@ -202,7 +202,7 @@ function TransparencyView({ data }) {
         ['Market hours', desk.marketOpen ? 'NYSE open' : 'NYSE closed: stricter liquidation floor'],
         ['Lender pool', lending ? `${(lending.utilizationBps / 100).toFixed(1)}% utilized · rate from the public curve ${(lending.aprBps / 100).toFixed(2)}%` : '—'],
       ]} /></section>
-    <div className="desk-callout desk-wide-callout"><Icon name="shield" /><p>Everything on this page is public on {NET.name}. It never shows a position, balance, owner, amount or recipient of any account.</p></div>
+    <div className="desk-callout desk-wide-callout"><Icon name="shield" /><p>Everything on this page is built from data that is already public on {NET.name}.</p></div>
   </>;
 }
 

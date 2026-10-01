@@ -78,10 +78,10 @@ export default function DeveloperDocs() {
         </div>
 
         <Section id="introduction" eyebrow="Getting started" title="Introduction">
-          <p>ZKdesk is a confidential finance workspace. It keeps balances, transfers, credit positions, treasury holdings and payment terms private, and it lets their owners disclose exactly what a counterparty needs with a zero-knowledge proof.</p>
-          <p>Everything you can do in the dashboard is backed by a proof generated in your browser and verified by a smart contract. No ZKdesk service ever receives your keys, your balances or the plaintext of your transactions.</p>
+          <p>ZKdesk is a confidential finance workspace. It keeps balances, transfers, treasury holdings and payment terms confidential, and it lets their owners disclose exactly what a counterparty needs with a zero-knowledge proof.</p>
+          <p>Every action you take in the dashboard is proven in your browser and verified by a smart contract. Your keys never leave your browser. The <a href="#privacy">Privacy model</a> lists exactly what is public and what ZKdesk services can see.</p>
           <div className="zd-cards">
-            <a href="#balance"><strong>Private balance</strong><span>Deposit, send and withdraw USDG and stock tokens without exposing amounts or counterparties.</span></a>
+            <a href="#balance"><strong>Private balance</strong><span>Deposit USDG and stock tokens, then hold and send them privately. Deposits and withdrawals are public at the edge of the pool.</span></a>
             <a href="#credit"><strong>Private credit</strong><span>Borrow USDG against tokenized stocks with confidential positions and proven desk health.</span></a>
             <a href="#treasury"><strong>Treasury</strong><span>Shared balances with Owner, Treasurer, Payer and Auditor roles, policies and dual control.</span></a>
             <a href="#payments"><strong>Payments</strong><span>Capped, periodic payment mandates with receipts the recipient can prove to anyone.</span></a>
@@ -114,7 +114,7 @@ export default function DeveloperDocs() {
         </Section>
 
         <Section id="architecture" eyebrow="Core concepts" title="Architecture">
-          <p>ZKdesk is a client-proved system. The browser holds the keys and produces every proof; contracts verify proofs and hold the assets; services only move already-authorized data and perform scheduled, publicly verifiable work.</p>
+          <p>ZKdesk is a client-proved system. The browser holds your keys and proves every action you take; contracts verify proofs and hold the assets; services relay authorized actions and run scheduled upkeep (health epochs, liquidations and opt-in scheduled payments), which they prove themselves.</p>
           <Diagram />
           <h3>Design principles</h3>
           <ul>
@@ -201,7 +201,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
         </Section>
 
         <Section id="credit" eyebrow="Product guides" title="Private credit">
-          <p>Borrow USDG against stock-token collateral. Each position is a hidden commitment in one of the desk's 64 slots; its collateral, debt and health are known only to its owner and the desk operator.</p>
+          <p>Borrow USDG against stock-token collateral. Each position is a hidden commitment in one of the desk's 64 slots. Its contents are encrypted: the desk operator can read them to prove health and run liquidations, and each step's collateral and borrow amounts are public (see <a href="#privacy">Privacy model</a>).</p>
           <Table head={['Collateral', 'Max LTV to open or draw', 'Liquidation threshold']} rows={[['SPY', '60%', '70%'], ['QQQ', '60%', '70%'], ['NVDA', '45%', '55%'], ['TSLA', '45%', '55%']]} />
           <ul>
             <li><strong>Steps:</strong> open, draw, repay, add collateral, withdraw collateral and close. Each is one proof; closing repays the remaining debt and returns all collateral to your private balance.</li>
@@ -262,17 +262,18 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
             <li>Treasury solvency statements, and mandate and receipt counts</li>
             <li>Governance delay, multisig threshold and relayer gas status</li>
           </ul>
-          <p>It never shows a position, balance, owner or amount belonging to a single account.</p>
+          <p>It is built only from data that is already public on-chain.</p>
         </Section>
 
         <Section id="privacy" eyebrow="Security" title="Privacy model">
-          <Table head={['', 'Public', 'Private']} rows={[
-            ['Balance', 'Totals per asset held by the pool', 'Your notes, amounts and owners'],
-            ['Deposits and withdrawals', 'Amount, token and public address at the edge of the pool', 'Which notes they fund or spend'],
-            ['Transfers', 'That a transaction occurred, and when', 'Amount, sender and recipient'],
-            ['Credit', 'Desk totals per epoch; batch totals; which slot changed', 'Collateral, debt and health (visible to the desk operator, never to the public)'],
-            ['Treasury', 'The treasury identifier per action; solvency statement results', 'Balances, members, roles and policy values'],
-            ['Payments', 'Mandate commitments, status changes and counts', 'Recipient, terms and amounts'],
+          <Table head={['', 'Public', 'Visible to ZKdesk services', 'Private']} rows={[
+            ['Keys', '—', 'Never', 'Spend, view and encryption keys stay in your browser'],
+            ['Balance', 'Totals per asset held by the pool', '—', 'Your notes, amounts and owners'],
+            ['Deposits and withdrawals', 'Amount, token and public address at the edge of the pool', '—', 'Which later spends they fund'],
+            ['Transfers', 'That a transaction occurred, its asset, fee and time', 'The relayer sees the request and its timing', 'Amount, sender and recipient'],
+            ['Credit', 'Each step\'s collateral, borrow and repay amounts and slot; desk totals per epoch; batch totals', 'The desk operator reads each position\'s collateral, debt and owner key', 'Which wallet owns a position'],
+            ['Treasury', 'The treasury identifier, action type and allocated or withdrawn amounts; solvency statement results', 'The opt-in scheduler, if made Payer, can read that treasury', 'Balances, members, roles and policy values'],
+            ['Payments', 'Mandate commitments, status changes, each payment\'s period and timing', 'The opt-in scheduler, for treasuries that use it', 'Recipient, terms and amounts'],
           ]} />
           <Callout title="Known correlations">Slot numbers, treasury identifiers, mandate commitments and transaction timing are public and can be correlated. Deposits and withdrawals of unusual amounts are easier to link. Waiting between deposit and use, and using round amounts, improves privacy.</Callout>
         </Section>
@@ -291,7 +292,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
           <Callout tone="warning" title="Not audited">The circuits, contracts, relayer and key derivation have not been independently audited. An audit is planned. Until then, treat ZKdesk as early software and keep amounts small.</Callout>
           <ul>
             <li>The governance multisig currently has a single signer; moving to multiple independent signers is planned.</li>
-            <li>The desk operator can read the contents of credit positions (not who owns them) in order to prove health and run liquidations. Moving the operator into a trusted execution environment is planned.</li>
+            <li>The desk operator can read the contents of credit positions, including each one's owner key, in order to prove health and run liquidations. Moving the operator into a trusted execution environment is planned.</li>
             <li>A single relayer submits private actions. If it is unavailable, private actions wait; funds are never at risk from relayer downtime.</li>
             <li>Deposit screening is a fixed standby; no third-party screening provider is connected yet.</li>
             <li>Market hours do not yet account for exchange holidays.</li>
@@ -324,7 +325,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
         </Section>
 
         <Section id="api" eyebrow="Reference" title="Public API">
-          <p>The dashboard's services expose a small public HTTP API on the site's origin. Mainnet endpoints live under <C>/api/mainnet</C>; testnet endpoints under <C>/api</C>. Responses are JSON. No endpoint returns data about an individual account.</p>
+          <p>The dashboard's services expose a small public HTTP API on the site's origin. Mainnet endpoints live under <C>/api/mainnet</C>; testnet endpoints under <C>/api</C>. Responses are JSON. Endpoints return only public data or sealed payloads.</p>
           <h3><span className="zd-method get">GET</span> /api/mainnet/transparency</h3>
           <p>Public protocol aggregates, cached for up to 30 seconds.</p>
           <Code label="Response (abridged)">{`{

@@ -167,7 +167,7 @@ export function RoadmapSection() {
 
 const questions = [
   ['What is ZKdesk?', 'ZKdesk is a confidential workspace for collateralized credit, treasury management, and business payments, live on Robinhood Chain mainnet. The protocol has not yet been independently audited.'],
-  ['What stays private?', 'Position details, treasury balances and allocations, and payment counterparties are designed to remain confidential. Public records include protocol aggregates, proof commitments, and verification results.'],
+  ['What stays private?', 'Your keys never leave your browser, and balances, transfer amounts and counterparties stay confidential. Deposits, withdrawals and credit step amounts are public, and the desk operator can read loan positions. The documentation lists exactly who sees what.'],
   ['Can an auditor see our records?', 'The role model includes a view-only auditor key. Scoped disclosure allows authorized parties to inspect the information they need, without granting permission to move funds.'],
   ['How do payment permissions work?', 'Mandates define a recipient, asset, spending cap, schedule, and expiry. They can be revoked, and each period can be paid only once.'],
   ['Can I prove I received a payment?', 'The receipt design supports a proof to a chosen verifier, with optional amount disclosure. Recipients generate the proof from the Activity view in the dashboard.'],

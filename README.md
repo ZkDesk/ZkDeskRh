@@ -10,8 +10,8 @@
 
 **Confidential credit, treasury and payments on Robinhood Chain.**
 
-Balances, transfers, credit positions and payment terms stay private.<br/>
-Every action is proven in the browser with zero-knowledge proofs and verified on-chain.
+Your keys never leave your browser. Balances and transfers stay confidential on a public chain.<br/>
+Every action you take is proven in your browser with zero-knowledge proofs and verified on-chain.
 
 [![CI](https://github.com/ZkDesk/ZkDeskRh/actions/workflows/ci.yml/badge.svg)](https://github.com/ZkDesk/ZkDeskRh/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-0071e3)](LICENSE)
@@ -29,6 +29,7 @@ Every action is proven in the browser with zero-knowledge proofs and verified on
 
 - [Overview](#overview)
 - [Features](#features)
+- [Who sees what](#who-sees-what)
 - [Architecture](#architecture)
 - [Repository layout](#repository-layout)
 - [Tech stack](#tech-stack)
@@ -43,28 +44,42 @@ Every action is proven in the browser with zero-knowledge proofs and verified on
 
 ## Overview
 
-ZKdesk is a confidential finance workspace for businesses and projects. It keeps balances, transfers, credit positions, treasury holdings and payment terms private, and lets their owners disclose exactly what a counterparty needs with a zero-knowledge proof.
+ZKdesk is a confidential finance workspace for businesses and projects. It keeps balances, transfers, treasury holdings and payment terms confidential, and lets their owners disclose exactly what a counterparty needs with a zero-knowledge proof. [Who sees what](#who-sees-what) lists exactly what is public and what ZKdesk services can see.
 
 ZKdesk is a **client-proved** system:
 
-- The **browser** holds the keys and generates every proof.
+- The **browser** holds your keys and proves every action you take. Your keys never leave it.
 - **Contracts** verify proofs and hold the assets.
-- **Services** only relay already-authorized data and perform scheduled, publicly verifiable work. No service ever receives a user's keys, balances or transaction plaintext.
+- **Services** relay authorized actions and run scheduled upkeep: health epochs, liquidations and opt-in scheduled payments, which they prove themselves. The desk operator can read credit positions to do this.
 
 ## Features
 
 | Area | What it does |
 | --- | --- |
 | **Shielded pool** | UTXO-style notes (commitments to asset, amount, owner and blinding). Spending publishes a nullifier, which prevents double spends without revealing the note. |
-| **Private transfers** | Send, receive and withdraw privately. Actions are submitted by a relayer, so the user's public address never appears on them and no gas is needed. Fees are paid privately inside the proof. |
+| **Private transfers** | Send and receive privately. Relayed actions don't show your public address and need no gas; the relay fee is paid from your private notes. Deposits and withdrawals are public at the edge of the pool. |
 | **Confidential credit** | Borrow USDG against stock-token collateral. Each position is a hidden commitment in one of the desk's 64 slots. A USDG lending pool supplies the liquidity. |
 | **Proven solvency** | The desk operator regularly proves a health epoch over every slot: total collateral, total debt and a commitment to exactly which positions are liquidatable. If no epoch is attested in time, new borrowing halts. |
 | **Sealed liquidations** | Breached positions are liquidated in sealed batches that are checked against the attested epoch. |
 | **Private treasuries** | Shared private ledgers with role-based members. Each treasury's view key is shared as encrypted on-chain key shares. |
-| **Mandates** | Standing, bounded payment permissions with encrypted terms. Only a commitment and status changes are public. |
+| **Mandates** | Standing, bounded payment permissions with encrypted terms. Commitments, status changes and payment timing are public. |
 | **Selective receipts** | Recipients prove they were paid to one specific verifier. They can optionally disclose the amount, their identity or both. |
-| **Transparency** | A wallet-free view of public protocol aggregates. It never exposes an individual position, balance, owner or amount. |
+| **Transparency** | A wallet-free view of protocol aggregates, built only from data that is already public on-chain. |
 | **Deterministic keys** | All keys derive from a single wallet signature, so there is nothing extra to store or back up. |
+
+## Who sees what
+
+| | Public (anyone on-chain) | ZKdesk services | Private |
+| --- | --- | --- | --- |
+| **Keys** | — | Never | Spend, view and encryption keys stay in your browser |
+| **Balances** | Pool totals per asset | — | Your notes and amounts |
+| **Deposits and withdrawals** | Address, token and amount | — | Which later spends they fund |
+| **Transfers** | That a transfer happened, its asset, fee and time | The relayer sees the request and its timing | Amount, sender and recipient |
+| **Credit** | Each step's collateral, borrow and repay amounts and slot; desk and batch totals | The desk operator reads each position's collateral, debt and owner key | Which wallet owns a position |
+| **Treasury** | Treasury identifier, action type, allocated or withdrawn amounts, solvency results | The opt-in scheduler, if made Payer, can read that treasury | Balances, members, roles and policy values |
+| **Payments** | Mandate commitments, status changes, each payment's period and timing | The opt-in scheduler, for treasuries that use it | Recipient, terms and amounts |
+
+Slot numbers, treasury identifiers and timing can be correlated. The full model is in the [developer docs](https://zkdesk.tech/docs#privacy).
 
 ## Architecture
 
@@ -215,7 +230,7 @@ Pushes to `main` and every pull request run on GitHub Actions:
 
 ## Security
 
-- Keys and plaintext never leave the browser. Services handle only proofs and encrypted payloads.
+- Your keys never leave your browser. What the public and ZKdesk services can see is listed in [Who sees what](#who-sees-what).
 - Authorization is enforced on-chain by proof verification, not by the frontend.
 - Please report vulnerabilities privately through GitHub's **Report a vulnerability** form on the [Security tab](https://github.com/ZkDesk/ZkDeskRh/security) rather than in a public issue.
 
