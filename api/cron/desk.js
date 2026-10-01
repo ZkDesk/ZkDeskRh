@@ -2,8 +2,8 @@
 // for the TEE health-prover and liquidation sequencer, and holds DESK_OPERATOR_SK. Each run:
 //   1. replays CreditDesk events and opens every live slot with the operator key
 //   2. proves the epoch (circuits/health_epoch) at the pinned marks and attests it on-chain
-//   3. for each class with breached slots, proves sealed batches (circuits/liquidate) at the venue's
-//      uniform price and liquidates them
+//   3. for each class with breached slots, prices the sale at the venue (salePrice), proves sealed
+//      batches (circuits/liquidate) at that uniform price and liquidates them
 // Nothing is stored off-chain; the indexer mirrors Attested / Liquidated events.
 // Fallback when Functions are too slow or down: node scripts/ops/desk.mjs
 import { parseAbi, parseAbiItem } from 'viem';
@@ -18,6 +18,12 @@ const EVENTS = {
   position: parseAbiItem('event PositionUpdated(uint8 indexed slot, uint256 leaf, bytes ciphertext)'),
 };
 const AMM = parseAbi(['function quote(address) view returns (uint256)']);
+const VENUE = parseAbi(['function feeOf(address) view returns (uint24)']);
+// Uniswap v3 QuoterV2 on Robinhood Chain mainnet (developers.uniswap.org, v3 deployments).
+const QUOTER = {
+  address: '0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7',
+  abi: parseAbi(['function quoteExactInputSingle((address tokenIn, address tokenOut, uint256 amountIn, uint24 fee, uint160 sqrtPriceLimitX96)) returns (uint256 amountOut, uint160, uint32, uint256)']),
+};
 const RANGE = 50_000n;
 const MIN_RELAYER_WEI = 5n * 10n ** 14n; // 0.0005 ETH ≈ 10 epochs
 const desk = { address: deployment.desk, abi: abis.desk };
@@ -53,6 +59,21 @@ async function submit(functionName, args) {
   return { hash, block: receipt.blockNumber, gas: receipt.gasUsed };
 }
 
+/**
+ * Uniform sale price in mark units (USDG base units x 1e20 per token wei). Testnet: the MockAMM quote.
+ * Mainnet: the venue's Uniswap pool's average price for `amount`, the class's whole breached
+ * collateral. A batch sells no more than that, so the venue's minimum output (price x sold) holds.
+ */
+export async function salePrice(asset, amount) {
+  if (deployment.amm) return read(deployment.amm, AMM, 'quote', [asset]);
+  const fee = await read(deployment.venue, VENUE, 'feeOf', [asset]);
+  const { result: [out] } = await publicClient.simulateContract({
+    ...QUOTER, functionName: 'quoteExactInputSingle',
+    args: [{ tokenIn: asset, tokenOut: deployment.usdg, amountIn: amount, fee, sqrtPriceLimitX96: 0n }],
+  });
+  return (out * 10n ** 20n) / amount;
+}
+
 /** One desk run. prove(kind, witness) -> {proof}. Exported for scripts/ops/desk.mjs. */
 export async function runDesk({ operatorSk, prove, log = () => {} }) {
   // Epochs share the relayer with user relays; leave it gas for those (draws halt if epochs stop).
@@ -72,7 +93,16 @@ export async function runDesk({ operatorSk, prove, log = () => {} }) {
   const report = { live, breached: h.breached, sumValue: h.public.sumValue, sumDebt: h.public.sumDebt, proveMs: Date.now() - t0, attest, batches: [] };
 
   for (const c of cls) {
-    const price = await read(deployment.amm, AMM, 'quote', [c.address]);
+    const breached = positions.filter((p, slot) => p && p.asset === c.asset && (h.bitmap >> BigInt(slot)) & 1n);
+    if (!breached.length) continue;
+    let price;
+    try {
+      price = await salePrice(c.address, breached.reduce((t, p) => t + p.collateral, 0n));
+    } catch (error) {
+      // A pricing failure skips this class only; the epoch is already attested.
+      report.batches.push({ asset: c.address, error: revertName(error) });
+      continue;
+    }
     const batches = planLiquidations({ positions, bitmap: h.bitmap, salt: h.salt, asset: c.asset, mark: c.mark, price, liqBps: c.liqBps, rateIndex: index, marketOpen });
     for (const b of batches) {
       const p = b.public;
