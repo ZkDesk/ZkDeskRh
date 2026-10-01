@@ -30,6 +30,7 @@ Every action you take is proven in your browser with zero-knowledge proofs and v
 - [Overview](#overview)
 - [Features](#features)
 - [Who sees what](#who-sees-what)
+- [Governance and trust](#governance-and-trust)
 - [Architecture](#architecture)
 - [Repository layout](#repository-layout)
 - [Tech stack](#tech-stack)
@@ -80,6 +81,18 @@ ZKdesk is a **client-proved** system:
 | **Payments** | Mandate commitments, status changes, each payment's period and timing | The opt-in scheduler, for treasuries that use it | Recipient, terms and amounts |
 
 Slot numbers, treasury identifiers and timing can be correlated. The full model is in the [developer docs](https://zkdesk.tech/docs#privacy).
+
+## Governance and trust
+
+ZKdesk has not been independently audited. Protocol configuration is owned by a governance multisig acting through a timelock (24 hours on mainnet); the multisig currently has a single signer.
+
+- **After the 24-hour timelock**, governance can de-list an asset (which also blocks its withdrawals from the pool), add a module that can move pool funds, disable a collateral class on the desk (which blocks every step in that class), change the liquidation venue and bonus address, and unpause the desk.
+- **Immediately**, the guardian can pause new borrowing and partial collateral withdrawals; the deposit screener can flag a deposit during its 60-second standby so that it can only be refunded; and the relayer key sets the market-hours flag.
+- **Liquidations** repay lenders first; the bonus and any surplus go to the governance Safe. Debt a liquidation cannot cover is written off and lowers lending-pool share value.
+- **The relayer** submits private actions and runs upkeep. While it is down, funds stay in the contracts but private actions, deposit clearing, price pinning and health epochs pause.
+- **Reserves** (10% of interest) have no withdrawal path yet and stay in the lending pool.
+
+Full details: [Governance and safety](https://zkdesk.tech/docs#governance) and [Security status and limitations](https://zkdesk.tech/docs#status).
 
 ## Architecture
 
@@ -219,7 +232,7 @@ All endpoints are served from the site origin. Mainnet equivalents live under `/
 | `GET` | `/api/relay` | Relayer address, availability and minimum relay fee (USDG base units) |
 | `POST` | `/api/relay` | Submit a proven private action |
 | `GET` | `/api/ops/:id` | Status of a relayed operation |
-| `GET` / `POST` | `/api/requests` | Sealed treasury approval requests (readable only by members) |
+| `GET` / `POST` | `/api/requests` | Sealed treasury approval requests. No authentication: anyone can read or post ciphertexts, which only treasury members can open |
 
 ## Testing and CI
 

@@ -120,7 +120,7 @@ export default function DeveloperDocs() {
           <ul>
             <li><strong>The chain is the source of truth.</strong> The client rebuilds the note tree from contract events and checks the root against the pool before proving. The indexed mirror used by services holds public data only.</li>
             <li><strong>Proofs authorize, not sessions.</strong> The relayer has no user accounts; a valid proof is the only authorization for a private action.</li>
-            <li><strong>Fail closed.</strong> Stale or paused prices, an overdue health attestation or a paused desk stop new risk, while repay, add collateral, close and withdrawals keep working.</li>
+            <li><strong>Fail closed.</strong> Stale or paused prices, an overdue health attestation or a paused desk stop new borrowing, while repaying, adding collateral and closing keep working unless governance disables the collateral class.</li>
             <li><strong>Idempotent operations.</strong> Every relayed action is keyed by the nullifiers it spends, so a retry can never execute twice.</li>
           </ul>
         </Section>
@@ -170,7 +170,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
             ['mandate_pull', 'A payment within the mandate cap, period and expiry, at most once per period, producing a receipt leaf'],
             ['receipt', 'That a recipient was paid under a mandate, to one chosen verifier, with optional amount and recipient disclosure'],
           ]} />
-          <Callout title="Performance">Browser proving is single-threaded today and usually takes 20 to 80 seconds per action, depending on the device and the circuit. Keep the tab open until the action confirms; navigating away cancels proving.</Callout>
+          <Callout title="Performance">Browser proving uses multiple threads where the browser allows it and usually takes 20 to 80 seconds per action, depending on the device and the circuit. Keep the tab open until the action confirms; navigating away cancels proving.</Callout>
         </Section>
 
         <Section id="relayer" eyebrow="Core concepts" title="Relayer and operations">
@@ -195,7 +195,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
         </Section>
 
         <Section id="lending" eyebrow="Product guides" title="Lending pool">
-          <p>The USDG lending pool funds credit. <em>Allocate</em> converts private USDG into private lending-pool shares in a single proof, and <em>Move to liquid</em> converts shares back, subject to the pool's available cash. Shares appreciate as borrowers pay interest.</p>
+          <p>The USDG lending pool funds credit. <em>Allocate</em> converts private USDG into private lending-pool shares in a single proof, and <em>Move to liquid</em> converts shares back, subject to the pool's available cash. Shares appreciate as borrowers pay interest. If a liquidation cannot cover a position's debt, the remainder is written off and share value falls accordingly.</p>
           <Table head={['Utilization', 'Borrow rate (APR)']} rows={[['0%', '2%'], ['80% (kink)', '10%'], ['100%', '60%']]} caption="Rates are linear between points. 10% of interest accrues to reserves." />
           <p>A single USDG rate index is checkpointed on-chain at most every ten minutes and at least hourly; proofs may use the latest or previous checkpoint.</p>
         </Section>
@@ -207,7 +207,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
             <li><strong>Steps:</strong> open, draw, repay, add collateral, withdraw collateral and close. Each is one proof; closing repays the remaining debt and returns all collateral to your private balance.</li>
             <li><strong>Marks:</strong> prices are pinned on-chain from the feeds and applied once, including any corporate-action multiplier. On mainnet a pinned mark stays usable for 25 hours; on testnet for one hour.</li>
             <li><strong>Market hours:</strong> 9:30 to 16:00 New York time on weekdays. Holidays are not yet recognized.</li>
-            <li><strong>Fail-closed:</strong> opening, drawing and withdrawing collateral require a usable mark, a recent health attestation and an unpaused desk. Repaying, adding collateral and closing always work.</li>
+            <li><strong>Fail-closed:</strong> drawing USDG requires a usable mark, a recent health attestation and an unpaused desk; withdrawing part of the collateral requires a usable mark and an unpaused desk. Repaying, adding collateral and closing work at any time unless governance disables the collateral class.</li>
           </ul>
         </Section>
 
@@ -219,6 +219,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
             <li>Up to four breached positions of one collateral class are sold together at one uniform price, which must lie within 2% of the mark during market hours (5% outside them).</li>
             <li>Close factor: 20% of the debt, or 100% when health is below 95% of the threshold.</li>
             <li>Liquidation bonus: 2%, or 8% below 95%. Outside market hours only positions below 95% can be liquidated.</li>
+            <li>Sale proceeds repay lenders first. The bonus and any surplus go to the protocol's bonus address, the governance Safe on mainnet.</li>
             <li>Unsold collateral stays in the owner's position. The owner sees what was sold and repaid; the public sees batch totals only.</li>
           </ul>
         </Section>
@@ -281,10 +282,16 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
         <Section id="governance" eyebrow="Security" title="Governance and safety">
           <ul>
             <li><strong>Timelock:</strong> configuration of the protocol contracts is owned by a governance multisig acting through a timelock (24 hours on mainnet), so every change is visible before it takes effect.</li>
-            <li><strong>Guardian:</strong> a guardian can pause new risk on the credit desk immediately. Pausing never blocks repay, add collateral, close or withdrawals.</li>
-            <li><strong>Immutable pool:</strong> the shielded pool itself has no upgrade path; deposits during standby can always be refunded to their origin.</li>
+            <li><strong>Guardian:</strong> a guardian can pause new risk on the credit desk immediately. A pause stops new borrowing and partial collateral withdrawals; it never blocks repaying, adding collateral or closing.</li>
+            <li><strong>Pool:</strong> the shielded pool has no owner and no upgrade path; deposits during standby can always be refunded to their origin. Which assets it accepts, and which modules may move funds, is set by governance (see below).</li>
             <li><strong>Solvency checks:</strong> pool balances are compared with outstanding notes for every asset and published on Transparency.</li>
             <li><strong>Gas safety:</strong> when relayer gas runs low, desk epochs pause first so user transactions keep going through.</li>
+          </ul>
+          <h3>Governance powers</h3>
+          <p>These powers exist today and are listed so you can judge the trust involved. The multisig, the guardian and the deposit screener are currently held by one signer; the relayer key is operated by ZKdesk.</p>
+          <ul>
+            <li><strong>After the 24-hour timelock:</strong> de-list an asset, which also blocks its withdrawals from the pool; add a module, which can move pool funds; disable a collateral class on the desk, which blocks every step in that class; change the liquidation venue and the bonus address; unpause the desk.</li>
+            <li><strong>Immediately, without the timelock:</strong> the guardian can pause the desk; the deposit screener can flag a deposit during its standby so that it can only be refunded; the relayer key sets the market-hours flag, which selects the liquidation price band and epoch interval.</li>
           </ul>
         </Section>
 
@@ -293,7 +300,8 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
           <ul>
             <li>The governance multisig currently has a single signer; moving to multiple independent signers is planned.</li>
             <li>The desk operator can read the contents of credit positions, including each one's owner key, in order to prove health and run liquidations. Moving the operator into a trusted execution environment is planned.</li>
-            <li>A single relayer submits private actions. If it is unavailable, private actions wait; funds are never at risk from relayer downtime.</li>
+            <li>A single relayer submits private actions and runs protocol upkeep. While it is unavailable, funds stay in the contracts, but private actions, deposit clearing, price pinning and health epochs pause, so new borrowing halts and liquidations wait.</li>
+            <li>The 10% of interest set aside as reserves has no withdrawal path yet; it stays in the lending pool and does not count toward lender shares.</li>
             <li>Deposit screening is a fixed standby; no third-party screening provider is connected yet.</li>
             <li>Market hours do not yet account for exchange holidays.</li>
             <li>Only externally owned accounts are supported, and browser proving can take over a minute on slower devices.</li>
@@ -327,8 +335,8 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
         <Section id="api" eyebrow="Reference" title="Public API">
           <p>The dashboard's services expose a small public HTTP API on the site's origin. Mainnet endpoints live under <C>/api/mainnet</C>; testnet endpoints under <C>/api</C>. Responses are JSON. Endpoints return only public data or sealed payloads.</p>
           <h3><span className="zd-method get">GET</span> /api/mainnet/transparency</h3>
-          <p>Public protocol aggregates, cached for up to 30 seconds.</p>
-          <Code label="Response (abridged)">{`{
+          <p>Public protocol aggregates, cached for 30 seconds at the edge and served stale for up to 60 more while refreshing.</p>
+          <Code label="Response (abridged, illustrative values)">{`{
   "at": "2026-09-29T21:08:14.074Z",
   "desk": { "epoch": 40, "healthy": true, "paused": false, "marketOpen": true,
             "lastAttestedAt": 1790715654000, "epochs": [...], "batches": [...] },
@@ -341,7 +349,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
   "operations": { "relayerStatus": "ok", "timelockDelay": 86400, ... }
 }`}</Code>
           <h3><span className="zd-method get">GET</span> /api/mainnet/relay</h3>
-          <p>Relayer availability and the base fee: <C>{'{ relayer, minFee, available }'}</C>.</p>
+          <p>Relayer address, availability and the minimum relay fee in USDG base units: <C>{'{ relayer, minFee, available }'}</C>.</p>
           <h3><span className="zd-method post">POST</span> /api/mainnet/relay</h3>
           <p>Submits a private action. The body is produced by the ZKdesk client library and contains a <C>kind</C>, the <C>proof</C> with its public inputs, and <C>ext</C> data (encrypted outputs, recipient, fee). The proof is the only authorization.</p>
           <Table head={['Status', 'Meaning']} rows={[
@@ -354,6 +362,10 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
           ]} />
           <h3><span className="zd-method get">GET</span> /api/mainnet/ops/:id</h3>
           <p>Status of a relayed operation: <C>{'{ opId, kind, status, txHash, errorCode }'}</C>.</p>
+          <h3><span className="zd-method get">GET</span> /api/mainnet/requests?ledger=0x…</h3>
+          <p>The latest sealed approval requests for a treasury (up to 50 from the last 14 days): <C>{'{ requests: [{ id, ciphertext, created_at }] }'}</C>.</p>
+          <h3><span className="zd-method post">POST</span> /api/mainnet/requests</h3>
+          <p>Stores a sealed approval request <C>{'{ ledgerId, ciphertext }'}</C> (up to 4 KB) for a treasury's dual-control flow. The endpoint has no authentication: anyone can read or post ciphertexts, but only the treasury's members hold the key to open them, and clients ignore anything that does not open. Request status comes from the chain, not from this mailbox.</p>
         </Section>
 
         <Section id="states" eyebrow="Reference" title="Operation states and errors">
