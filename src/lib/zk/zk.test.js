@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { hash2, publicAmount, FIELD } from './notes.js';
 import { decryptNote, encryptNote, NOTE_CIPHERTEXT_BYTES } from './crypto.js';
-import { deriveKeys } from './keys.js';
+import { canonicalSignature, deriveKeys } from './keys.js';
 import { G, mul, operatorDecrypt, operatorEncrypt, operatorPublicKey } from './grumpkin.js';
 import { applyLiquidation, buildHealth, isBreached } from './desk.js';
 import { liquidatedBlinding, liquidationPad, positionCommitment, ownerPk } from './notes.js';
@@ -20,6 +20,17 @@ assert.deepEqual(deriveKeys(sig).sk, a.sk, 'deterministic');
 assert.ok(a.sk < FIELD);
 const b = deriveKeys('0x' + 'cd'.repeat(65));
 assert.notEqual(a.sk, b.sk);
+// Every wallet encoding of one signature gives the same keys; a canonical one is unchanged.
+{
+  const N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+  const r = 'a1'.repeat(32);
+  const s = (5n).toString(16).padStart(64, '0');
+  const canonical = '0x' + r + s + '1b';
+  const k = deriveKeys(canonical);
+  assert.equal(deriveKeys('0x' + r + s + '00').sk, k.sk, 'v = 0 is v = 27');
+  assert.equal(deriveKeys('0x' + r + (N - 5n).toString(16).padStart(64, '0') + '1c').sk, k.sk, 'high s with flipped v is the same signature');
+  assert.equal(canonicalSignature(canonical), canonical.slice(2), 'canonical signatures are unchanged');
+}
 
 const note = { asset: 0x8c898f70efd7665280460fc3c9fbb5e56b8d8bddn, amount: 1234_567890n, blinding: FIELD - 1n };
 const ct = encryptNote(note, a.encPub);

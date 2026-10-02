@@ -18,7 +18,7 @@
 import { randomBytes } from 'node:crypto';
 import { concatHex, isAddress, isHex, keccak256, toHex, zeroAddress } from 'viem';
 import { abis, db, deployment, deploymentReady, publicClient, relayer, sendFromRelayer, revertName, json } from './_lib/server.js';
-import { relayFees } from './_lib/fees.js';
+import { RELAY_GAS, relayFees } from './_lib/fees.js';
 import { CONFIG_BYTES, KEY_SHARE_BYTES, MANDATE_BYTES, NOTE_CIPHERTEXT_BYTES, POSITION_CIPHERTEXT_BYTES } from '../src/lib/zk/crypto.js';
 
 /** User relays stop below this, leaving gas for transactions in flight. */
@@ -54,6 +54,7 @@ function parseTransact(p, e) {
     fee: { asset: p.asset.toLowerCase(), amount: fee },
     target: { address: deployment.pool, abi: abis.pool, functionName: 'transact' },
     nullifiers: p.inputNullifiers.slice(0, 2).map(uint),
+    spends: p.inputNullifiers.slice(0, 2).map(uint),
     args: [{
       proof: p.proof, root: uint(p.root), publicAmount: uint(p.publicAmount), extDataHash: uint(p.extDataHash), asset: p.asset,
       outAsset: p.outAsset, publicAmountOut: uint(p.publicAmountOut),
@@ -79,14 +80,14 @@ function parsePosition(p, e) {
   for (const k of f) proof[k] = uint(p[k]);
   const kind = proof.oldLeaf === 0n ? 'open' : proof.newLeaf === 0n ? 'close' : proof.draw ? 'draw' : proof.repay ? 'repay' : proof.collIn ? 'add' : 'withdraw_collateral';
   return {
-    kind, nullifiers: proof.inputNullifiers,
+    kind, nullifiers: proof.inputNullifiers, spends: proof.inputNullifiers,
     target: { address: deployment.desk, abi: abis.desk, functionName: 'act' },
     args: [proof, { relayer: e.relayer, fee: 0n, encryptedOutput1: e.encryptedOutput1, encryptedOutput2: e.encryptedOutput2, encryptedPosition: e.encryptedPosition }],
   };
 }
 
 const LEDGER_KINDS = ['allocate', 'deallocate', 'transfer'];
-const AUTH_KINDS = ['create', 'rotate', 'set_policy', 'approve'];
+const AUTH_KINDS = ['create', 'rotate', 'set_policy', 'approve', 'set_limit'];
 const ledgerTarget = (functionName) => ({ address: deployment.ledger, abi: abis.ledger, functionName });
 
 function parseLedger(p, e) {
@@ -99,7 +100,7 @@ function parseLedger(p, e) {
   if (extAmount > 0n) throw new Error('Funds enter a treasury by a deposit or a private transfer.');
   const proof = { proof: p.proof, action, asset: p.asset, outAsset: p.outAsset, inputNullifiers: p.inputNullifiers.slice(0, 2).map(uint), outputCommitments: p.outputCommitments.slice(0, 2).map(uint) };
   for (const k of ['root', 'ledgerId', 'publicAmount', 'publicAmountOut', 'extDataHash', 'cosignIntent']) proof[k] = uint(p[k]);
-  return { kind: `ledger_${LEDGER_KINDS[action]}`, nullifiers: proof.inputNullifiers, target: ledgerTarget('act'), args: [proof, { recipient: e.recipient, extAmount, encryptedOutput1: e.encryptedOutput1, encryptedOutput2: e.encryptedOutput2 }] };
+  return { kind: `ledger_${LEDGER_KINDS[action]}`, nullifiers: proof.inputNullifiers, spends: proof.inputNullifiers, target: ledgerTarget('act'), args: [proof, { recipient: e.recipient, extAmount, encryptedOutput1: e.encryptedOutput1, encryptedOutput2: e.encryptedOutput2 }] };
 }
 
 function parseLedgerAuth(p, e) {
@@ -139,7 +140,7 @@ function parseMandatePull(p, e) {
   if (!ASSETS.has(p.asset?.toLowerCase())) throw new Error('Unsupported asset.');
   const proof = { proof: p.proof, asset: p.asset, inputNullifiers: p.inputNullifiers.slice(0, 2).map(uint), outputCommitments: p.outputCommitments.slice(0, 2).map(uint) };
   for (const k of ['root', 'ledgerId', 'mandateCommit', 'mark', 'k', 't', 'pullNullifier', 'receiptLeaf', 'extDataHash']) proof[k] = uint(p[k]);
-  return { kind: 'mandate_pull', nullifiers: [proof.pullNullifier], target: mandatesTarget('pull'), args: [proof, { encryptedOutput1: e.encryptedOutput1, encryptedOutput2: e.encryptedOutput2 }] };
+  return { kind: 'mandate_pull', nullifiers: [proof.pullNullifier], spends: [proof.pullNullifier, ...proof.inputNullifiers], target: mandatesTarget('pull'), args: [proof, { encryptedOutput1: e.encryptedOutput1, encryptedOutput2: e.encryptedOutput2 }] };
 }
 
 // A Map, not an object literal: a kind such as "constructor" or "__proto__" must never resolve to an
@@ -157,6 +158,34 @@ const allowed = (target) => Boolean(target && typeof target.address === 'string'
 
 const hashToken = (t) => keccak256(t);
 
+/** Validates a request body and builds the one call it may make. Throws on anything else. */
+export function parseRelayRequest(body) {
+  if (!body?.proof || (!body?.ext && body.kind !== 'ledger_attest')) throw new Error('Missing proof or ext.');
+  const parse = PARSERS.get(body.kind ?? 'transact'); // no kind: a plain transact (older clients)
+  if (!parse) throw new Error('Unknown kind.');
+  const tx = parse(body.proof, body.ext);
+  if (!allowed(tx.target)) throw new Error('Unsupported call.');
+  if (body.voucher === true && tx.kind !== 'transfer') throw new Error('A voucher is bought with a private transfer.');
+  return tx;
+}
+
+/** Fee for a call of `gas`, given the minimum `base` quoted for RELAY_GAS (rounded up). */
+export const feeForGas = (base, gas) => (gas > RELAY_GAS ? (base * gas + RELAY_GAS - 1n) / RELAY_GAS : base);
+
+/** Claims every note this operation spends; false if another unfinished operation holds one. */
+async function claimSpends(opId, spends) {
+  const keys = spends.map((n) => toHex(n, { size: 32 }));
+  // Claims of operations that finished (or never got anywhere) no longer hold their notes.
+  await db.query(
+    `delete from public.pending_spends where nullifier = any($1) and op_id in (select op_id from public.operations where status in ('confirmed', 'failed', 'replaced'))`, [keys]);
+  const { rows } = await db.query(
+    `insert into public.pending_spends (nullifier, op_id) select unnest($1::text[]), $2 on conflict (nullifier) do nothing returning nullifier`, [keys, opId]);
+  if (rows.length === keys.length) return true;
+  await release(opId);
+  return false;
+}
+const release = (opId) => db.query('delete from public.pending_spends where op_id = $1', [opId]);
+
 export default async function handler(req, res) {
   if (!deploymentReady) return json(res, 503, { error: 'network_upgrading' }); // still on v1 contracts
   if (req.method === 'GET') {
@@ -172,12 +201,7 @@ export default async function handler(req, res) {
   let body;
   try {
     body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
-    if (!body?.proof || (!body?.ext && body.kind !== 'ledger_attest')) throw new Error('Missing proof or ext.');
-    const parse = PARSERS.get(body.kind ?? 'transact'); // no kind: a plain transact (older clients)
-    if (!parse) throw new Error('Unknown kind.');
-    tx = parse(body.proof, body.ext);
-    if (!allowed(tx.target)) throw new Error('Unsupported call.');
-    if (body.voucher === true && tx.kind !== 'transfer') throw new Error('A voucher is bought with a private transfer.');
+    tx = parseRelayRequest(body);
   } catch (error) {
     return json(res, 400, { error: 'invalid_request', message: error.message });
   }
@@ -206,8 +230,12 @@ export default async function handler(req, res) {
   const opId = rows[0].op_id;
   const fail = async (status, code) => {
     await db.query(`update public.operations set status = 'failed', error_code = $2, updated_at = now() where op_id = $1`, [opId, code]);
+    await release(opId);
     return json(res, status, { opId, status: 'failed', errorCode: code });
   };
+  // Audit N-2: one in-flight operation per note. Requests spending a note another pending operation
+  // spends would all pass simulation and all but one would revert at the relayer's cost.
+  if (tx.spends?.length && !(await claimSpends(opId, tx.spends))) return fail(409, 'spend_in_flight');
 
   let gas;
   try {
@@ -216,6 +244,13 @@ export default async function handler(req, res) {
   } catch (error) {
     return fail(422, revertName(error));
   }
+  // Fees are quoted for RELAY_GAS; a heavier call pays proportionally more, and a voucher (sized
+  // for RELAY_GAS with the client's 25% margin) covers nothing heavier.
+  if (tx.fee && gas > RELAY_GAS) {
+    const base = (await relayFees())[tx.fee.asset] * (body.voucher === true ? VOUCHER_PRICE : 1n);
+    if (tx.fee.amount < feeForGas(base, gas)) return fail(402, 'fee_too_low');
+  }
+  if (needsVoucher && gas > (RELAY_GAS * 5n) / 4n) return fail(402, 'gas_above_voucher');
   // Spent only once the step is known to succeed; bought by a confirmed transfer within the last day.
   if (needsVoucher) {
     const { rowCount } = await db.query(
@@ -233,15 +268,18 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { hash, nonce } = await sendFromRelayer(tx.target.functionName, tx.args, gas, tx.target);
+    // Re-simulated inside the nonce lock, so a spend that landed meanwhile is never broadcast.
+    const { hash, nonce } = await sendFromRelayer(tx.target.functionName, tx.args, gas, tx.target, { resimulate: true });
     await db.query(`update public.operations set status = 'submitted', tx_hash = $2, nonce = $3, attempts = attempts + 1, updated_at = now() where op_id = $1`, [opId, hash, nonce]);
     // Blocks are fast; wait briefly so most clients get a final answer in one round trip.
     const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 15_000 }).catch(() => null);
     if (!receipt) return json(res, 202, { opId, status: 'submitted', txHash: hash, voucher });
     const status = receipt.status === 'success' ? 'confirmed' : 'failed';
     await db.query(`update public.operations set status = $2, error_code = $3, updated_at = now() where op_id = $1`, [opId, status, status === 'failed' ? 'reverted' : null]);
+    await release(opId);
     return json(res, 200, { opId, status, txHash: hash, block: receipt.blockNumber, voucher });
   } catch (error) {
+    if (error.code === 'resimulate_failed') return fail(422, revertName(error.cause));
     // Unknown whether it reached the chain: leave it queued for the reconciler, never resend blindly.
     await db.query(`update public.operations set error_code = $2, updated_at = now() where op_id = $1`, [opId, revertName(error)]);
     return json(res, 502, { opId, status: 'queued', errorCode: 'send_uncertain', voucher });

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.1.0 (October 2026)
+
+Off-chain fixes from the re-audit after v2. No contract changes.
+
+- **Relay (N-0, critical):** requests dispatch only to the relay's own parsers (a kind such as `constructor` made it sign any call), and every signed call must be one of six protocol functions. Not exploited.
+- **Relay (N-2):** at most one pending operation per note; calls are simulated again inside the nonce lock; calls heavier than the quoted gas pay proportionally.
+- **Scheduler (N-3):** only successful payments count toward a run's limit, one payment per treasury per run, with a rotating start.
+- **Desk operator (M-1 residual):** epochs and liquidations are always one transaction; a batch that would revert is dropped and retried next epoch.
+- **Approval mailbox (M-6 residual, N-4):** a mailbox key can only be registered before its treasury exists on-chain, with global caps; unused registrations are pruned.
+- **Keys:** derived from the canonical form of the wallet signature (low s, v = 27/28), so every wallet encoding gives the same keys. Canonical signatures are unchanged.
+- **Treasury limits:** the M-4 transfer limit can be set through the relay and the client (`setTransferLimit`).
+- **Operations:** alerts are recorded only once delivered; the timelock scan is bounded; `check-deployment` also checks timelock roles, Safe owners, the pinner, feeds and every verifier, and runs daily in CI. `SECURITY.md` lists accepted risks; `RUNBOOK.md` is public.
+- **Tests:** API tests for every relay kind, the allow-list, note claims, fee scaling, scheduler rotation and mailbox validation (`pnpm test`).
+
 ## 2.0.0 (October 2026)
 
 Fixes every high and medium finding of the automated audit of October 2026 (`v1-final`, commit `d9c0d1b`). New contracts and circuits, deployed beside v1; v1 stays on-chain so its notes can still be withdrawn.

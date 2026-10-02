@@ -142,13 +142,17 @@ async function reconcile() {
   return { checked: rows.length, updated };
 }
 
-/** Drops spent or expired relay vouchers and approval requests past their 14-day window. */
+/** Drops spent or expired vouchers, old approval requests, unused mailbox keys and released note claims. */
 async function prune() {
-  const [v, r] = await Promise.all([
+  const [v, r, k, s] = await Promise.all([
     db.query(`delete from public.relay_vouchers where used_at is not null or created_at < now() - interval '1 day'`),
     db.query(`delete from public.approval_requests where created_at < now() - interval '14 days'`),
+    // Mailbox keys registered for a treasury that was never created (the mirror's ledgers table).
+    db.query(`delete from public.mailbox_keys where created_at < now() - interval '1 day' and ledger_id not in (select ledger_id from public.ledgers)`),
+    // Note claims of finished operations (audit N-2).
+    db.query(`delete from public.pending_spends where op_id in (select op_id from public.operations where status in ('confirmed', 'failed', 'replaced')) or created_at < now() - interval '1 day'`),
   ]);
-  return { vouchers: v.rowCount, requests: r.rowCount };
+  return { vouchers: v.rowCount, requests: r.rowCount, mailboxKeys: k.rowCount, spends: s.rowCount };
 }
 
 /** NYSE regular session, weekdays 09:30-16:00 America/New_York (holidays not modelled). */

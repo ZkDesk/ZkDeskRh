@@ -41,7 +41,7 @@ const wallets = new Map([relayer, keeper].filter(Boolean).map((a) => [a, createW
  * Sends a contract call from `from` (relayer or keeper). Nonces are serialized through a row lock per
  * account so concurrent function instances never reuse one, and never go below the chain's pending count.
  */
-export async function sendFrom(from, functionName, args, gas, { address = deployment.pool, abi = abis.pool } = {}) {
+export async function sendFrom(from, functionName, args, gas, { address = deployment.pool, abi = abis.pool } = {}, { resimulate = false } = {}) {
   const walletClient = wallets.get(from);
   if (!walletClient) throw Object.assign(new Error('Relayer is not configured.'), { code: 'relayer_unavailable' });
   const conn = await db.connect();
@@ -51,6 +51,13 @@ export async function sendFrom(from, functionName, args, gas, { address = deploy
     const { rows } = await conn.query('select next_nonce from public.relayer_state where id = $1 for update', [id]);
     const chainNonce = await publicClient.getTransactionCount({ address: from.address, blockTag: 'pending' });
     const nonce = Math.max(Number(rows[0]?.next_nonce ?? 0), chainNonce);
+    if (resimulate) {
+      try {
+        await publicClient.simulateContract({ account: from, address, abi, functionName, args });
+      } catch (error) {
+        throw Object.assign(new Error('Simulation failed inside the nonce lock.'), { code: 'resimulate_failed', cause: error });
+      }
+    }
     const hash = await walletClient.writeContract({ address, abi, functionName, args, nonce, gas });
     await conn.query('update public.relayer_state set next_nonce = $1 where id = $2', [nonce + 1, id]);
     await conn.query('commit');

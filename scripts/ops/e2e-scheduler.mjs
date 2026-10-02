@@ -12,7 +12,7 @@ for (const line of readFileSync('.env.local', 'utf8').split(/\r?\n/)) {
   if (m && !(m[1] in process.env)) process.env[m[1]] = m[2];
 }
 const { chain, deployment } = await import('../../src/lib/chain/config.js');
-const { deriveKeys, keyRequest } = await import('../../src/lib/zk/keys.js');
+const { deriveKeys, keyRequest, seedKeys } = await import('../../src/lib/zk/keys.js');
 const { createClient } = await import('../../src/lib/zk/client.js');
 const { createProver } = await import('../../src/lib/zk/prover.js');
 const { default: relayHandler } = await import('../../api/relay.js');
@@ -26,7 +26,7 @@ const prove = (kind, witness) => provers[kind].prove(witness);
 const ownerKeys = deriveKeys(await privateKeyToAccount(process.env.DEPLOYER_PRIVATE_KEY).signTypedData(keyRequest(chain.id)));
 const owner = createClient({ publicClient, keys: ownerKeys, prove, relay, onStatus: (m) => console.log(`    · Owner: ${m}`) });
 const rita = createClient({ publicClient, keys: deriveKeys('0x' + '0c'.repeat(65)), prove, relay });
-const scheduler = deriveKeys(process.env.SCHEDULER_SEED);
+const scheduler = seedKeys(process.env.SCHEDULER_SEED);
 const zk = /^zkd:([0-9a-f]{64})([0-9a-f]{64})$/i.exec(deployment.scheduler);
 const schedulerAddr = { owner: BigInt('0x' + zk[1]), encPub: Uint8Array.from(zk[2].match(/../g).map((b) => parseInt(b, 16))) };
 if (schedulerAddr.owner !== scheduler.owner) throw new Error('deployments.scheduler does not match SCHEDULER_SEED');

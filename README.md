@@ -90,7 +90,7 @@ Slot numbers, treasury identifiers and timing can be correlated. The full model 
 ZKdesk has not been audited by an independent firm. An automated AI audit (October 2026) found two high and seven medium issues; all are fixed in the contracts and services listed under [Security](#security).
 
 - **Governance** is a Safe with a 2-of-3 threshold acting through a timelock of 48 hours (24 hours until a change already scheduled through the timelock takes effect on 3 October 2026). The three signer keys are held by the project's developer, not by independent parties or hardware devices.
-- **After the 48-hour timelock**, governance can list or de-list assets for *new* deposits (a de-listed asset can still be withdrawn), change collateral class parameters (a disabled class still allows repaying, adding collateral and closing), change the liquidation venue and bonus address, set the price-pinning key and unpause the desk. It cannot add a contract that moves pool funds: the pool's modules are fixed at deployment.
+- **After the 48-hour timelock**, governance can list or de-list assets for *new* deposits (a de-listed asset can still be withdrawn from the pool and the credit desk; treasury transfers and mandate payments of it stop until it is listed again, which the next contract version removes), change collateral class parameters (a disabled class still allows repaying, adding collateral and closing), change the liquidation venue and bonus address, set the price-pinning key and unpause the desk. It cannot add a contract that moves pool funds: the pool's modules are fixed at deployment.
 - **Immediately**, the guardian key can pause new borrowing and partial collateral withdrawals, and the screener key can flag a deposit during its 60-second standby so that it can only be refunded to its origin. Both are separate from the deployer.
 - **Every timelock proposal** raises an alert to the operators during its delay.
 - **Liquidations** repay lenders first; the bonus and any surplus go to the governance Safe. Debt a liquidation cannot cover is written off and lowers lending-pool share value.
@@ -301,7 +301,7 @@ The services alert the operators (Telegram or a webhook) on low relayer or keepe
 
 - Your keys never leave your browser. What the public and ZKdesk services can see is listed in [Who sees what](#who-sees-what).
 - Authorization is enforced on-chain by proof verification, not by the frontend.
-- Report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
+- Report vulnerabilities privately; see [SECURITY.md](SECURITY.md), which also lists the accepted risks. Incident procedures are in [RUNBOOK.md](RUNBOOK.md).
 
 Findings of the automated audit (October 2026) and their fixes:
 
@@ -311,12 +311,25 @@ Findings of the automated audit (October 2026) and their fixes:
 | H-2: the relayer could be drained with free relays | Every relay pays its gas (a fee note, or a prepaid voucher for steps without a fee field); a separate keeper key runs the desk | `scripts/ops/relay-test.mjs` |
 | M-1: an old health proof could roll back the liquidatable set | Epochs use the current marks and index; the operator attests and liquidates in one transaction | `test_audit_m1_*` |
 | M-2: a full note tree would freeze exits | Tree depth 32 and a 1,024-root history; the empty root is only accepted while the tree is empty | `test_audit_m2_rootHistory` |
-| M-3: governance could block exits | Delisting and disabling stop new deposits and new risk only | `test_audit_m3_*` |
+| M-3: governance could block exits | Delisting and disabling stop new deposits and new risk only on the pool and the desk. Treasury transfers and mandate payments still check the listing (fixed in the next contract version) | `test_audit_m3_*` |
 | M-4: dual control could be bypassed from a second treasury | Approvals belong to one treasury and are used once; owners can limit transfers without approval per period | `test_audit_m4_*` |
 | M-5: one position could halt the operator | The circuit rejects `operator_r = 0`, and the operator decodes the point at infinity | `zk.test.js`, `circuits/position` tests |
 | M-6: the approval mailbox could be flooded | Posts are signed with a key only treasury members hold; per-treasury daily cap; 14-day expiry | `scripts/ops/e2e-approvals.mjs` |
 | M-7: governance was a single key | 2-of-3 Safe, 48-hour timelock, separate guardian and screener, fixed pool modules, timelock alerts | `test_audit_m7_modulesAreFixed`, `scripts/check-deployment.mjs` |
-| L-1, L-2: receipts and statements link to public data | Documented in [Who sees what](#who-sees-what) | — |
+| L-1, L-2: receipts and statements link to public data | Documented in [Who sees what](#who-sees-what); accepted in [SECURITY.md](SECURITY.md) | — |
+
+Findings of the re-audit after v2 (October 2026):
+
+| Finding | Status | Test |
+| --- | --- | --- |
+| N-0 (critical): a request kind such as `constructor` made the relayer sign any call | Fixed. The relay dispatches only to its own parsers, and every call it signs must be on an allow-list of six protocol functions. It was not exploited | `api/relay.test.mjs` |
+| N-2: requests spending the same note made the relayer pay for reverts | Fixed. One pending operation per note, and each call is simulated again inside the nonce lock | `scripts/ops/relay-race.mjs` |
+| N-3: the payment scheduler could be starved | Fixed. Only successful payments count, one per treasury per run, and the starting treasury rotates | `api/relay.test.mjs` |
+| M-1 (residual): the operator's fallback sent liquidations separately | Fixed. A batch that would revert is dropped from the atomic call, never sent on its own | `scripts/ops/e2e-liquidation.mjs` |
+| M-6 (residual), N-4: mailbox flooding and squatting | Fixed. A mailbox key can only be registered before its treasury exists on-chain, with global hourly caps | `api/relay.test.mjs`, `scripts/ops/e2e-approvals.mjs` |
+| N-1: a no-op position step can block an epoch | Open: fixed in the next contract version | — |
+| H-1 (residual): a position with dust debt cannot be evicted | Open: next contract version | — |
+| M-3 (residual): treasury transfers and mandate payments check the asset listing | Open: next contract version | — |
 
 Slither reports no high-impact issues. Its medium findings are reentrancy patterns in functions that already hold a reentrancy lock and only call the protocol's own immutable contracts, and return values that are deliberately ignored.
 

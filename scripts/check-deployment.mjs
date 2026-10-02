@@ -3,7 +3,7 @@
 // Usage: node scripts/check-deployment.mjs [mainnet|testnet]   (RPC: RPC_URL, else the chain default)
 const net = process.argv[2] === 'testnet' ? 'testnet' : 'mainnet';
 globalThis.ZKDESK_NETWORK = net;
-const { createPublicClient, http, parseAbi, getAddress } = await import('viem');
+const { createPublicClient, http, parseAbi, parseAbiItem, getAddress, keccak256, toHex } = await import('viem');
 const { chain, deployment } = await import('../src/lib/chain/config.js');
 
 const client = createPublicClient({ chain, transport: http(process.env.RPC_URL || undefined) });
@@ -29,7 +29,31 @@ const ABI = parseAbi([
   'function marker() view returns (address)',
   'function EVICT_AFTER() view returns (uint64)',
   'function MAX_LEAVES() view returns (uint256)',
+  'function verifier() view returns (address)',
+  'function healthVerifier() view returns (address)',
+  'function liquidationVerifier() view returns (address)',
+  'function evictVerifier() view returns (address)',
+  'function ledgerVerifier() view returns (address)',
+  'function authVerifier() view returns (address)',
+  'function attestVerifier() view returns (address)',
+  'function pullVerifier() view returns (address)',
+  'function receiptVerifier() view returns (address)',
+  'function feeds(address) view returns (address)',
+  'function hasRole(bytes32, address) view returns (bool)',
 ]);
+const ROLE_GRANTED = parseAbiItem('event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender)');
+const ROLE_REVOKED = parseAbiItem('event RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender)');
+const sourcify = async (address) => ['match', 'exact_match'].includes((await fetch(`https://sourcify.dev/server/v2/contract/${chain.id}/${address}`).then((x) => x.json()).catch(() => ({}))).match);
+/** Logs over a long range, halving the window when the node refuses it. */
+async function logs(params, from, to) {
+  try {
+    return await client.getLogs({ ...params, fromBlock: from, toBlock: to });
+  } catch (error) {
+    if (to - from < 1000n) throw error;
+    const mid = (from + to) / 2n;
+    return [...(await logs(params, from, mid)), ...(await logs(params, mid + 1n, to))];
+  }
+}
 const read = (address, functionName, args = []) => client.readContract({ address, abi: ABI, functionName, args });
 const eq = (a, b) => getAddress(a) === getAddress(b);
 const results = [];
@@ -50,6 +74,26 @@ await check('every contract has code', async () => {
   for (const k of keys) if (!d[k] || (await client.getCode({ address: d[k] })) === undefined) missing.push(k);
   return { ok: missing.length === 0, detail: missing.length ? `no code: ${missing.join(', ')}` : `${keys.length} contracts` };
 });
+await check('Safe owners are exactly the documented signers', async () => {
+  const owners = (await read(d.safe, 'getOwners')).map((a) => a.toLowerCase()).sort();
+  const expected = (d.governance?.safeOwners ?? []).map((a) => a.toLowerCase()).sort();
+  return { ok: expected.length > 0 && owners.join() === expected.join(), detail: owners.join(', ') };
+});
+await check('timelock roles: only the Safe proposes, executes and cancels; no outside admin', async () => {
+  const roles = Object.fromEntries(['PROPOSER_ROLE', 'EXECUTOR_ROLE', 'CANCELLER_ROLE', 'DEFAULT_ADMIN_ROLE'].map((n) => [n, n === 'DEFAULT_ADMIN_ROLE' ? '0x' + '00'.repeat(32) : keccak256(toHex(n))]));
+  const from = BigInt(d.governance?.timelockDeployBlock ?? d.deployBlock);
+  const head = await client.getBlockNumber();
+  const events = [...(await logs({ address: d.timelock, event: ROLE_GRANTED }, from, head)), ...(await logs({ address: d.timelock, event: ROLE_REVOKED }, from, head))];
+  const holders = {};
+  for (const [name, role] of Object.entries(roles)) {
+    const candidates = [...new Set(events.filter((e) => e.args.role === role).map((e) => getAddress(e.args.account)))];
+    holders[name] = [];
+    for (const a of candidates) if (await read(d.timelock, 'hasRole', [role, a])) holders[name].push(a);
+  }
+  const onlySafe = (list) => list.length === 1 && eq(list[0], d.safe);
+  const ok = onlySafe(holders.PROPOSER_ROLE) && onlySafe(holders.EXECUTOR_ROLE) && onlySafe(holders.CANCELLER_ROLE) && holders.DEFAULT_ADMIN_ROLE.every((a) => eq(a, d.timelock));
+  return { ok, detail: Object.entries(holders).map(([k, v]) => `${k.replace('_ROLE', '').toLowerCase()}: ${v.length ? v.map((a) => a.slice(0, 8)).join('/') : 'none'}`).join('; ') };
+});
 await check('Safe has at least 2-of-N signers', async () => {
   const [owners, threshold] = await Promise.all([read(d.safe, 'getOwners'), read(d.safe, 'getThreshold')]);
   return { ok: Number(threshold) >= 2 && !owners.some((o) => eq(o, d.deployer)), detail: `${threshold}-of-${owners.length}; deployer ${owners.some((o) => eq(o, d.deployer)) ? 'IS' : 'is not'} an owner` };
@@ -68,9 +112,30 @@ await check('desk owned by DeskGuardian, which answers to the timelock', async (
   const [owner, tl, desk, guardian] = await Promise.all([read(d.desk, 'owner'), read(d.deskGuardian, 'timelock'), read(d.deskGuardian, 'desk'), read(d.deskGuardian, 'guardian')]);
   return { ok: eq(owner, d.deskGuardian) && eq(tl, d.timelock) && eq(desk, d.desk) && !eq(guardian, d.deployer), detail: `guardian ${guardian}` };
 });
-await check('screener is not the deployer', async () => {
-  const screener = await read(d.assetGate, 'screener');
-  return { ok: !eq(screener, d.deployer), detail: screener };
+await check('guardian and screener are the documented keys', async () => {
+  const [screener, guardian] = await Promise.all([read(d.assetGate, 'screener'), read(d.deskGuardian, 'guardian')]);
+  const ok = !eq(screener, d.deployer) && (!d.governance || (eq(screener, d.governance.screener) && eq(guardian, d.governance.guardian)));
+  return { ok, detail: `guardian ${guardian}; screener ${screener}` };
+});
+await check('price pinner is the relayer or keeper; every class reads its documented feed', async () => {
+  const pinner = await read(d.marker, 'pinner');
+  const wrong = [];
+  for (const [symbol, s] of Object.entries(d.stocks)) if (!eq(await read(d.marker, 'feeds', [s.token]), s.feed)) wrong.push(symbol);
+  const ok = (eq(pinner, d.relayer) || (d.keeper && eq(pinner, d.keeper))) && wrong.length === 0;
+  return { ok, detail: `pinner ${pinner}${wrong.length ? `; wrong feeds: ${wrong.join(', ')}` : '; feeds match'}` };
+});
+await check('every verifier is deployed and source-verified', async () => {
+  const getters = [[d.pool, ['verifier']], [d.desk, ['verifier', 'healthVerifier', 'liquidationVerifier', 'evictVerifier']], [d.ledger, ['ledgerVerifier', 'authVerifier', 'attestVerifier']], [d.mandates, ['authVerifier', 'pullVerifier', 'receiptVerifier']]];
+  const bad = [];
+  let n = 0;
+  for (const [contract, names] of getters) {
+    for (const g of names) {
+      const v = await read(contract, g);
+      n++;
+      if ((await client.getCode({ address: v })) === undefined || !(await sourcify(v))) bad.push(`${g}@${v.slice(0, 8)}`);
+    }
+  }
+  return { ok: bad.length === 0, detail: bad.length ? `problem: ${bad.join(', ')}` : `${n} verifiers` };
 });
 await check('pool modules fixed: desk, ledgers, mandates only', async () => {
   const [set, a, b, c, gate] = await Promise.all([read(d.pool, 'modulesSet'), read(d.pool, 'isModule', [d.desk]), read(d.pool, 'isModule', [d.ledger]), read(d.pool, 'isModule', [d.mandates]), read(d.pool, 'gate')]);
@@ -96,10 +161,7 @@ await check('every collateral class is listed, enabled and has a minimum positio
 await check('contract sources verified on Sourcify', async () => {
   const keys = ['pool', 'assetGate', 'desk', 'deskGuardian', 'lending', 'ledger', 'mandates', ...(d.venue ? ['venue'] : [])];
   const missing = [];
-  for (const k of keys) {
-    const r = await fetch(`https://sourcify.dev/server/v2/contract/${chain.id}/${d[k]}`).then((x) => x.json()).catch(() => ({}));
-    if (!['match', 'exact_match'].includes(r.match)) missing.push(k);
-  }
+  for (const k of keys) if (!(await sourcify(d[k]))) missing.push(k);
   return { ok: missing.length === 0, detail: missing.length ? `unverified: ${missing.join(', ')}` : `${keys.length} contracts (https://repo.sourcify.dev/${chain.id}/<address>)` };
 });
 await check('idle positions can be evicted', async () => {

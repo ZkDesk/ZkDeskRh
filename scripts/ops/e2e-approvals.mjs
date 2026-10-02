@@ -36,7 +36,7 @@ const step = async (name, fn) => { const t = performance.now(); console.log(`▶
 const L = async (m) => {
   await m.client.sync();
   const all = m.client.ledgers();
-  return process.argv[2] ? all.find((l) => l.owner === BigInt(process.argv[2])) : all.find((l) => l.name === 'E2E treasury' && l.roles.includes(m.name));
+  return process.argv[2] ? all.find((l) => l.owner === BigInt(process.argv[2])) : all.findLast((l) => l.name === 'E2E treasury' && l.roles.includes(m.name)); // the newest one
 };
 
 const lt = await L(treasurer);

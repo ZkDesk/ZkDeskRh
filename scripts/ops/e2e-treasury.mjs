@@ -20,9 +20,16 @@ const { createClient } = await import('../../src/lib/zk/client.js');
 const { createProver } = await import('../../src/lib/zk/prover.js');
 const { default: relayHandler } = await import('../../api/relay.js');
 const { default: tickHandler } = await import('../../api/cron/tick.js');
+const { default: requestsHandler } = await import('../../api/requests.js');
 
 const call = (handler, req) => new Promise((resolve) => handler(req, { statusCode: 200, setHeader() {}, end(b) { resolve(JSON.parse(b)); } }));
 const relay = (body) => call(relayHandler, body ? { method: 'POST', body } : { method: 'GET' });
+// The approval mailbox, as the dashboard uses it: createLedger registers the treasury's key first.
+const mailbox = {
+  list: (ledger) => call(requestsHandler, { method: 'GET', query: { ledger } }).then((r) => r.requests),
+  post: (ledgerId, ciphertext, signature) => call(requestsHandler, { method: 'POST', body: { ledgerId, ciphertext, signature } }),
+  register: (ledgerId, signer, signature) => call(requestsHandler, { method: 'POST', body: { ledgerId, signer, signature, register: true } }),
+};
 const tick = () => call(tickHandler, { method: 'GET', query: {}, headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } });
 
 const account = privateKeyToAccount(process.env.DEPLOYER_PRIVATE_KEY);
@@ -30,7 +37,7 @@ const publicClient = createPublicClient({ chain, transport: http(process.env.RPC
 const walletClient = createWalletClient({ account, chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
 const provers = Object.fromEntries(await Promise.all(['transact', 'ledger', 'role_auth', 'treasury_attest'].map(async (k) => [k, await createProver(JSON.parse(readFileSync(`src/lib/zk/artifacts/${k}.json`, 'utf8')))])));
 const prove = (kind, witness) => provers[kind].prove(witness);
-const member = (name, keys, wallet = {}) => ({ name, keys, client: createClient({ publicClient, keys, prove, relay, onStatus: (m) => console.log(`    · ${name}: ${m}`), ...wallet }) });
+const member = (name, keys, wallet = {}) => ({ name, keys, client: createClient({ publicClient, keys, prove, relay, requests: mailbox, onStatus: (m) => console.log(`    · ${name}: ${m}`), ...wallet }) });
 const owner = member('Owner', deriveKeys(await account.signTypedData(keyRequest(chain.id))), { walletClient, address: account.address });
 // Deterministic test members (not wallets): keys from fixed test signatures.
 const [treasurer, payer, auditor] = ['Treasurer', 'Payer', 'Auditor'].map((n, i) => member(n, deriveKeys('0x' + (i + 1).toString(16).padStart(2, '0').repeat(65))));
@@ -87,7 +94,12 @@ await refused('Auditor transfer', async () => auditor.client.ledgerAct(await fin
 await step('Payer pays 50 tUSDG to itself (under the threshold)', async () => payer.client.ledgerAct(await find(payer, id), 'Payer', { action: 'transfer', amount: 50_000000n, to: addr(payer) }));
 await payer.client.sync();
 console.log(`  Payer personal balance: ${usd(payer.client.balance(deployment.usdg))}`);
-await refused('Treasurer above the threshold without the Owner', async () => treasurer.client.ledgerAct(await find(treasurer, id), 'Treasurer', { action: 'transfer', amount: 200_000000n, to: addr(treasurer) }), /Owner must approve/);
+{
+  // Above the dual-control threshold a Treasurer cannot pay: the transfer goes to the Owner as a request.
+  const r = await treasurer.client.ledgerAct(await find(treasurer, id), 'Treasurer', { action: 'transfer', amount: 200_000000n, to: addr(treasurer) });
+  if (!r?.requested) throw new Error('an over-threshold transfer by the Treasurer was not turned into a request');
+  console.log('  ✓ refused (Treasurer above the threshold without the Owner): sent to the Owner as a request');
+}
 await step('Owner rotates the Payer role to itself', async () => owner.client.updateLedger(await find(owner, id), { payer: addr(owner) }));
 if ((await find(payer, id))) throw new Error('the old Payer still holds a role');
 console.log('  old Payer no longer holds a role');

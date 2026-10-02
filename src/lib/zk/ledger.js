@@ -13,7 +13,7 @@ import { inputPaths, pad, padInputs } from './transact.js';
 
 export const ROLES = ['Owner', 'Treasurer', 'Payer', 'Auditor'];
 export const ACTIONS = { allocate: 0, deallocate: 1, transfer: 2 };
-export const AUTH = { create: 0, rotate: 1, setPolicy: 2, approve: 3 };
+export const AUTH = { create: 0, rotate: 1, setPolicy: 2, approve: 3, setLimit: 4 };
 export const ATTEST_NOTES = 8; // circuits/treasury_attest K
 export const ATTEST_ASSETS = 6; // circuits/treasury_attest A
 

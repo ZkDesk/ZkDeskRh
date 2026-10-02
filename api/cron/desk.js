@@ -123,22 +123,18 @@ export async function runDesk({ operatorSk, prove, log = () => {} }) {
   }
 
   // One transaction: nothing can replace the breached set between the epoch and its liquidations.
-  try {
-    report.attest = await submit(batches.length ? 'attestAndLiquidate' : 'attest', batches.length ? [health, batches.map((b) => b.args)] : [health]);
-    report.batches.push(...batches.map((b) => ({ asset: b.asset, slots: b.slots, tx: report.attest.hash })));
-  } catch (error) {
-    if (!batches.length) throw error;
-    // A batch would revert (e.g. the venue moved): land the epoch, then each batch on its own.
-    report.atomicError = revertName(error);
-    report.attest = await submit('attest', [health]);
-    for (const b of batches) {
-      try {
-        report.batches.push({ asset: b.asset, slots: b.slots, ...(await submit('liquidate', [b.args])) });
-      } catch (e) {
-        report.batches.push({ asset: b.asset, error: revertName(e) });
-      }
-    }
+  // A batch that would revert (e.g. the venue moved) is dropped from the call, never sent on its own
+  // after the epoch: a separate liquidate would reopen the window an old epoch proof could use (M-1).
+  const atomic = (list) => (list.length ? ['attestAndLiquidate', [health, list.map((b) => b.args)]] : ['attest', [health]]);
+  const sim = (list) => publicClient.simulateContract({ account: keeper, ...desk, functionName: atomic(list)[0], args: atomic(list)[1] }).then(() => true, (error) => { report.dropped = [...(report.dropped ?? []), revertName(error)]; return false; });
+  let send = batches;
+  if (send.length && !(await sim(send))) {
+    send = [];
+    for (const b of batches) if (await sim([...send, b])) send.push(b);
   }
+  report.attest = await submit(...atomic(send));
+  report.batches.push(...send.map((b) => ({ asset: b.asset, slots: b.slots, tx: report.attest.hash })));
+  report.batches.push(...batches.filter((b) => !send.includes(b)).map((b) => ({ asset: b.asset, slots: b.slots, error: 'dropped: would revert; retried next epoch' })));
 
   // Audit H-1: free the slots of positions without debt that nobody touched for EVICT_AFTER.
   const [evictAfter, now] = await Promise.all([read(deployment.desk, abis.desk, 'EVICT_AFTER'), publicClient.getBlock({ blockTag: 'latest' }).then((b) => b.timestamp)]);

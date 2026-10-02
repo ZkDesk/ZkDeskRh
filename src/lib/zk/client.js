@@ -246,10 +246,7 @@ export function createClient({ publicClient, walletClient = null, address = null
     const id = hexId(ledger.owner);
     const signature = await mailboxSigner(ledger).signMessage({ message: mailboxMessages.post(id, ciphertext) });
     let r = await requests.post(id, ciphertext, signature);
-    if (r.error === 'mailbox_unregistered') {
-      await registerMailbox(ledger); // a treasury created before mailbox keys existed
-      r = await requests.post(id, ciphertext, signature);
-    }
+    if (r.error === 'mailbox_unregistered') throw new Error('This treasury has no request mailbox (it was created before mailboxes existed). Ask the Owner to approve directly.');
     if (r.error) throw new Error(friendly(r.error));
   }
 
@@ -379,6 +376,14 @@ export function createClient({ publicClient, walletClient = null, address = null
     return out;
   }
 
+  /**
+   * Owner: allow at most `maxTransfers` transfers without the Owner's approval per `periodSeconds`
+   * (TreasuryLedger SET_LIMIT; 0 removes the limit). Each is below the dual-control threshold, so this
+   * bounds the cumulative outflow without revealing any amount.
+   */
+  const setTransferLimit = (ledger, maxTransfers, periodSeconds) =>
+    relayAuth({ ledger, config: ledger.config, action: AUTH.setLimit, newValue: BigInt(maxTransfers) | (BigInt(periodSeconds) << 64n) });
+
   /** Owner: approve the exact transfer in a request. */
   const approveRequest = (ledger, request) => relayAuth({ ledger, config: ledger.config, action: AUTH.approve, newValue: request.intent });
 
@@ -490,7 +495,7 @@ export function createClient({ publicClient, walletClient = null, address = null
 
   return {
     sync, notes, positions, deposit, send, credit, deskHealth,
-    ledgers, ledgerNotes, createLedger, updateLedger, ledgerAct, ledgerAttest, ledgerRequests, approveRequest, completeRequest,
+    ledgers, ledgerNotes, createLedger, updateLedger, ledgerAct, ledgerAttest, ledgerRequests, approveRequest, completeRequest, setTransferLimit,
     mandates, createMandate, manageMandate, payMandate, receipts, proveReceipt,
     ledgerBalance: (ledger, asset, st = 'unspent') => balanceOf(ledgerNotes(ledger), big(asset), st),
     lend: (amount) => convert('lend', amount),
@@ -522,6 +527,8 @@ const FRIENDLY = {
   InsufficientLiquidity: 'The lending pool does not have enough USDG right now.',
   mailbox_key_mismatch: 'This treasury\'s request mailbox is registered to another key, so requests cannot be posted. Approve as Owner instead.',
   mailbox_full: 'This treasury received too many approval requests today. Please try again tomorrow.',
+  mailbox_busy: 'The request mailbox is busy right now. Please try again in an hour.',
+  mailbox_closed: 'A request mailbox can only be set up while creating a treasury.',
   bad_signature: 'The approval request could not be signed for this treasury.',
   voucher_required: 'The relay fee voucher was missing or already used. Please try again.',
   fee_too_low: 'Network fees rose while your proof was being made. Please try again.',

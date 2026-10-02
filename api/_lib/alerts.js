@@ -8,6 +8,7 @@ import { abis, db, deployment, keeper, MAINNET, publicClient, relayer, secret } 
 
 const LOW_WEI = 5n * 10n ** 15n; // 0.005 ETH
 const REPEAT_MS = 60 * 60 * 1000;
+const MAX_SCAN = 50_000n; // blocks of timelock logs per tick; the cursor catches up over ticks
 const CALL_SCHEDULED = parseAbiItem('event CallScheduled(bytes32 indexed id, uint256 indexed index, address target, uint256 value, bytes data, bytes32 predecessor, uint256 delay)');
 const NET = MAINNET ? 'mainnet' : 'testnet';
 
@@ -22,12 +23,15 @@ async function send(text) {
   return results.length > 0 && results.every((r) => r.status === 'fulfilled' && r.value.ok);
 }
 
-/** Sends `text` under `key` unless it was sent within REPEAT_MS. Returns whether it went out now. */
+/**
+ * Sends `text` under `key` unless it was sent within REPEAT_MS. It is recorded as sent only after a
+ * channel accepted it, so a failed delivery is retried on the next tick. Returns whether it went out.
+ */
 async function raise(key, text) {
   const { rows } = await db.query('select sent_at from public.alert_state where key = $1', [key]);
-  if (rows[0] && Date.now() - new Date(rows[0].sent_at).getTime() < REPEAT_MS) return false;
+  if (rows[0]?.sent_at && Date.now() - new Date(rows[0].sent_at).getTime() < REPEAT_MS) return false;
+  if (!(await send(`ZKDesk ${NET}: ${text}`))) return false;
   await db.query(`insert into public.alert_state (key, sent_at) values ($1, now()) on conflict (key) do update set sent_at = now()`, [key]);
-  await send(`ZKDesk ${NET}: ${text}`);
   return true;
 }
 
@@ -37,8 +41,9 @@ async function proposals(head) {
   const { rows } = await db.query(`select block from public.alert_state where key = 'timelock_cursor'`);
   const from = rows[0]?.block ? BigInt(rows[0].block) + 1n : head;
   if (from > head) return [];
-  const logs = await publicClient.getLogs({ address: deployment.timelock, event: CALL_SCHEDULED, fromBlock: from, toBlock: head });
-  await db.query(`insert into public.alert_state (key, block) values ('timelock_cursor', $1) on conflict (key) do update set block = $1`, [head.toString()]);
+  const to = from + MAX_SCAN - 1n < head ? from + MAX_SCAN - 1n : head;
+  const logs = await publicClient.getLogs({ address: deployment.timelock, event: CALL_SCHEDULED, fromBlock: from, toBlock: to });
+  await db.query(`insert into public.alert_state (key, block) values ('timelock_cursor', $1) on conflict (key) do update set block = $1`, [to.toString()]);
   return logs;
 }
 

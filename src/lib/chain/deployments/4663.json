@@ -65,5 +65,15 @@
     "ledgerBlock": 75209487,
     "mandatesBlock": 75209595,
     "deployedAt": 1790639713
+  },
+  "governance": {
+    "safeOwners": [
+      "0x630815ddAE4FF068d22f8f4B47AF23645BCBEc18",
+      "0x168c4BC6D3f07b0F1b64c0d66A2A3DF1570d03C3",
+      "0x7246cd991585370FE559170F8fa6566Cbc2e34Cd"
+    ],
+    "guardian": "0x630815ddAE4FF068d22f8f4B47AF23645BCBEc18",
+    "screener": "0x168c4BC6D3f07b0F1b64c0d66A2A3DF1570d03C3",
+    "timelockDeployBlock": 75209100
   }
 }
