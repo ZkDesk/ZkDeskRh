@@ -41,6 +41,7 @@ Every action you take is proven in your browser with zero-knowledge proofs and v
 - [Smart contracts](#smart-contracts)
 - [Circuits](#circuits)
 - [Public API](#public-api)
+- [AI agents](#ai-agents)
 - [Testing and CI](#testing-and-ci)
 - [Deployed contracts](#deployed-contracts)
 - [Operations](#operations)
@@ -131,6 +132,7 @@ Full details: [Governance and safety](https://zkdesk.tech/docs#governance) and [
 
 ```
 .
+├── agent/                AI agent SDK, MCP server and CLI (Node)
 ├── api/                  Serverless functions (relay, ops status, requests, transparency, crons)
 │   ├── _lib/             Shared server clients: chain, relayer, database
 │   └── mainnet/          Mainnet wrappers around the shared handlers
@@ -252,6 +254,25 @@ All endpoints are served from the site origin. Mainnet equivalents live under `/
 | `POST` | `/api/relay` | Submit a proven private action |
 | `GET` | `/api/ops/:id` | Status of a relayed operation |
 | `GET` / `POST` | `/api/requests` | Sealed treasury approval requests. Anyone can read the ciphertexts, which only treasury members can open; posting needs a signature from the treasury's mailbox key, registered by its create request, and the treasury must exist on-chain |
+
+## AI agents
+
+`agent/` gives an AI agent its own private ZKdesk account. It proves each step locally and uses the ZKdesk relayer, so it needs no wallet or gas.
+
+```sh
+node agent/cli.mjs keygen                      # prints ZKDESK_SEED and the agent's zkd: address
+ZKDESK_SEED=0x… node agent/mcp.mjs             # MCP server (stdio) for Claude or any MCP client
+```
+
+- **MCP tools:**
+  - `zkdesk_address`, `zkdesk_balance`
+  - `zkdesk_send`, `zkdesk_withdraw`
+  - `zkdesk_treasuries`, `zkdesk_pay`, `zkdesk_requests`, `zkdesk_complete`
+  - `zkdesk_mandates`, `zkdesk_pay_mandate`
+  - `zkdesk_receipts`, `zkdesk_prove_receipt`, `zkdesk_verify_receipt`
+- **SDK:** `createAgent({ seed, network, maxPerTx })` from `agent/index.mjs`.
+- **Environment:** `ZKDESK_NETWORK` (default `mainnet`), `ZKDESK_MAX_PER_TX` (default `50` USDG; `off` removes it), `ZKDESK_API`, `ZKDESK_RPC`.
+- **Binding limits** come from making the agent a treasury's **Payer**: mandate caps, the Owner's approval threshold and the transfer-count limit are enforced on-chain. `ZKDESK_MAX_PER_TX` is only a local guard. Anyone with the seed controls the agent's account.
 
 ## Testing and CI
 

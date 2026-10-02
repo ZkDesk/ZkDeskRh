@@ -8,7 +8,7 @@ import './developer-docs.css';
 const NAV = [
   ['Getting started', [['introduction', 'Introduction'], ['quickstart', 'Quickstart'], ['networks', 'Networks']]],
   ['Core concepts', [['architecture', 'Architecture'], ['keys', 'Accounts and keys'], ['notes', 'Private notes'], ['proofs', 'Zero-knowledge proofs'], ['relayer', 'Relayer and operations']]],
-  ['Product guides', [['balance', 'Private balance'], ['lending', 'Lending pool'], ['credit', 'Private credit'], ['health', 'Health epochs and liquidation'], ['treasury', 'Treasury'], ['payments', 'Payments and receipts'], ['transparency', 'Transparency']]],
+  ['Product guides', [['balance', 'Private balance'], ['lending', 'Lending pool'], ['credit', 'Private credit'], ['health', 'Health epochs and liquidation'], ['treasury', 'Treasury'], ['payments', 'Payments and receipts'], ['agents', 'AI agents'], ['transparency', 'Transparency']]],
   ['Security', [['privacy', 'Privacy model'], ['governance', 'Governance and safety'], ['status', 'Security status and limitations'], ['eligibility', 'Eligibility']]],
   ['Reference', [['parameters', 'Protocol parameters'], ['api', 'Public API'], ['states', 'Operation states and errors'], ['stack', 'Technology stack'], ['glossary', 'Glossary']]],
 ];
@@ -258,6 +258,38 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
           <p>Payments run from a member's browser with <em>Pay now</em>, at most once per period. To automate them, make the ZKdesk scheduler the treasury's Payer; due periods are then paid hourly at the cap. Making the scheduler Payer gives whoever holds its key (the ZKdesk service) the Payer role: it can pay committed mandates and make transfers below the dual-control threshold. The service only ever proves mandate payments, but that is a policy of the code, not a limit of the key. Mandates can be paused, resumed and revoked.</p>
           <h3>Receipts</h3>
           <p>Every payment adds a leaf to the receipt tree. The recipient can prove from Activity that they were paid, addressed to one verifier's address, optionally disclosing the amount and themselves. The proof is bound to that verifier and can be checked independently against the chain.</p>
+        </Section>
+
+        <Section id="agents" eyebrow="Product guides" title="AI agents">
+          <p>An AI agent can hold its own private ZKdesk account. It proves every step on its own machine and ZKdesk relays it, so the agent needs no wallet and no gas. The agent SDK and an MCP server are in the repository's <C>agent/</C> folder (Node 22.12+).</p>
+          <Code label="Set up (from a clone of the public repository)">{`pnpm install
+node agent/cli.mjs keygen            # ZKDESK_SEED=0x… and the agent's zkd: address
+ZKDESK_SEED=0x… node agent/cli.mjs balance`}</Code>
+          <p>Fund the agent with <em>Send privately</em> to its <C>zkd:</C> address. To let it pay from a treasury, paste that address as the Payer in <em>Manage roles</em>.</p>
+          <Code label="MCP server (Claude Desktop, Claude Code or any MCP client)">{`{
+  "mcpServers": {
+    "zkdesk": {
+      "command": "node",
+      "args": ["/path/to/ZkDeskRh/agent/mcp.mjs"],
+      "env": { "ZKDESK_SEED": "0x…", "ZKDESK_NETWORK": "mainnet", "ZKDESK_MAX_PER_TX": "50" }
+    }
+  }
+}`}</Code>
+          <Table head={['Tool', 'What it does']} rows={[
+            ['zkdesk_address, zkdesk_balance', "The agent's private address and USDG balance"],
+            ['zkdesk_send, zkdesk_withdraw', 'Private transfer to a zkd: address, or out to a 0x address'],
+            ['zkdesk_treasuries, zkdesk_pay', 'Treasuries where the agent holds a role; pay from one'],
+            ['zkdesk_requests, zkdesk_complete', "Payments above the Owner's threshold wait for approval; complete them once approved"],
+            ['zkdesk_mandates, zkdesk_pay_mandate', "Pay a mandate's current period, up to its cap"],
+            ['zkdesk_receipts, zkdesk_prove_receipt, zkdesk_verify_receipt', "Prove a payment the agent received, or check anyone's receipt"],
+          ]} />
+          <p>In code: <C>{"const agent = await createAgent({ seed, network: 'mainnet', maxPerTx: '50' })"}</C> from <C>agent/index.mjs</C>, then <C>agent.send({'{'} to, amount {'}'})</C>, <C>agent.pay(treasuryId, {'{'} to, amount {'}'})</C> and so on. Amounts are USDG decimal strings.</p>
+          <h3>Where the limits are enforced</h3>
+          <ul>
+            <li><strong>By the contracts and circuits</strong>, when the agent is a treasury's Payer: it can pay mandates up to their caps, once per period, and transfer up to the Owner's dual-control threshold. Anything above becomes a request that only the Owner can approve, within the treasury's transfer-count limit. It cannot allocate, change roles or approve. The Owner can revoke it in Manage roles at any time.</li>
+            <li><strong>On the agent's machine only</strong>: <C>ZKDESK_MAX_PER_TX</C> (default 50 USDG) refuses larger payments before they are proven. It protects against a confused model, not against someone who has the seed.</li>
+            <li>The seed is the account. Anyone holding it can spend the agent's own balance and act as its role. Keep the agent's own balance small and its treasury role bounded. A recipient allow-list and a cumulative budget enforced in the circuit are planned for the next contract release.</li>
+          </ul>
         </Section>
 
         <Section id="transparency" eyebrow="Product guides" title="Transparency">

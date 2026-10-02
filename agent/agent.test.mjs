@@ -1,0 +1,87 @@
+// node agent/agent.test.mjs — agent keys, the per-transaction guard, MCP protocol handling and a real
+// stdio session. No network: every call checked here fails or answers before any chain read.
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { agentKeys, deriveKeys, passkeyKeys, zkAddress, parseZkAddress } from '../src/lib/zk/keys.js';
+import { createHandler, TOOLS } from './mcp.mjs';
+import { createAgent, newSeed } from './index.mjs';
+
+// Keys: deterministic, one account per chain, never the passkey or signature account of the same bytes.
+const seed = '0x' + '5a'.repeat(32);
+assert.equal(agentKeys(seed, 4663).sk, agentKeys(seed, 4663).sk);
+assert.notEqual(agentKeys(seed, 4663).sk, agentKeys(seed, 46630).sk);
+assert.notEqual(agentKeys(seed, 4663).sk, passkeyKeys(seed, 4663).sk);
+assert.notEqual(agentKeys(seed, 4663).sk, deriveKeys(seed).sk);
+const k = agentKeys(seed, 4663);
+assert.deepEqual(parseZkAddress(zkAddress(k)), { owner: k.owner, encPub: k.encPub });
+assert.match(newSeed(), /^0x[0-9a-f]{64}$/);
+assert.notEqual(newSeed(), newSeed());
+
+// SDK: bad seeds, amounts, addresses and the per-transaction limit are refused before any proof.
+await assert.rejects(createAgent({ seed: '0x12' }), /32 bytes of hex/);
+await assert.rejects(createAgent({ seed, network: 'devnet' }), /mainnet" or "testnet/);
+const agent = await createAgent({ seed, network: 'mainnet', maxPerTx: '50' });
+assert.equal(agent.address, zkAddress(k));
+await assert.rejects(createAgent({ seed, network: 'testnet' }), /one network per process/);
+await assert.rejects(agent.send({ to: agent.address, amount: '50.000001' }), /above this agent's limit of 50 USDG/);
+await assert.rejects(agent.send({ to: agent.address, amount: '0' }), /greater than zero/);
+await assert.rejects(agent.send({ to: agent.address, amount: '1e3' }), /greater than zero/);
+await assert.rejects(agent.send({ to: 'zkd:1234', amount: '1' }), /Not a ZKdesk private address/);
+await assert.rejects(agent.withdraw({ to: '0x123', amount: '1' }), /Not a 0x address/);
+
+// MCP handler with a stand-in agent.
+const calls = [];
+const fake = {
+  address: 'zkd:abc', network: 'mainnet',
+  balance: async () => ({ usdg: '1.5' }),
+  send: async (x) => { calls.push(['start', x.amount]); await new Promise((r) => setTimeout(r, x.amount === '2' ? 50 : 0)); calls.push(['end', x.amount]); return { confirmed: true, big: 5n }; },
+};
+const handle = createHandler(async () => fake);
+const init = await handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
+assert.equal(init.result.protocolVersion, '2025-06-18');
+assert.deepEqual(init.result.capabilities, { tools: {} });
+assert.equal((await handle({ jsonrpc: '2.0', id: 2, method: 'initialize', params: { protocolVersion: '1999-01-01' } })).result.protocolVersion, '2025-11-25');
+assert.equal(await handle({ jsonrpc: '2.0', method: 'notifications/initialized' }), null);
+assert.deepEqual((await handle({ jsonrpc: '2.0', id: 3, method: 'ping' })).result, {});
+const { tools } = (await handle({ jsonrpc: '2.0', id: 4, method: 'tools/list' })).result;
+assert.equal(tools.length, TOOLS.length);
+assert.ok(tools.every((t) => t.name.startsWith('zkdesk_') && t.inputSchema.type === 'object' && !('run' in t)));
+assert.ok(tools.find((t) => t.name === 'zkdesk_send').annotations.destructiveHint);
+assert.ok(tools.find((t) => t.name === 'zkdesk_balance').annotations.readOnlyHint);
+const call = (name, args, id = 9) => handle({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } });
+assert.equal(JSON.parse((await call('zkdesk_balance', {})).result.content[0].text).usdg, '1.5');
+for (const [args, why] of [[{ to: 'zkd:x' }, /Missing argument "amount"/], [{ to: 'zkd:x', amount: 5 }, /must be a string/], [{ to: 'zkd:x', amount: '1,5' }, /not valid/], [{ to: 'zkd:x', amount: '1', memo: 'hi' }, /Unknown argument "memo"/]]) {
+  const r = (await call('zkdesk_send', args)).result;
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, why);
+}
+assert.equal((await call('zkdesk_nope', {})).error.code, -32602);
+assert.equal((await handle({ jsonrpc: '2.0', id: 10, method: 'resources/list' })).error.code, -32601);
+assert.equal((await handle({ id: 11, method: 'ping' })).error.code, -32600);
+// Spends run one at a time, in order, and bigints serialize.
+const [a, b] = await Promise.all([call('zkdesk_send', { to: 'zkd:x', amount: '2' }, 20), call('zkdesk_send', { to: 'zkd:x', amount: '3' }, 21)]);
+assert.deepEqual(calls, [['start', '2'], ['end', '2'], ['start', '3'], ['end', '3']]);
+assert.equal(JSON.parse(a.result.content[0].text).big, '5');
+assert.equal(b.id, 21);
+// A failing agent (e.g. no seed) is a tool error, not a crash.
+const broken = createHandler(async () => { throw new Error('no seed'); });
+assert.match((await broken({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'zkdesk_balance', arguments: {} } })).result.content[0].text, /no seed/);
+
+// A real stdio session: stdout carries only JSON-RPC lines.
+const child = spawn(process.execPath, [fileURLToPath(new URL('./mcp.mjs', import.meta.url))], { env: { ...process.env, ZKDESK_SEED: seed, ZKDESK_NETWORK: 'mainnet' } });
+let out = '';
+child.stdout.on('data', (d) => { out += d; });
+const send = (m) => child.stdin.write(JSON.stringify(m) + '\n');
+send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
+send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'zkdesk_address', arguments: {} } });
+child.stdin.write('not json\n');
+for (let i = 0; i < 200 && out.split('\n').filter(Boolean).length < 3; i++) await new Promise((r) => setTimeout(r, 50));
+child.kill();
+const lines = out.split('\n').filter(Boolean).map((l) => JSON.parse(l));
+assert.equal(lines.find((l) => l.id === 1).result.serverInfo.name, 'zkdesk');
+assert.equal(JSON.parse(lines.find((l) => l.id === 2).result.content[0].text).address, zkAddress(k));
+assert.equal(lines.find((l) => l.id === null).error.code, -32700);
+
+console.log('agent checks passed: agent keys, SDK input guards and per-transaction limit, MCP initialize/tools/list/tools/call, argument validation, serialized spends, stdio session');

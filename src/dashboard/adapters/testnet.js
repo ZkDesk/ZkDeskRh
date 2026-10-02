@@ -9,7 +9,7 @@ import { isAddress, parseUnits } from 'viem';
 import { abis, apiBase, deployment, MAINNET, mainnetReady, testnetReady, minRelayFee, network, NETWORK_NAME, payableFee, stocks, USD_SYMBOL } from '../../lib/chain/config.js';
 import { connectWallet, hasWallet, onWalletChange, publicClient } from '../../lib/chain/wallet.js';
 import { createPasskey, passkeySupported, unlockPasskey } from '../../lib/chain/passkey.js';
-import { keyRequest, seedWords, wordsSeed } from '../../lib/zk/keys.js';
+import { keyRequest, parseZkAddress, seedWords, wordsSeed, zkAddress } from '../../lib/zk/keys.js';
 import { debtOf, friendly, valueOf } from '../../lib/zk/client.js';
 import { balanceOf } from '../../lib/zk/wallet.js';
 import { relay } from '../../lib/zk/transport.js';
@@ -26,12 +26,7 @@ const T = MAINNET ? '' : 't'; // deployment symbol prefix
 export const plain = (symbol) => (MAINNET ? symbol : symbol.replace(/^t/, '')); // tSPY -> SPY (dashboard class names)
 const tokenOf = (name) => (name === 'USDG' ? deployment.usdg : stocks[`${T}${name}`]?.token);
 
-export const zkAddress = (keys) => `zkd:${keys.owner.toString(16).padStart(64, '0')}${[...keys.encPub].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
-export function parseZkAddress(value) {
-  const m = /^zkd:([0-9a-f]{64})([0-9a-f]{64})$/i.exec((value || '').trim());
-  if (!m) return null;
-  return { owner: BigInt('0x' + m[1]), encPub: Uint8Array.from(m[2].match(/../g).map((b) => parseInt(b, 16))) };
-}
+export { parseZkAddress, zkAddress };
 
 let session = null; // { wallet: {address, walletClient}, passkey: bool, credential (passkey id) | null, pub: {owner, encPub}, worker, client (proxy), workspace, snap }
 let notice = null; // one-shot toast text for the next state (e.g. "sent for approval")

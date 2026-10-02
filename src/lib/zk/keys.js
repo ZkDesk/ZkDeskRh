@@ -45,6 +45,17 @@ export const deriveKeys = (signatureHex) => seedKeys('0x' + canonicalSignature(s
  */
 export const passkeyKeys = (seedHex, chainId) => seedKeys(seedHex, `ZKDesk passkey v1 ${chainId}`);
 
+/** Keys of an AI agent's account (agent/): a random 32-byte seed its operator keeps, one account per chain. */
+export const agentKeys = (seedHex, chainId) => seedKeys(seedHex, `ZKDesk agent v1 ${chainId}`);
+
+/** A private address: zkd: + owner key (32 bytes) + encryption key (32 bytes), hex. */
+export const zkAddress = (keys) => `zkd:${keys.owner.toString(16).padStart(64, '0')}${[...keys.encPub].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
+export function parseZkAddress(value) {
+  const m = /^zkd:([0-9a-f]{64})([0-9a-f]{64})$/i.exec((value || '').trim());
+  if (!m) return null;
+  return { owner: BigInt('0x' + m[1]), encPub: Uint8Array.from(m[2].match(/../g).map((b) => parseInt(b, 16))) };
+}
+
 /** Keys from raw seed bytes as given: a service seed that is not a wallet signature (the scheduler's). */
 export function seedKeys(seedHex, label = 'ZKDesk key v1') {
   const ikm = hexToBytes(seedHex.replace(/^0x/, ''));

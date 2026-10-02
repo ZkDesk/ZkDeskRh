@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.7.0 (October 2026)
+
+- **AI agents:** `agent/` gives an agent its own private ZKdesk account. It proves each step locally and uses the ZKdesk relayer, so it needs no wallet or gas.
+  - **SDK:** `createAgent({ seed, network, maxPerTx })` to send, withdraw, pay from a treasury, complete approved requests, pay mandates, and prove and verify receipts.
+  - **MCP server:** `node agent/mcp.mjs` exposes the same actions as 13 tools for Claude or any MCP client.
+  - **CLI:** `node agent/cli.mjs keygen|address|balance`.
+  - **Limits:** binding limits come from making the agent a treasury's Payer (mandate caps, the Owner's approval threshold, the transfer-count limit). `ZKDESK_MAX_PER_TX` (default 50 USDG) is a guard on the agent's own machine.
+  - The MCP protocol is implemented in the server itself, with no new dependency.
+- **Docs:** a new "AI agents" guide, and an agents section in the public README.
+
 ## 3.6.0 (October 2026)
 
 - **Passkey accounts:** unlock the dashboard with Face ID, Touch ID, Windows Hello or a security key instead of a MetaMask signature. The keys come from the passkey's WebAuthn PRF output (separate mainnet and testnet keys, different from any signature account), stay in the account worker, and are the same on every device the passkey syncs to. Sending, withdrawing, credit and treasuries need no wallet; MetaMask is asked for only to fund a deposit.
