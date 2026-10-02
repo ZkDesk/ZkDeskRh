@@ -164,6 +164,8 @@ async function refresh() {
   const requests = snap.requests;
   requestsById = new Map(requests.map((r) => [r.id, r]));
   const t = Math.floor(Date.now() / 1000);
+  // The treasury's transfer-count limit (payments below the threshold without the Owner) and its use.
+  const limit = L ? await publicClient.readContract({ address: deployment.ledger, abi: abis.ledger, functionName: 'limits', args: [L.owner] }).catch(() => null) : null;
   const mandates = snap.mandates.map((m) => {
     const oneTime = m.period === 0n;
     const paidNow = m.paid.has(currentPeriod(m, t));
@@ -192,7 +194,11 @@ async function refresh() {
       })),
       notice: (() => { const n = notice; notice = null; return n; })(),
       scheduler: deployment.scheduler,
-      ledger: L && { scheduled: parseZkAddress(deployment.scheduler ?? '')?.owner === L.config.payer, name: L.name, allocCap: usd(L.config.allocCap), dualThreshold: usd(L.config.dualThreshold), attested: L.attested && { epoch: L.attested.epoch, liabilities: usd(L.attested.liabilities) } },
+      ledger: L && {
+        scheduled: parseZkAddress(deployment.scheduler ?? '')?.owner === L.config.payer, name: L.name,
+        // Who holds the Payer role: the Owner's own key (no agent), the ZKdesk scheduler, or another key (an agent or person).
+        payer: L.config.payer === L.config.owner ? 'owner' : parseZkAddress(deployment.scheduler ?? '')?.owner === L.config.payer ? 'scheduler' : `0x${L.config.payer.toString(16).padStart(64, '0').slice(0, 8)}…`,
+        limit: limit && limit[0] ? { max: Number(limit[0]), days: Number(limit[1]) / 86_400, used: t < Number(limit[2]) + Number(limit[1]) ? Number(limit[3]) : 0 } : null, allocCap: usd(L.config.allocCap), dualThreshold: usd(L.config.dualThreshold), attested: L.attested && { epoch: L.attested.epoch, liabilities: usd(L.attested.liabilities) } },
       pending: usd(balance(deployment.usdg, 'pending')), stockBalances, shares: shares.toString(),
       // Personal USDG notes worth merging (each pays more than one merge fee): client.combine.
       combinable: L ? 0 : notes.filter((n) => n.status === 'unspent' && n.asset === BigInt(deployment.usdg) && n.amount > m.fee).length,
@@ -244,7 +250,7 @@ function validate(state, type, values) {
   const errors = {};
   const m = state.meta;
   const amount = Number(values.amount);
-  const needAmount = !['close', 'open', 'ledger', 'roles', 'mandate', 'pause', 'resume', 'revoke', 'approve', 'complete', 'combine'].includes(type);
+  const needAmount = !['close', 'open', 'ledger', 'roles', 'mandate', 'pause', 'resume', 'revoke', 'approve', 'complete', 'combine', 'agent', 'unagent'].includes(type);
   if (needAmount && !(Number.isFinite(amount) && amount > 0 && amount <= 1e9)) errors.amount = 'Enter an amount greater than zero.';
   const position = state.positions.find((p) => p.id === values.id);
   const ledger = m.ledger;
@@ -272,6 +278,18 @@ function validate(state, type, values) {
     case 'deallocate':
       if (amount > state.vault) errors.amount = `You have ${state.vault.toFixed(2)} ${USD_SYMBOL} supplied.`;
       else if (!ledger && amount > m.liquidity) errors.amount = 'The lending pool does not have that much available cash right now.';
+      break;
+    case 'agent': {
+      if (!ledger || state.role !== 'Owner') { errors.general = 'Only the treasury Owner can add or remove an agent.'; break; }
+      const agent = parseZkAddress(values.recipient);
+      if (!agent) errors.recipient = "Enter the agent's ZKdesk address (zkd:…).";
+      else if (agent.owner === session.pub.owner) errors.recipient = "That is your own address. Enter the agent's address.";
+      if (!(Number(values.threshold) > 0)) errors.threshold = 'Enter the amount above which you approve each payment.';
+      if (values.limit !== '' && !(Number.isInteger(Number(values.limit)) && Number(values.limit) >= 0 && Number(values.limit) <= 1000)) errors.limit = 'Enter a whole number of payments (0 for no limit).';
+      break;
+    }
+    case 'unagent':
+      if (!ledger || state.role !== 'Owner') errors.general = 'Only the treasury Owner can remove the agent.';
       break;
     case 'ledger': case 'roles':
       if (type === 'ledger' && !values.name?.trim()) errors.name = 'Name this treasury.';
@@ -356,6 +374,19 @@ async function submit(state, type, values) {
   if (L) {
     const usdg6 = (x) => parseUnits(String(x), 6);
     switch (type) {
+      case 'agent': {
+        // The agent becomes the Payer; then the approval threshold, then the payments-without-approval limit.
+        await client.updateLedger(L, { payer: parseZkAddress(values.recipient), dualThreshold: usdg6(values.threshold) });
+        const max = values.limit === '' ? null : Number(values.limit);
+        const days = values.per === 'week' ? 7 : 1;
+        const now = state.meta.ledger.limit;
+        if (max !== null && !(max === (now?.max ?? 0) && (!max || days === now?.days))) {
+          await client.sync(); // the worker then resolves the treasury with its new config
+          await client.setTransferLimit(L, max, max ? days * 86_400 : 0);
+        }
+        return;
+      }
+      case 'unagent': return client.updateLedger(L, { payer: { owner: session.pub.owner, encPub: session.pub.encPub } });
       case 'roles': return client.updateLedger(L, { treasurer: member(values.treasurer), payer: member(values.payer), auditor: member(values.auditor), allocCap: usdg6(values.cap), dualThreshold: usdg6(values.threshold) });
       case 'deposit': return client.deposit(tokenOf(values.asset), values.asset === 'USDG' ? usdg6(values.amount) : parseUnits(String(values.amount), 18), { owner: L.owner, encPub: L.encPub });
       case 'allocate': return client.ledgerAct(L, state.role, { action: 'allocate', amount: usdg6(values.amount) });

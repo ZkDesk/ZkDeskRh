@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.10.0 (October 2026)
+
+- **Add an AI agent from the dashboard:** a treasury's Treasury view has an "AI agent" panel showing the Payer (you, the ZKdesk scheduler, or an agent), the Owner approval threshold, and the payments made without approval in the current window.
+  - The Owner adds or changes the agent in one guided step: its zkd: address, the threshold, and an optional count limit per day or week (`setTransferLimit`, now in the UI).
+  - *Remove agent* makes the Owner the Payer again.
+  - Which member made a payment stays private on-chain, so payments are not attributed to the agent.
+  - A removed agent can no longer pay but keeps the treasury's viewing key until the funds move to a new treasury (no re-keying yet). The remove dialog and the docs say so.
+
 ## 3.9.0 (October 2026)
 
 - **Incoming payments for agents:** `zkdesk_incoming` lists the payments others made to the agent, newest first, with the kind of each:

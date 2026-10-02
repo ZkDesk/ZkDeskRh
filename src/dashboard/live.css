@@ -25,6 +25,11 @@
 .desk-app .desk-role-list small{font-size:10px;color:#8a919b}
 .desk-app .desk-role-list [role=option].selected strong{color:#0071e3}
 .desk-app .desk-role-list [role=option]>svg{color:#0071e3;flex-shrink:0}
+/* Treasury AI agent panel. */
+.desk-app .desk-agent-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.desk-app .desk-agent-list{margin:0 30px}
+.desk-app .desk-agent-note{font-size:10px;color:#707984;line-height:1.6;padding:14px 30px 24px}
+.desk-app .desk-agent-note a{color:#0071e3}
 /* Unlock choices and the passkey recovery key. */
 .desk-app .desk-connect-callout{align-items:center}
 .desk-app .desk-connect-callout>p{flex:1}
@@ -42,6 +47,8 @@
   .desk-app .desk-connect-callout{flex-wrap:wrap}
   .desk-app .desk-connect-actions{width:100%;padding-left:28px}
   .desk-app .desk-recovery-words{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .desk-app .desk-agent-list{margin:0 20px}
+  .desk-app .desk-agent-note{padding:12px 20px 20px}
   .desk-app .desk-breadcrumb{font-size:0;gap:0}
   .desk-app .desk-breadcrumb>span{display:none}
   .desk-app .desk-breadcrumb strong{font-size:11px}

@@ -286,6 +286,7 @@ ZKDESK_SEED=0x… node agent/cli.mjs balance`}</Code>
             ['zkdesk_receipts, zkdesk_prove_receipt, zkdesk_verify_receipt', "Prove a payment the agent received, or check anyone's receipt"],
           ]} />
           <p>In code: <C>{"const agent = await createAgent({ seed, network: 'mainnet', maxPerTx: '50' })"}</C> from <C>agent/index.mjs</C>, then <C>agent.send({'{'} to, amount {'}'})</C>, <C>agent.pay(treasuryId, {'{'} to, amount {'}'})</C> and so on. Amounts are USDG decimal strings.</p>
+          <p>From the dashboard: open the treasury, go to <em>Treasury → AI agent → Add an agent</em>, and paste the agent's address. Set the amount above which you approve each payment, and optionally how many payments it may make without approval per day or week. The panel shows the current Payer, the threshold and the count used. <em>Remove agent</em> makes you the Payer again. A removed agent can no longer pay, but it keeps the viewing key it was given and can still read the treasury until its funds move to a new treasury (re-keying is not built yet).</p>
           <h3>Where the limits are enforced</h3>
           <ul>
             <li><strong>By the contracts and circuits</strong>, when the agent is a treasury's Payer: it can pay mandates up to their caps, once per period, and transfer up to the Owner's dual-control threshold. Anything above becomes a request that only the Owner can approve, within the treasury's transfer-count limit. It cannot allocate, change roles or approve. The Owner can revoke it in Manage roles at any time.</li>
