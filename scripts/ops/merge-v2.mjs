@@ -1,7 +1,8 @@
 // Folds a release (contracts/script/DeployV2.s.sol output, deployments/<chainId>.<release>.json) into
 // the app's deployment file. The current contract addresses move under `v<version>` (still on-chain,
 // for exits); unchanged contracts (tokens, feeds, marker, vault, Safe, timelock) stay where they are.
-// Usage: node scripts/ops/merge-v2.mjs <chainId> [release, default v2]
+// Usage: node scripts/ops/merge-v2.mjs <chainId> [release, default v2] [--replace]
+// --replace: a corrected deployment of the current release; the superseded set moves under `v<n>-replaced`.
 import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 
 const id = process.argv[2];
@@ -12,7 +13,8 @@ const path = `src/lib/chain/deployments/${id}.json`;
 const d = JSON.parse(readFileSync(path, 'utf8'));
 const current = d.version ?? 1;
 const fresh = JSON.parse(readFileSync(`src/lib/chain/deployments/${id}.${release}.json`, 'utf8'));
-if (current >= version) throw new Error(`${path} is already ${release}`);
+const replace = process.argv[4] === '--replace';
+if (replace ? current !== version : current >= version) throw new Error(`${path} is ${replace ? 'not' : 'already'} ${release}`);
 
 // Robinhood Chain is an Arbitrum chain: Solidity's block.number there is the parent chain's block, so
 // the first deploy block for log scans comes from the broadcast receipts (L2 block numbers).
@@ -23,9 +25,9 @@ const MOVED = ['pool', 'assetGate', 'lending', 'desk', 'deskGuardian', 'ledger',
 const old = Object.fromEntries(MOVED.filter((k) => k in d).map((k) => [k, d[k]]));
 const block = fresh.deployBlock;
 const next = {
-  ...d, ...fresh, version, [`v${current}`]: old,
+  ...d, ...fresh, version, [`v${current}${replace ? '-replaced' : ''}`]: old,
   deployBlock: block, deskBlock: block, ledgerBlock: block, mandatesBlock: block,
 };
 writeFileSync(path, JSON.stringify(next, null, 2) + '\n');
 rmSync(`src/lib/chain/deployments/${id}.${release}.json`);
-console.log(`${path}: ${release} pool ${next.pool}, desk ${next.desk}; v${current} kept under "v${current}"`);
+console.log(`${path}: ${release} pool ${next.pool}, desk ${next.desk}; the previous set kept under "v${current}${replace ? '-replaced' : ''}"`);

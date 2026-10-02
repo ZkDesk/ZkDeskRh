@@ -277,23 +277,23 @@ Invariants (`contracts/test/Invariants.t.sol`, 1,600 runs of 64 random calls ove
 
 ## Deployed contracts
 
-Robinhood Chain mainnet (chain 4663), v3, deployed in block 77988084. Build of record: the `v3.0.0` commit, runtime-bytecode hash `3f69863f4a1c1a8fa139fd982f13b2bec00ae5adbd8ad0ecedace902fd0bfe61` over the 42 contracts and libraries (reproduce with `forge build` and `node scripts/build-hash.mjs`). Every contract and library source is verified on [Sourcify](https://repo.sourcify.dev/4663/0x7a85e135cc94AC8aB571C6BadfDA3a54334B5fA7), which the explorer imports. Check the governance, wiring and verification yourself with `node scripts/check-deployment.mjs mainnet`.
+Robinhood Chain mainnet (chain 4663), v3, deployed in block 78006820. Build of record: the `v3.0.1` commit, runtime-bytecode hash `504e3501c94104c90840f9012cf29ca3e3758f0e8c47b8345a3ecf6dbbea69e8` over the 42 contracts and libraries (reproduce with `forge build` and `node scripts/build-hash.mjs`). Every contract and library source is verified on [Sourcify](https://repo.sourcify.dev/4663/0x7d569E9bE37772Bf4887fd26ADc50240CA77a649), which the explorer imports. Check the governance, wiring and verification yourself with `node scripts/check-deployment.mjs mainnet`.
 
 | Contract | Address |
 | --- | --- |
-| ZKDeskPool (shielded pool) | [0x7a85e135cc94AC8aB571C6BadfDA3a54334B5fA7](https://robinhoodchain.blockscout.com/address/0x7a85e135cc94AC8aB571C6BadfDA3a54334B5fA7) |
-| AssetGate | [0xbbbCC0D92f7AC2eb80c1EB72631f1c5774Ff25C2](https://robinhoodchain.blockscout.com/address/0xbbbCC0D92f7AC2eb80c1EB72631f1c5774Ff25C2) |
-| CreditDesk | [0x3091B1f5FbaE1b7E8B0c72fA4459473dc2a69a49](https://robinhoodchain.blockscout.com/address/0x3091B1f5FbaE1b7E8B0c72fA4459473dc2a69a49) |
-| DeskGuardian | [0xE065F61ef89152071Ec0b79C8940504612c2cA70](https://robinhoodchain.blockscout.com/address/0xE065F61ef89152071Ec0b79C8940504612c2cA70) |
-| LendingPoolUSDG | [0x43c21A9E21CeC7E68C8fa97b709Cd5108f97def0](https://robinhoodchain.blockscout.com/address/0x43c21A9E21CeC7E68C8fa97b709Cd5108f97def0) |
-| UniswapV3Venue | [0xE590D2D7A591773353c10db4A92B1B7a8b6C23cE](https://robinhoodchain.blockscout.com/address/0xE590D2D7A591773353c10db4A92B1B7a8b6C23cE) |
-| TreasuryLedger | [0x377BACD1e43Cc42b99Ee722444EfEF9B0eF82Db9](https://robinhoodchain.blockscout.com/address/0x377BACD1e43Cc42b99Ee722444EfEF9B0eF82Db9) |
-| MandateRegistry | [0xD021a576d1B5314424853e145a5277445d3B669C](https://robinhoodchain.blockscout.com/address/0xD021a576d1B5314424853e145a5277445d3B669C) |
+| ZKDeskPool (shielded pool) | [0x7d569E9bE37772Bf4887fd26ADc50240CA77a649](https://robinhoodchain.blockscout.com/address/0x7d569E9bE37772Bf4887fd26ADc50240CA77a649) |
+| AssetGate | [0xA7679F82CeF292e0c0C5639856a34F7E19Ed3a8e](https://robinhoodchain.blockscout.com/address/0xA7679F82CeF292e0c0C5639856a34F7E19Ed3a8e) |
+| CreditDesk | [0xF6EF4381F90d2E82AB501c97a4AAcE973c06fe97](https://robinhoodchain.blockscout.com/address/0xF6EF4381F90d2E82AB501c97a4AAcE973c06fe97) |
+| DeskGuardian | [0xc25fbc4d5d126c32a5D55c783e0384058ECbAe36](https://robinhoodchain.blockscout.com/address/0xc25fbc4d5d126c32a5D55c783e0384058ECbAe36) |
+| LendingPoolUSDG | [0xE666727561dbB837FFb31Ba2Ba5c8097F8F283c6](https://robinhoodchain.blockscout.com/address/0xE666727561dbB837FFb31Ba2Ba5c8097F8F283c6) |
+| UniswapV3Venue | [0x2b63B32021C13266ACb89A490c890b29A3955E38](https://robinhoodchain.blockscout.com/address/0x2b63B32021C13266ACb89A490c890b29A3955E38) |
+| TreasuryLedger | [0x119E7f5278962515a2544c8c4ECA7f6B1026593c](https://robinhoodchain.blockscout.com/address/0x119E7f5278962515a2544c8c4ECA7f6B1026593c) |
+| MandateRegistry | [0xA42cCEdD36394E296f801D7aA222E4981225DFba](https://robinhoodchain.blockscout.com/address/0xA42cCEdD36394E296f801D7aA222E4981225DFba) |
 | Marker (shared with v1 and v2) | [0xC3061368E66b5a4253E5E98346677c6Ce093A735](https://robinhoodchain.blockscout.com/address/0xC3061368E66b5a4253E5E98346677c6Ce093A735) |
 | Governance Safe (2-of-3) | [0x1abAE714C8A68c73627b021F18FB3A68d9BE4EF8](https://robinhoodchain.blockscout.com/address/0x1abAE714C8A68c73627b021F18FB3A68d9BE4EF8) |
 | TimelockController | [0xe89b6689d8C1C30fD9FF47b4dbcFe5c4b790c0fF](https://robinhoodchain.blockscout.com/address/0xe89b6689d8C1C30fD9FF47b4dbcFe5c4b790c0fF) |
 
-Earlier releases remain on-chain so their notes can always be withdrawn: v2 pool [0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F](https://robinhoodchain.blockscout.com/address/0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F) (empty when v3 replaced it; build hash `c80c29d57c98cbd4dcf610278f2d78b1e875835b6107e8f6aa242242ffa8f92f`) and v1 pool (tag `v1-final`) [0x804170e2A552EFF5b29710E9378E7c7Df31D607A](https://robinhoodchain.blockscout.com/address/0x804170e2A552EFF5b29710E9378E7c7Df31D607A). Testnet (46630) addresses are in `src/lib/chain/deployments/46630.json`.
+Earlier releases remain on-chain so their notes can always be withdrawn: v2 pool [0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F](https://robinhoodchain.blockscout.com/address/0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F) (empty when v3 replaced it; build hash `c80c29d57c98cbd4dcf610278f2d78b1e875835b6107e8f6aa242242ffa8f92f`) and v1 pool (tag `v1-final`) [0x804170e2A552EFF5b29710E9378E7c7Df31D607A](https://robinhoodchain.blockscout.com/address/0x804170e2A552EFF5b29710E9378E7c7Df31D607A). The first v3 set (empty, replaced the same day to add `coverLoss`) is recorded under `v3-replaced` in `src/lib/chain/deployments/4663.json`. Testnet (46630) addresses are in `src/lib/chain/deployments/46630.json`.
 
 ## Operations
 

@@ -442,6 +442,7 @@ contract CreditDesk is ReentrancyGuard, Ownable {
         }
         totalCollateral[p.collAsset] -= p.totalSold;
         totalDebtScaled -= p.totalRepaidScaled + p.totalWrittenOff;
+        if (p.totalWrittenOff > 0) lending.coverLoss(p.totalWrittenOff * p.rateIndex / WAD); // reserves absorb bad debt first
         IERC20(p.collAsset).forceApprove(address(venue), p.totalSold);
         uint256 proceeds = venue.swap(p.collAsset, p.totalSold, p.totalValue);
         usdg.safeTransfer(address(lending), p.totalRepay);

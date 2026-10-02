@@ -226,6 +226,19 @@
   },
   {
     "type": "function",
+    "name": "coverLoss",
+    "inputs": [
+      {
+        "name": "loss",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "decimals",
     "inputs": [],
     "outputs": [
@@ -763,6 +776,25 @@
         "type": "address",
         "indexed": false,
         "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "LossCovered",
+    "inputs": [
+      {
+        "name": "loss",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "fromReserves",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
       }
     ],
     "anonymous": false

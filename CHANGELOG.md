@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.0.1 (October 2026)
+
+- **Lending pool:** debt written off in a liquidation is covered by the reserves first (`coverLoss`), so lender assets never underflow. Found by the liquidation invariant handler in public CI right after 3.0.0; the 3.0.0 contract set held no funds and was redeployed with the fix (recorded as `v3-replaced`).
+
 ## 3.0.0 (October 2026)
 
 Contract fixes for the remaining findings of the re-audit after v2 (N-1, H-1 and M-3 residuals), deployed as a new set beside v2. v2 held no positions or notes when it was replaced.

@@ -27,6 +27,7 @@ contract LendingPoolUSDG is ERC4626, Ownable, IConverter {
     event DeskSet(address desk);
     event Borrowed(uint256 amount);
     event ReservesAdded(uint256 amount);
+    event LossCovered(uint256 loss, uint256 fromReserves);
 
     error NotDesk();
     error DeskAlreadySet();
@@ -50,9 +51,12 @@ contract LendingPoolUSDG is ERC4626, Ownable, IConverter {
         return IERC20(asset()).balanceOf(address(this));
     }
 
+    /// Lenders' assets: cash plus debt minus reserves, never below zero (write-offs are covered by the
+    /// reserves first, see coverLoss; this guards rounding).
     function totalAssets() public view override returns (uint256) {
         uint256 debt = address(desk) == address(0) ? 0 : desk.totalDebt();
-        return cash() + debt - reserves;
+        uint256 gross = cash() + debt;
+        return gross > reserves ? gross - reserves : 0;
     }
 
     /// @notice Share of lent-out funds in basis points (drives the public rate curve).
@@ -78,6 +82,14 @@ contract LendingPoolUSDG is ERC4626, Ownable, IConverter {
     function addReserves(uint256 amount) external onlyDesk {
         reserves += amount;
         emit ReservesAdded(amount);
+    }
+
+    /// @notice Debt written off in a liquidation (collateral sold out, debt left) is covered by the
+    /// reserves first; lenders bear only what exceeds them.
+    function coverLoss(uint256 loss) external onlyDesk {
+        uint256 covered = Math.min(loss, reserves);
+        reserves -= covered;
+        emit LossCovered(loss, covered);
     }
 
     function maxWithdraw(address owner_) public view override returns (uint256) {

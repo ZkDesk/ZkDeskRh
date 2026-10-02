@@ -883,6 +883,24 @@ contract ZKDeskTest is Test {
         assertEq(lending.balanceOf(address(pool)), 0);
     }
 
+    /// Bad debt written off in a liquidation is covered by the reserves first, so lender NAV never
+    /// underflows (found by the liquidation invariant handler).
+    function test_v3_writeOffIsCoveredByReserves() public {
+        _through(4); // 500 drawn
+        vm.warp(block.timestamp + 365 days);
+        desk.accrue(); // reserves accrue
+        uint256 reserves = lending.reserves();
+        assertGt(reserves, 0);
+        vm.prank(address(desk));
+        lending.coverLoss(reserves / 2);
+        assertEq(lending.reserves(), reserves - reserves / 2);
+        vm.prank(address(desk));
+        lending.coverLoss(type(uint128).max); // more than the reserves: they go to zero, lenders bear the rest
+        assertEq(lending.reserves(), 0);
+        vm.expectRevert(LendingPoolUSDG.NotDesk.selector);
+        lending.coverLoss(1);
+    }
+
     /// C: available cash saturates at zero instead of underflowing when reserves exceed cash.
     function test_v3_lendingAvailableSaturates() public {
         _through(4); // 500 of 600 lent
