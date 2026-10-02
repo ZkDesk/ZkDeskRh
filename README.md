@@ -21,6 +21,8 @@ Every action you take is proven in your browser with zero-knowledge proofs and v
 
 [Website](https://zkdesk.tech) · [Developer docs](https://zkdesk.tech/docs) · [X](https://x.com/ZkDesk) · [Telegram](https://t.me/zkdeskrh)
 
+**$ZKD CA (Robinhood Chain):** [`0x2c612e2f811f106f1Baa1Dbc5fbaE88F1ac561C7`](https://robinhoodchain.blockscout.com/address/0x2c612e2f811f106f1Baa1Dbc5fbaE88F1ac561C7)
+
 </div>
 
 ---
@@ -292,6 +294,7 @@ Robinhood Chain mainnet (chain 4663), v3, deployed in block 78006820. Build of r
 | Marker (shared with v1 and v2) | [0xC3061368E66b5a4253E5E98346677c6Ce093A735](https://robinhoodchain.blockscout.com/address/0xC3061368E66b5a4253E5E98346677c6Ce093A735) |
 | Governance Safe (2-of-3) | [0x1abAE714C8A68c73627b021F18FB3A68d9BE4EF8](https://robinhoodchain.blockscout.com/address/0x1abAE714C8A68c73627b021F18FB3A68d9BE4EF8) |
 | TimelockController | [0xe89b6689d8C1C30fD9FF47b4dbcFe5c4b790c0fF](https://robinhoodchain.blockscout.com/address/0xe89b6689d8C1C30fD9FF47b4dbcFe5c4b790c0fF) |
+| $ZKD token (ZkProof) | [0x2c612e2f811f106f1Baa1Dbc5fbaE88F1ac561C7](https://robinhoodchain.blockscout.com/address/0x2c612e2f811f106f1Baa1Dbc5fbaE88F1ac561C7) |
 
 Earlier releases remain on-chain so their notes can always be withdrawn: v2 pool [0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F](https://robinhoodchain.blockscout.com/address/0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F) (empty when v3 replaced it; build hash `c80c29d57c98cbd4dcf610278f2d78b1e875835b6107e8f6aa242242ffa8f92f`) and v1 pool (tag `v1-final`) [0x804170e2A552EFF5b29710E9378E7c7Df31D607A](https://robinhoodchain.blockscout.com/address/0x804170e2A552EFF5b29710E9378E7c7Df31D607A). The first v3 set (empty, replaced the same day to add `coverLoss`) is recorded under `v3-replaced` in `src/lib/chain/deployments/4663.json`. Testnet (46630) addresses are in `src/lib/chain/deployments/46630.json`.
 
