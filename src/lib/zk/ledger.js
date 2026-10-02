@@ -47,7 +47,8 @@ const LEDGER_EXT = [{ type: 'tuple', components: [
 ] }];
 export const ledgerExtHash = (ext) => BigInt(keccak256(encodeAbiParameters(LEDGER_EXT, [{ recipient: zeroAddress, extAmount: 0n, ...ext }]))) % FIELD;
 /** role_auth ext: the key shares and config ciphertext posted with the action. */
-export const authExtHash = (shares, config) => BigInt(keccak256(encodeAbiParameters([{ type: 'bytes[]' }, { type: 'bytes' }], [shares, config]))) % FIELD;
+/** Binds a governance proof to its key shares, config ciphertext and (on a create) mailbox key (audit L-c). */
+export const authExtHash = (shares, config, mailbox = '0x0000000000000000000000000000000000000000') => BigInt(keccak256(encodeAbiParameters([{ type: 'bytes[]' }, { type: 'bytes' }, { type: 'address' }], [shares, config, mailbox]))) % FIELD;
 
 /**
  * One ledger action. ledger: ledgerKeys + {config}. sk/role: the acting member's personal key and

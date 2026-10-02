@@ -40,11 +40,12 @@ export default async function handler(req, res) {
 
   const ct = String(body.ciphertext ?? '');
   if (!/^0x[0-9a-f]+$/i.test(ct) || ct.length / 2 > MAX_BYTES) return json(res, 400, { error: 'invalid_request' });
-  const [rolesCommit] = await publicClient.readContract({ address: deployment.ledger, abi: abis.ledger, functionName: 'ledgers', args: [BigInt(ledger)] });
-  if (rolesCommit === 0n) return json(res, 404, { error: 'unknown_ledger' });
+  // Authenticate first (the mailbox key, then its signature); only then read the chain.
   const { rows: [key] } = await db.query('select signer from public.mailbox_keys where ledger_id = $1', [ledger]);
   if (!key) return json(res, 409, { error: 'mailbox_unregistered' });
   if (!(await verifyMessage({ address: key.signer, message: mailboxMessages.post(ledger, ct), signature }).catch(() => false))) return json(res, 401, { error: 'bad_signature' });
+  const [rolesCommit] = await publicClient.readContract({ address: deployment.ledger, abi: abis.ledger, functionName: 'ledgers', args: [BigInt(ledger)] });
+  if (rolesCommit === 0n) return json(res, 404, { error: 'unknown_ledger' });
   const { rows: [{ n }] } = await db.query(`select count(*)::int as n from public.approval_requests where ledger_id = $1 and created_at > now() - interval '1 day'`, [ledger]);
   if (n >= POSTS_PER_DAY) return json(res, 429, { error: 'mailbox_full' });
   const { rows } = await db.query('insert into public.approval_requests (ledger_id, ciphertext) values ($1, $2) on conflict do nothing returning id', [ledger, ct]);

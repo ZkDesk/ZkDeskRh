@@ -795,13 +795,15 @@ contract ZKDeskTest is Test {
         desk.act(p, e);
     }
 
-    /// N-1: a step on a live slot within STEP_INTERVAL of the last one is refused; closing is not.
+    /// N-1: a step that adds risk within STEP_INTERVAL of the last one is refused; closing, adding
+    /// collateral and repaying are not (v3.2, audit L-b).
     function test_v3_stepsAreSpacedButCloseIsNot() public {
         _through(4); // opened
         (CreditDesk.PositionProof memory p, CreditDesk.PositionExt memory e) = _pos(4);
-        vm.expectRevert(CreditDesk.TooSoon.selector);
+        desk.act(p, e); // repay right after opening
+        (p, e) = _pos(5);
+        vm.expectRevert(CreditDesk.TooSoon.selector); // a withdrawal waits
         desk.act(p, e);
-        _runPos(4);
         _runPos(5);
         _runPos(6); // the close right after the withdrawal: never rate limited
         assertEq(desk.slots(0), 0);

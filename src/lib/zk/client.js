@@ -243,7 +243,7 @@ export function createClient({ publicClient, walletClient = null, address = null
 
   async function relayAuth({ ledger, config, action, newValue = 0n, shares = [], configCt = '0x', mailbox = {} }) {
     const paid = await voucher();
-    const built = buildRoleAuth({ ledger, sk: keys.sk, config, action, newValue, extHash: authExtHash(shares, configCt) });
+    const built = buildRoleAuth({ ledger, sk: keys.sk, config, action, newValue, extHash: authExtHash(shares, configCt, mailbox.mailboxSigner) });
     status('Generating proof…');
     const { proof } = await prove('role_auth', built.witness);
     const p = built.public;
@@ -531,7 +531,7 @@ const FRIENDLY = {
   ExtDataHashMismatch: 'The transaction details changed after proving and were rejected.',
   InvalidProof: 'The proof was rejected by the verifier.',
   MarkUnusable: 'The price moved or is stale. Please refresh and try again; closing a position always works.',
-  TooSoon: 'A position can take one step every 10 minutes. Closing it is always available.',
+  TooSoon: 'A position can borrow or withdraw once every 10 minutes. Adding collateral, repaying and closing are always available.',
   EmptyStep: 'A credit step must move collateral or debt.',
   StaleIndex: 'Rates were just updated. Please try again.',
   SlotMismatch: 'That position changed. Please refresh and try again.',

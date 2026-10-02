@@ -132,7 +132,7 @@ contract TreasuryTest is Test {
 
     function _runAuth(uint256 i) internal {
         (TreasuryLedger.AuthProof memory p, bytes[] memory s, bytes memory c) = _auth(i);
-        ledger.authorize(p, s, c);
+        ledger.authorize(p, s, c, address(0));
     }
 
     function _runAct(uint256 i) internal {
@@ -165,14 +165,22 @@ contract TreasuryTest is Test {
         assertEq(vm.getRecordedLogs().length, 1 + 4 + 1, "created + 4 key shares + config");
         (TreasuryLedger.AuthProof memory p, bytes[] memory s, bytes memory c) = _auth(0);
         vm.expectRevert(TreasuryLedger.LedgerExists.selector);
-        ledger.authorize(p, s, c);
+        ledger.authorize(p, s, c, address(0));
+    }
+
+    /// L-c (v3.2): the mailbox key is part of the create proof's ext hash; another key cannot ride on it.
+    function test_v32_mailboxKeyIsBoundToTheCreateProof() public {
+        (TreasuryLedger.AuthProof memory p, bytes[] memory s, bytes memory c) = _auth(0);
+        vm.expectRevert(); // proven with no mailbox key
+        ledger.authorize(p, s, c, address(0xbad));
+        ledger.authorize(p, s, c, address(0));
     }
 
     function test_keySharesAndConfigAreBoundToTheProof() public {
         (TreasuryLedger.AuthProof memory p, bytes[] memory s, bytes memory c) = _auth(0);
         s[0] = hex"ff"; // a relayer swapping a member's key share
         vm.expectRevert();
-        ledger.authorize(p, s, c);
+        ledger.authorize(p, s, c, address(0));
     }
 
     function test_treasuryLifecycle() public {
@@ -234,7 +242,7 @@ contract TreasuryTest is Test {
         // The pre-rotation approval proof is now stale.
         (TreasuryLedger.AuthProof memory a, bytes[] memory s, bytes memory c) = _auth(6);
         vm.expectRevert(TreasuryLedger.StaleRoles.selector);
-        ledger.authorize(a, s, c);
+        ledger.authorize(a, s, c, address(0));
     }
 
     function test_attestationPublishesOnlyTheStatement() public {

@@ -433,6 +433,11 @@
         "name": "config",
         "type": "bytes",
         "internalType": "bytes"
+      },
+      {
+        "name": "mailbox",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "outputs": [],
@@ -688,6 +693,25 @@
         "type": "uint64",
         "indexed": false,
         "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MailboxKey",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "signer",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
       }
     ],
     "anonymous": false

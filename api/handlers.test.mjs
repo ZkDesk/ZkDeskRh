@@ -38,7 +38,7 @@ const { default: relay } = await import('./relay.js');
 const { default: requests } = await import('./requests.js');
 const { db, publicClient, relayer, deployment } = await import('./_lib/server.js');
 const { mailboxMessages } = await import('../src/lib/zk/ledger.js');
-const { NOTE_CIPHERTEXT_BYTES } = await import('../src/lib/zk/crypto.js');
+const { CONFIG_BYTES, KEY_SHARE_BYTES, NOTE_CIPHERTEXT_BYTES } = await import('../src/lib/zk/crypto.js');
 const { privateKeyToAccount } = await import('viem/accounts');
 assert.ok(deployment.version === RELEASE, 'deployment is on this release');
 
@@ -217,20 +217,51 @@ r = await post(transfer(13, 14, String(minFee)));
 assert.equal(r.body.duplicate, true, 'the uncertain operation is not re-sent');
 assert.equal(r.status, 200);
 
+// L-d: a treasury's mailbox key is stored only once its create is confirmed on-chain.
+const owner = privateKeyToAccount('0x' + '44'.repeat(32));
+const createReq = async (ledgerId) => {
+  const ledger = '0x' + ledgerId.toString(16).padStart(64, '0');
+  return { internal: true, method: 'POST', body: { kind: 'ledger_auth', proof: { proof: '0x' + 'ab'.repeat(100), action: 0, ledgerId: String(ledgerId), rolesCommit: '8', policyHash: '9', newValue: '0' },
+    ext: { shares: ['0x' + 'ab'.repeat(KEY_SHARE_BYTES)], config: '0x' + 'ab'.repeat(CONFIG_BYTES), mailboxSigner: owner.address, mailboxSignature: await owner.signMessage({ message: mailboxMessages.register(ledger) }) } } };
+};
+const hasKey = (ledgerId) => mem.mailbox.has('0x' + ledgerId.toString(16).padStart(64, '0'));
+chain.receipt = null;
+r = await call(relay, await createReq(71n));
+assert.equal(r.status, 202);
+assert.equal(hasKey(71n), false, 'not stored while the create is pending');
+chain.receipt = 'reverted';
+r = await call(relay, await createReq(72n));
+assert.equal(r.body.status, 'failed');
+assert.equal(hasKey(72n), false, 'not stored for a reverted create');
+chain.receipt = 'success';
+r = await call(relay, await createReq(73n));
+assert.equal(r.body.status, 'confirmed');
+assert.equal(hasKey(73n), true, 'stored once the create is confirmed');
+const bad = await createReq(74n);
+bad.body.ext.mailboxSignature = await privateKeyToAccount('0x' + '55'.repeat(32)).signMessage({ message: 'x' });
+r = await call(relay, bad);
+assert.equal(r.body.errorCode, 'bad_mailbox_signature');
+
 // ---- mailbox ----
 const id = '0x' + 'ee'.repeat(32);
 const key = privateKeyToAccount('0x' + '22'.repeat(32));
 const ct = '0x' + 'cd'.repeat(40);
 const signed = async (c = ct, k = key) => ({ ledgerId: id, ciphertext: c, signature: await k.signMessage({ message: mailboxMessages.post(id, c) }) });
-chain.rolesCommit = 0n;
-r = await call(requests, { method: 'POST', body: await signed() });
-assert.equal(r.status, 404, 'unknown treasury');
-chain.rolesCommit = 9n;
+// Authentication comes before any chain read (rescore lead): unregistered and badly signed posts
+// never reach the RPC.
+let reads = 0;
+const read = publicClient.readContract;
+publicClient.readContract = async (args) => { reads++; return read(args); };
 r = await call(requests, { method: 'POST', body: await signed() });
 assert.equal(r.status, 409, 'no mailbox key registered');
 mem.mailbox.set(id, key.address.toLowerCase());
 r = await call(requests, { method: 'POST', body: await signed(ct, privateKeyToAccount('0x' + '33'.repeat(32))) });
 assert.equal(r.status, 401, 'signed by another key');
+assert.equal(reads, 0, 'no chain read before authentication');
+chain.rolesCommit = 0n;
+r = await call(requests, { method: 'POST', body: await signed() });
+assert.equal(r.status, 404, 'treasury not on-chain');
+chain.rolesCommit = 9n;
 r = await call(requests, { method: 'POST', body: await signed() });
 assert.equal(r.status, 200);
 assert.equal(r.body.duplicate, false);

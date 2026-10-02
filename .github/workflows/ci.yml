@@ -22,7 +22,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
-      - name: API coverage (relay and mailbox handlers on a mocked database and chain; fails under 70% of lines)
+      - name: API coverage (relay, mailbox, crons, alerts and transparency on a mocked database and chain; fails under 85% of lines)
         run: pnpm test:coverage | tee coverage.txt && sed -n '/start of coverage report/,/end of coverage report/p' coverage.txt >> "$GITHUB_STEP_SUMMARY"
       - run: pnpm build
       - name: Privacy check (mirror columns, logging, browser storage, secrets in the bundle)

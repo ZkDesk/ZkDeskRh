@@ -1,7 +1,7 @@
 name: deployment-check
 
-# Daily read-only check of the live mainnet deployment: governance, wiring and source verification
-# (scripts/check-deployment.mjs). Set the RPC_URL secret if the public RPC refuses CI runners.
+# Daily read-only check of the live mainnet deployment: governance, wiring, source verification and
+# the deployed runtime code against this commit's build (scripts/check-deployment.mjs). Set the RPC_URL secret if the public RPC refuses CI runners.
 on:
   schedule:
     - cron: '17 6 * * *'
@@ -23,6 +23,15 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: v1.8.3
+      - name: Build the contracts (the deployed runtime code is compared with this build)
+        working-directory: contracts
+        run: |
+          pnpm install --frozen-lockfile --ignore-workspace
+          forge install foundry-rs/forge-std@v1.16.2 --no-git
+          forge build
       - name: check-deployment (mainnet)
         env:
           RPC_URL: ${{ secrets.RPC_URL }}

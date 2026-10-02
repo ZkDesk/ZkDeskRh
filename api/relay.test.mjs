@@ -10,7 +10,7 @@ const { default: requests } = await import('./requests.js');
 const { rotate } = await import('./cron/pulls.js');
 const { RELAY_GAS } = await import('./_lib/fees.js');
 const { deployment } = await import('../src/lib/chain/config.js');
-const { relayer, publicClient } = await import('./_lib/server.js');
+const { relayer } = await import('./_lib/server.js');
 const { CONFIG_BYTES, KEY_SHARE_BYTES, MANDATE_BYTES, NOTE_CIPHERTEXT_BYTES, POSITION_CIPHERTEXT_BYTES } = await import('../src/lib/zk/crypto.js');
 
 const call = (fn, req) => new Promise((resolve) => {
@@ -90,6 +90,8 @@ rejects({ ...auth, proof: { ...auth.proof, action: 0 }, ext: { shares: [bytes(3)
 const create = { ...auth, proof: { ...auth.proof, action: 0 } };
 assert.equal(parseRelayRequest(create).mailbox, null, 'a create needs no mailbox');
 const withBox = parseRelayRequest({ ...create, ext: { ...create.ext, mailboxSigner: relayer.address, mailboxSignature: '0x' + '22'.repeat(65) } });
+assert.equal(withBox.args[3], relayer.address, 'L-c: the mailbox key is a contract argument, bound by the create proof');
+assert.equal(parseRelayRequest(create).args[3], '0x0000000000000000000000000000000000000000');
 assert.deepEqual(withBox.mailbox, { ledger: '0x' + (7).toString(16).padStart(64, '0'), signer: relayer.address, signature: '0x' + '22'.repeat(65) });
 rejects({ ...create, ext: { ...create.ext, mailboxSigner: 'nope', mailboxSignature: '0x' } }, /mailbox key/, 'malformed mailbox key');
 assert.equal(parseRelayRequest({ ...auth, proof: { ...auth.proof, action: 3 }, ext: { ...auth.ext, mailboxSigner: relayer.address } }).mailbox, null, 'only a create registers a mailbox');
@@ -125,11 +127,7 @@ assert.equal((await call(requests, { method: 'POST', body: { ledgerId: id, ciphe
 assert.equal((await call(requests, { method: 'POST', body: '{not json' })).status, 400);
 assert.equal((await call(requests, { method: 'POST', body: { ledgerId: id, register: true, signer: relayer.address, signature: '0x' + '00'.repeat(65) } })).status, 410, 'no public registration: it rides on the create relay');
 assert.equal((await call(requests, { method: 'PUT' })).status, 405);
-// A post to a treasury that does not exist on-chain is refused before the database (stubbed chain read).
-const realRead = publicClient.readContract;
-publicClient.readContract = async () => [0n, 0n, 0n];
-assert.equal((await call(requests, { method: 'POST', body: { ledgerId: id, ciphertext: '0x00', signature: '0x' + '00'.repeat(65) } })).status, 404, 'unknown treasury');
-publicClient.readContract = realRead;
+// Posts to unknown or unregistered treasuries: api/handlers.test.mjs (mocked database and chain).
 
 console.log('relay checks passed: kinds and inherited names, every relay kind, allow-list, note claims, fee scaling, scheduler rotation, mailbox validation');
 process.exit(0);

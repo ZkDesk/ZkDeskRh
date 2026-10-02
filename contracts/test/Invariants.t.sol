@@ -324,7 +324,7 @@ contract Handler is Test {
     function _auth(uint256 id, uint8 action, uint256 newValue) internal returns (bool ok) {
         (uint256 roles, uint256 policy,) = ledger.ledgers(id);
         if (action == 0) (roles, policy) = (_fresh(), _fresh());
-        try ledger.authorize(TreasuryLedger.AuthProof(hex"00", id, roles, policy, action, newValue), new bytes[](0), "") {
+        try ledger.authorize(TreasuryLedger.AuthProof(hex"00", id, roles, policy, action, newValue), new bytes[](0), "", address(0)) {
             ok = true;
         } catch {}
     }

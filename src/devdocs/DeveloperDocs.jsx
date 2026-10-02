@@ -321,7 +321,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
             ['Inputs and outputs per transfer', '2 and 2'],
             ['Deposit screening standby', '60 seconds'],
             ['Credit desk slots', '64'],
-            ['Minimum position', 'About $25 of collateral when opening or after a withdrawal (per class, set by governance)'],
+            ['Minimum position', 'About $1,000 of collateral when opening or after a withdrawal (per class, set by governance): filling all 64 slots ties up $64,000'],
             ['Idle position eviction', 'A position without debt and without activity for 1 day; its collateral returns to the owner as a note'],
             ['Health epoch interval', '15 minutes in market hours, 1 hour outside'],
             ['Borrowing halts after', '3 epoch lengths without an attestation (45 minutes in market hours, 3 hours outside)'],
@@ -334,9 +334,11 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
             ['Mark validity', '25 hours on mainnet, 1 hour on testnet'],
             ['Governance delay', '48 hours on mainnet, 5 minutes on testnet'],
             ['Epoch marks', 'The current pin; the previous one only within 10 minutes of a new round'],
-            ['Minimum debt', '5 USDG: debt is zero or at least this; a partial liquidation that would leave less repays in full'],
+            ['Step marks', 'The current pin; the previous one within 10 minutes of a new round only if it is not higher'],
+            ['Minimum debt', '250 USDG: debt is zero or at least this; a partial liquidation that would leave less repays in full'],
             ['Credit step rules', 'Every step moves collateral or debt and leaves the position healthy at the liquidation threshold, at the current pin'],
-            ['Step interval', 'One step per position every 10 minutes; closing is always available'],
+            ['Step interval', 'One borrow or withdrawal per position every 10 minutes; adding collateral, repaying and closing are always available'],
+            ['Eviction activity', 'Opening, debt moves and collateral moves of at least the class minimum; smaller top-ups do not delay eviction'],
             ['Epoch snapshots', 'Each epoch proves one snapshot of the slots, at most 30 minutes old, used once; a batch over a changed slot is skipped'],
           ]} />
         </Section>

@@ -28,6 +28,7 @@ const EVENTS = parseAbi([
   'event Pinned(address indexed asset, uint64 price, uint80 round, uint64 updatedAt)',
   'event Attested(uint64 indexed epoch, uint256 sumValue, uint256 sumDebt, uint256 breachCommit)',
   'event LedgerCreated(uint256 indexed id, uint256 rolesCommit, uint256 policyHash)',
+  'event MailboxKey(uint256 indexed id, address signer)',
   'event RolesRotated(uint256 indexed id, uint256 rolesCommit)',
   'event PolicySet(uint256 indexed id, uint256 policyHash)',
   'event TreasuryAttested(uint256 indexed id, uint64 epoch, uint256 liabilities)',
@@ -76,6 +77,7 @@ async function index() {
         case 'Attested': await conn.query('insert into public.desk_epochs (epoch, sum_value, sum_debt, breach_commit, ts, block, tx) values ($1, $2, $3, $4, to_timestamp($5), $6, $7) on conflict do nothing', [Number(a.epoch), a.sumValue.toString(), a.sumDebt.toString(), hex(a.breachCommit), Number((await publicClient.getBlock({ blockNumber: l.blockNumber })).timestamp), ...at]); break;
         case 'Liquidated': await conn.query('insert into public.liq_batches (asset, n_positions, coll_sold, proceeds, debt_repaid, price, written_off_scaled, ts, block, tx, log_index) values ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8), $9, $10, $11) on conflict do nothing', [a.asset, Number(a.positions), a.collSold.toString(), a.proceeds.toString(), a.repaid.toString(), a.price.toString(), a.writtenOffScaled.toString(), Number((await publicClient.getBlock({ blockNumber: l.blockNumber })).timestamp), ...at, l.logIndex]); break;
         case 'LedgerCreated': await conn.query('insert into public.ledgers (ledger_id, roles_commit, policy_hash, created_block) values ($1, $2, $3, $4) on conflict do nothing', [hex(a.id), hex(a.rolesCommit), hex(a.policyHash), at[0]]); break;
+        case 'MailboxKey': await conn.query('insert into public.mailbox_keys (ledger_id, signer) values ($1, $2) on conflict (ledger_id) do nothing', [hex(a.id), a.signer.toLowerCase()]); break;
         case 'RolesRotated': await conn.query('update public.ledgers set roles_commit = $2, updated_at = now() where ledger_id = $1', [hex(a.id), hex(a.rolesCommit)]); break;
         case 'PolicySet': await conn.query('update public.ledgers set policy_hash = $2, updated_at = now() where ledger_id = $1', [hex(a.id), hex(a.policyHash)]); break;
         case 'TreasuryAttested': await conn.query('insert into public.treasury_epochs (ledger_id, epoch, liabilities, block, tx, ts) values ($1, $2, $3, $4, $5, to_timestamp($6)) on conflict do nothing', [hex(a.id), Number(a.epoch), a.liabilities.toString(), ...at, Number((await publicClient.getBlock({ blockNumber: l.blockNumber })).timestamp)]); break;

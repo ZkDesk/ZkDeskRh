@@ -42,8 +42,8 @@ interface IFeeOf {
 contract DeployV2 is Script {
     uint64 constant STANDBY = 60;
     uint128 constant MAX_COLLATERAL = 100_000e18; // per class, in stock tokens
-    uint256 constant MIN_POSITION_USD = 25e8; // smallest position, 8 dp USD (audit H-1)
-    uint128 constant MIN_DEBT = 5e6; // 5 USDG: debt is zero or at least this (audit H-1)
+    uint256 constant MIN_POSITION_USD = 1_000e8; // smallest position, 8 dp USD: filling all 64 slots ties up $64k (audit H-1)
+    uint128 constant MIN_DEBT = 250e6; // 250 USDG: debt is zero or at least this (audit H-1)
     ISwapRouter02 constant ROUTER = ISwapRouter02(0xCaf681a66D020601342297493863E78C959E5cb2); // mainnet
     uint256 constant TESTNET_SEED_LIQUIDITY = 50_000e6;
 

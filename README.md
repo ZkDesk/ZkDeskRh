@@ -280,24 +280,26 @@ Invariants (`contracts/test/Invariants.t.sol`, 1,600 runs of 64 random calls ove
 
 ## Deployed contracts
 
-Robinhood Chain mainnet (chain 4663), v3, deployed in block 78006820. Build of record: the `v3.0.1` commit, runtime-bytecode hash `504e3501c94104c90840f9012cf29ca3e3758f0e8c47b8345a3ecf6dbbea69e8` over the 42 contracts and libraries (reproduce with `forge build` and `node scripts/build-hash.mjs`). Every contract and library source is verified on [Sourcify](https://repo.sourcify.dev/4663/0x7d569E9bE37772Bf4887fd26ADc50240CA77a649), which the explorer imports. Check the governance, wiring and verification yourself with `node scripts/check-deployment.mjs mainnet`.
+Robinhood Chain mainnet (chain 4663), v3 (contract set v3.2), deployed in block 78084396. Every contract and library source is verified on [Sourcify](https://repo.sourcify.dev/4663/0xB56Adf443812dD155C91d17d11F36B897e856938), which the explorer imports.
+
+**Build of record:** `cf7ed7de7692c85893d9ee2fd85badc30382e234f2520f2d55dd788f94aa860f`, reproducible from a clone. `node scripts/build-hash.mjs mainnet` (after `forge build` in `contracts/`) compares the runtime code of all 42 deployed contracts and libraries with your build, with immutables, library links and metadata masked, and prints this hash of the build. `node scripts/check-deployment.mjs mainnet` runs the same comparison together with the governance and wiring checks, and CI runs it daily.
 
 | Contract | Address |
 | --- | --- |
-| ZKDeskPool (shielded pool) | [0x7d569E9bE37772Bf4887fd26ADc50240CA77a649](https://robinhoodchain.blockscout.com/address/0x7d569E9bE37772Bf4887fd26ADc50240CA77a649) |
-| AssetGate | [0xA7679F82CeF292e0c0C5639856a34F7E19Ed3a8e](https://robinhoodchain.blockscout.com/address/0xA7679F82CeF292e0c0C5639856a34F7E19Ed3a8e) |
-| CreditDesk | [0xF6EF4381F90d2E82AB501c97a4AAcE973c06fe97](https://robinhoodchain.blockscout.com/address/0xF6EF4381F90d2E82AB501c97a4AAcE973c06fe97) |
-| DeskGuardian | [0xc25fbc4d5d126c32a5D55c783e0384058ECbAe36](https://robinhoodchain.blockscout.com/address/0xc25fbc4d5d126c32a5D55c783e0384058ECbAe36) |
-| LendingPoolUSDG | [0xE666727561dbB837FFb31Ba2Ba5c8097F8F283c6](https://robinhoodchain.blockscout.com/address/0xE666727561dbB837FFb31Ba2Ba5c8097F8F283c6) |
-| UniswapV3Venue | [0x2b63B32021C13266ACb89A490c890b29A3955E38](https://robinhoodchain.blockscout.com/address/0x2b63B32021C13266ACb89A490c890b29A3955E38) |
-| TreasuryLedger | [0x119E7f5278962515a2544c8c4ECA7f6B1026593c](https://robinhoodchain.blockscout.com/address/0x119E7f5278962515a2544c8c4ECA7f6B1026593c) |
-| MandateRegistry | [0xA42cCEdD36394E296f801D7aA222E4981225DFba](https://robinhoodchain.blockscout.com/address/0xA42cCEdD36394E296f801D7aA222E4981225DFba) |
-| Marker (shared with v1 and v2) | [0xC3061368E66b5a4253E5E98346677c6Ce093A735](https://robinhoodchain.blockscout.com/address/0xC3061368E66b5a4253E5E98346677c6Ce093A735) |
+| ZKDeskPool (shielded pool) | [0xB56Adf443812dD155C91d17d11F36B897e856938](https://robinhoodchain.blockscout.com/address/0xB56Adf443812dD155C91d17d11F36B897e856938) |
+| AssetGate | [0x3588BaAeC8582F5db525693A9770FdAbc93a2fE0](https://robinhoodchain.blockscout.com/address/0x3588BaAeC8582F5db525693A9770FdAbc93a2fE0) |
+| CreditDesk | [0x47d0D408C62Ec1BEa8C84f8b06C656c19Cf7Ce26](https://robinhoodchain.blockscout.com/address/0x47d0D408C62Ec1BEa8C84f8b06C656c19Cf7Ce26) |
+| DeskGuardian | [0x39CE8811b25B5C2da9216708Cec037966e79cf12](https://robinhoodchain.blockscout.com/address/0x39CE8811b25B5C2da9216708Cec037966e79cf12) |
+| LendingPoolUSDG | [0xa63e501c4A6eAEA4Ae320d784e69197d22711eb3](https://robinhoodchain.blockscout.com/address/0xa63e501c4A6eAEA4Ae320d784e69197d22711eb3) |
+| UniswapV3Venue | [0x5f429536Cb838855a1870743DCE50577201B10f8](https://robinhoodchain.blockscout.com/address/0x5f429536Cb838855a1870743DCE50577201B10f8) |
+| TreasuryLedger | [0x645e0EF90C72Dd7613BD2e8664Db8D42420d0d41](https://robinhoodchain.blockscout.com/address/0x645e0EF90C72Dd7613BD2e8664Db8D42420d0d41) |
+| MandateRegistry | [0xaAe4177997aBAF3270c26A321Ff06723f309F6E1](https://robinhoodchain.blockscout.com/address/0xaAe4177997aBAF3270c26A321Ff06723f309F6E1) |
+| Marker (shared with earlier releases) | [0xC3061368E66b5a4253E5E98346677c6Ce093A735](https://robinhoodchain.blockscout.com/address/0xC3061368E66b5a4253E5E98346677c6Ce093A735) |
 | Governance Safe (2-of-3) | [0x1abAE714C8A68c73627b021F18FB3A68d9BE4EF8](https://robinhoodchain.blockscout.com/address/0x1abAE714C8A68c73627b021F18FB3A68d9BE4EF8) |
 | TimelockController | [0xe89b6689d8C1C30fD9FF47b4dbcFe5c4b790c0fF](https://robinhoodchain.blockscout.com/address/0xe89b6689d8C1C30fD9FF47b4dbcFe5c4b790c0fF) |
 | $ZKD token (ZkProof) | [0x2c612e2f811f106f1Baa1Dbc5fbaE88F1ac561C7](https://robinhoodchain.blockscout.com/address/0x2c612e2f811f106f1Baa1Dbc5fbaE88F1ac561C7) |
 
-Earlier releases remain on-chain so their notes can always be withdrawn: v2 pool [0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F](https://robinhoodchain.blockscout.com/address/0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F) (empty when v3 replaced it; build hash `c80c29d57c98cbd4dcf610278f2d78b1e875835b6107e8f6aa242242ffa8f92f`) and v1 pool (tag `v1-final`) [0x804170e2A552EFF5b29710E9378E7c7Df31D607A](https://robinhoodchain.blockscout.com/address/0x804170e2A552EFF5b29710E9378E7c7Df31D607A). The first v3 set (empty, replaced the same day to add `coverLoss`) is recorded under `v3-replaced` in `src/lib/chain/deployments/4663.json`. Testnet (46630) addresses are in `src/lib/chain/deployments/46630.json`.
+Earlier releases remain on-chain so their notes can always be withdrawn: v2 pool [0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F](https://robinhoodchain.blockscout.com/address/0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F) and v1 pool (tag `v1-final`) [0x804170e2A552EFF5b29710E9378E7c7Df31D607A](https://robinhoodchain.blockscout.com/address/0x804170e2A552EFF5b29710E9378E7c7Df31D607A). Earlier v3 contract sets, replaced while the desk held no positions, are recorded under `v3-replaced` and `v3-replaced-2` in `src/lib/chain/deployments/4663.json`. Testnet (46630) addresses are in `src/lib/chain/deployments/46630.json`.
 
 ## Operations
 
@@ -334,8 +336,19 @@ Findings of the re-audit after v2 (October 2026):
 | M-1 (residual): the operator's fallback sent liquidations separately | Fixed. A batch that would revert is dropped from the atomic call, never sent on its own | `scripts/ops/e2e-liquidation.mjs` |
 | M-6 (residual), N-4: mailbox flooding and squatting | Fixed. A mailbox key is registered only by the treasury's own create request (no public registration), and posts are accepted only for treasuries that exist on-chain | `api/relay.test.mjs`, `scripts/ops/e2e-approvals.mjs` |
 | N-1: a no-op position step can block an epoch | Fixed in v3. Every step moves something and leaves its position healthy at the latest mark (a breached position can only cure, close or be liquidated), one step per slot per 10 minutes (closing exempt). Epochs prove single-use snapshots of the slots, and a batch over a changed slot is skipped, not reverted | `test_v3_emptyStepRejected`, `test_v3_breachedStepMustCure`, `test_v3_churnBetweenSnapshotAndLiquidate`; Noir `rejects_noop_step`, `rejects_breached_step_that_stays_breached`, `accepts_breached_step_that_cures` |
-| H-1 (residual): a position with dust debt cannot be evicted | Fixed in v3. Debt is zero or at least the class minimum (5 USDG), in the position and liquidation proofs; a partial liquidation that would leave dust repays in full | `test_v3_dustDebtCannotHoldSlots`, `test_v3_stepBindsMinimumDebt`; Noir `rejects_dust_debt`, `rejects_partial_sale_leaving_dust_debt` |
+| H-1 (residual): a position with dust debt cannot be evicted | Fixed in v3. Debt is zero or at least the class minimum (250 USDG since v3.2), in the position and liquidation proofs; a partial liquidation that would leave dust repays in full | `test_v3_dustDebtCannotHoldSlots`, `test_v3_stepBindsMinimumDebt`; Noir `rejects_dust_debt`, `rejects_partial_sale_leaving_dust_debt` |
 | M-3 (residual): treasury transfers and mandate payments check the asset listing | Fixed in v3. Only deposits check it | `test_v3_delistedAssetStillLeavesTreasury`, `test_v3_delistedAssetStillPaysMandates`, `test_v3_delistedAssetStillConverts` |
+
+Findings of the rescore of v3 (October 2026), fixed in the v3.2 contracts:
+
+| Finding | Fix | Test |
+| --- | --- | --- |
+| H-1r (medium): 64 positions at the minimums fill every slot; a 1-wei top-up keeps an idle position from eviction | Minimums of about $1,000 collateral and 250 USDG debt per class, so filling the desk ties up $64,000; only opening, debt moves and collateral moves of at least the class minimum count as activity for eviction | `test_v32_tinyTopUpDoesNotDelayEviction`, `test_v32_topUpOfTheMinimumCountsAsActivity`, `check-deployment` |
+| L-a: a breached borrower could "cure" at the previous, higher price for 10 minutes | A step may use the previous pin only if it is not higher than the current one | `test_v32_previousMarkOnlyWhenNotHigher` |
+| L-b: the step interval blocked defensive moves | Adding collateral and repaying are exempt; borrowing and withdrawing wait | `test_v32_addAndRepaySkipTheStepInterval`, `test_v3_stepsAreSpacedButCloseIsNot` |
+| L-c: the mailbox key was not bound to the create proof | The key is a contract argument inside the proof's ext hash, emitted as `MailboxKey` and indexed from the event | `test_v32_mailboxKeyIsBoundToTheCreateProof`, `test_v32_mailboxKeyIsSetByTheCreateOnly` |
+| L-d: the mailbox row was written before the create confirmed | Written only after a successful receipt (and from the event) | `api/handlers.test.mjs` |
+| Leads | `BatchSkipped` only after the proof verifies; mailbox posts authenticate before any chain read; the operator checks the snapshot's leaves hash before proving; the fallback desk script proves evictions; the deployed runtime code is compared with this repository's build | `test_v32_staleBatchMustVerifyBeforeItIsSkipped`, `api/handlers.test.mjs`, `api/crons.test.mjs`, `scripts/build-hash.mjs` |
 
 Slither reports no high-impact issues. Its medium findings are reentrancy patterns in functions that already hold a reentrancy lock and only call the protocol's own immutable contracts, and return values that are deliberately ignored.
 

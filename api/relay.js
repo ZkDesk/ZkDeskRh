@@ -113,15 +113,15 @@ function parseLedgerAuth(p, e) {
   const proof = { proof: p.proof, action };
   for (const k of ['ledgerId', 'rolesCommit', 'policyHash', 'newValue']) proof[k] = uint(p[k]);
   // A create may carry the treasury's approval-mailbox key (audit M-6/N-4): the address of a key
-  // derived from the ledger secret, plus its signature over the register message. Only the creator
-  // can make this create proof, so nobody else can register a mailbox for the treasury.
+  // derived from the ledger secret, plus its signature over the register message. The address is part
+  // of the create proof's ext hash (audit L-c), so nobody else can attach a key to the treasury.
   let mailbox = null;
   if (action === 0 && e.mailboxSigner !== undefined) {
     if (!isAddress(e.mailboxSigner) || !/^0x[0-9a-fA-F]{130}$/.test(e.mailboxSignature ?? '')) throw new Error('Bad mailbox key.');
     mailbox = { ledger: toHex(proof.ledgerId, { size: 32 }), signer: e.mailboxSigner, signature: e.mailboxSignature };
   }
   // One operation per (ledger, action, value, current roles).
-  return { kind: `ledger_${AUTH_KINDS[action]}`, nullifiers: [proof.ledgerId, BigInt(action), proof.newValue, proof.rolesCommit], target: ledgerTarget('authorize'), args: [proof, e.shares, e.config], mailbox };
+  return { kind: `ledger_${AUTH_KINDS[action]}`, nullifiers: [proof.ledgerId, BigInt(action), proof.newValue, proof.rolesCommit], target: ledgerTarget('authorize'), args: [proof, e.shares, e.config, mailbox?.signer ?? zeroAddress], mailbox };
 }
 
 function parseLedgerAttest(p) {
@@ -260,12 +260,9 @@ export default async function handler(req, res) {
     if (tx.fee.amount < feeForGas(base, gas)) return fail(402, 'fee_too_low');
   }
   if (needsVoucher && gas > (RELAY_GAS * 5n) / 4n) return fail(402, 'gas_above_voucher');
-  // The mailbox key of a treasury being created (checked signature; the create proof simulated fine).
-  // Posts need the treasury on-chain, so a create that never lands leaves an unusable row, pruned daily.
-  if (tx.mailbox) {
-    if (!(await verifyMessage({ address: tx.mailbox.signer, message: mailboxMessages.register(tx.mailbox.ledger), signature: tx.mailbox.signature }).catch(() => false))) return fail(400, 'bad_mailbox_signature');
-    await db.query('insert into public.mailbox_keys (ledger_id, signer) values ($1, $2) on conflict (ledger_id) do nothing', [tx.mailbox.ledger, tx.mailbox.signer.toLowerCase()]);
-  }
+  // The mailbox key of a treasury being created: its holder must have signed, and its row is written
+  // only once the create is confirmed (audit L-d; tick.js also indexes the MailboxKey event).
+  if (tx.mailbox && !(await verifyMessage({ address: tx.mailbox.signer, message: mailboxMessages.register(tx.mailbox.ledger), signature: tx.mailbox.signature }).catch(() => false))) return fail(400, 'bad_mailbox_signature');
   // Spent only once the step is known to succeed; bought by a confirmed transfer within the last day.
   if (needsVoucher) {
     const { rowCount } = await db.query(
@@ -290,6 +287,7 @@ export default async function handler(req, res) {
     const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 15_000 }).catch(() => null);
     if (!receipt) return json(res, 202, { opId, status: 'submitted', txHash: hash, voucher });
     const status = receipt.status === 'success' ? 'confirmed' : 'failed';
+    if (status === 'confirmed' && tx.mailbox) await db.query('insert into public.mailbox_keys (ledger_id, signer) values ($1, $2) on conflict (ledger_id) do nothing', [tx.mailbox.ledger, tx.mailbox.signer.toLowerCase()]);
     await db.query(`update public.operations set status = $2, error_code = $3, updated_at = now() where op_id = $1`, [opId, status, status === 'failed' ? 'reverted' : null]);
     await release(opId);
     return json(res, 200, { opId, status, txHash: hash, block: receipt.blockNumber, voucher });

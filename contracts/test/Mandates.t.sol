@@ -94,7 +94,7 @@ contract MandatesTest is Test {
     function _create() internal {
         bytes32[] memory x = _x(0);
         TreasuryLedger.AuthProof memory p = TreasuryLedger.AuthProof(vm.parseJsonBytes(json, _k(0, "proof")), uint256(x[0]), uint256(x[1]), uint256(x[2]), uint8(uint256(x[3])), uint256(x[4]));
-        ledger.authorize(p, vm.parseJsonBytesArray(json, _k(0, "ext.shares")), vm.parseJsonBytes(json, _k(0, "ext.config")));
+        ledger.authorize(p, vm.parseJsonBytesArray(json, _k(0, "ext.shares")), vm.parseJsonBytes(json, _k(0, "ext.config")), address(0));
     }
 
     function _deposit(uint256 i) internal {

@@ -23,11 +23,14 @@ fresh.deployBlock = Math.min(...receipts.map((r) => parseInt(r.blockNumber, 16))
 
 const MOVED = ['pool', 'assetGate', 'lending', 'desk', 'deskGuardian', 'ledger', 'mandates', 'venue', 'amm', 'deployBlock', 'deskBlock', 'ledgerBlock', 'mandatesBlock', 'deployedAt'];
 const old = Object.fromEntries(MOVED.filter((k) => k in d).map((k) => [k, d[k]]));
+// A replaced set never overwrites an earlier one: v3-replaced, v3-replaced-2, …
+let key = `v${current}${replace ? '-replaced' : ''}`;
+for (let n = 2; replace && key in d; n++) key = `v${current}-replaced-${n}`;
 const block = fresh.deployBlock;
 const next = {
-  ...d, ...fresh, version, [`v${current}${replace ? '-replaced' : ''}`]: old,
+  ...d, ...fresh, version, [key]: old,
   deployBlock: block, deskBlock: block, ledgerBlock: block, mandatesBlock: block,
 };
 writeFileSync(path, JSON.stringify(next, null, 2) + '\n');
 rmSync(`src/lib/chain/deployments/${id}.${release}.json`);
-console.log(`${path}: ${release} pool ${next.pool}, desk ${next.desk}; the previous set kept under "v${current}${replace ? '-replaced' : ''}"`);
+console.log(`${path}: ${release} pool ${next.pool}, desk ${next.desk}; the previous set kept under "${key}"`);

@@ -11,7 +11,7 @@
 //   5. evicts idle positions without debt (circuits/evict, audit H-1), a few per run
 // Nothing is stored off-chain; the indexer mirrors Attested / Liquidated events.
 // Fallback when Functions are too slow or down: node scripts/ops/desk.mjs
-import { encodeEventTopics, parseAbi, parseAbiItem } from 'viem';
+import { encodeAbiParameters, encodeEventTopics, keccak256, parseAbi, parseAbiItem } from 'viem';
 import { abis, cachedProver, cronAuthorized, deployment, keeper, publicClient, secret, sendFromKeeper, revertName, json } from '../_lib/server.js';
 import { deploymentReady } from '../_lib/server.js';
 import { QUOTER } from '../_lib/fees.js';
@@ -94,6 +94,9 @@ export async function runDesk({ operatorSk, prove, log = () => {} }) {
   const positions = replaySlots(events, operatorSk);
   const live = positions.filter(Boolean).length;
   const h = buildHealth({ positions, classes: cls, rateIndex: index, snapshotId });
+  // The replayed slots must be the snapshot's (a lagging log index would make the proof fail on-chain).
+  const [leavesHash] = await read(deployment.desk, abis.desk, 'snapshots', [snapshotId]);
+  if (keccak256(encodeAbiParameters([{ type: 'uint256[64]' }], [h.public.leaves])) !== leavesHash) throw Object.assign(new Error('snapshot_mismatch'), { shortMessage: 'snapshot_mismatch' });
   log(`epoch: ${live} live positions, ${h.breached.length} breached`);
   const t0 = Date.now();
   const { proof } = await prove('health_epoch', h.witness);
@@ -147,7 +150,7 @@ export async function runDesk({ operatorSk, prove, log = () => {} }) {
   const [evictAfter, now] = await Promise.all([read(deployment.desk, abis.desk, 'EVICT_AFTER'), publicClient.getBlock({ blockTag: 'latest' }).then((b) => b.timestamp)]);
   for (const [slot, p] of positions.entries()) {
     if (!p || p.debtScaled !== 0n || report.evicted.length >= MAX_EVICTIONS) continue;
-    if (now < (await read(deployment.desk, abis.desk, 'touchedAt', [BigInt(slot)])) + evictAfter) continue;
+    if (now < (await read(deployment.desk, abis.desk, 'activeAt', [BigInt(slot)])) + evictAfter) continue; // tiny top-ups do not count (v3.2)
     try {
       const e = buildEvict(p);
       const { proof: ep } = await prove('evict', e.witness);

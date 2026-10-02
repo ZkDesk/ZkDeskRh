@@ -11,7 +11,7 @@ const { runDesk } = await import('../../api/cron/desk.js');
 const { createProver } = await import('../../src/lib/zk/prover.js');
 
 const circuit = (name) => JSON.parse(readFileSync(`src/lib/zk/artifacts/${name}.json`, 'utf8'));
-const provers = { health_epoch: await createProver(circuit('health_epoch')), liquidate: await createProver(circuit('liquidate')) };
+const provers = { health_epoch: await createProver(circuit('health_epoch')), liquidate: await createProver(circuit('liquidate')), evict: await createProver(circuit('evict')) };
 const report = await runDesk({ operatorSk: BigInt(process.env.DESK_OPERATOR_SK), prove: (kind, w) => provers[kind].prove(w), log: (m) => console.log(`· ${m}`) });
 console.log(JSON.stringify(report, (_, v) => (typeof v === 'bigint' ? v.toString() : v), 2));
 await Promise.all(Object.values(provers).map((p) => p.destroy()));

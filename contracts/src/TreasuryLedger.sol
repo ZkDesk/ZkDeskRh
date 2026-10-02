@@ -112,6 +112,8 @@ contract TreasuryLedger is ReentrancyGuard {
     event LimitSet(uint256 indexed id, uint64 maxTransfers, uint64 period);
     event KeyShare(uint256 indexed id, bytes share);
     event LedgerConfig(uint256 indexed id, bytes config);
+    /// The approval-mailbox key of a treasury, set by its create proof (audit L-c).
+    event MailboxKey(uint256 indexed id, address signer);
     event LedgerAction(uint256 indexed id, uint8 action);
     event TreasuryAttested(uint256 indexed id, uint64 epoch, uint256 liabilities);
 
@@ -141,7 +143,9 @@ contract TreasuryLedger is ReentrancyGuard {
 
     // ---- Governance ----
 
-    function authorize(AuthProof calldata p, bytes[] calldata shares, bytes calldata config) external {
+    /// mailbox: the treasury's approval-mailbox key, on a create only (zero otherwise). It is part of the
+    /// proof's ext hash, so only the creator can set it.
+    function authorize(AuthProof calldata p, bytes[] calldata shares, bytes calldata config, address mailbox) external {
         Ledger storage l = ledgers[p.ledgerId];
         if (p.action == CREATE) {
             if (l.rolesCommit != 0) revert LedgerExists();
@@ -150,19 +154,20 @@ contract TreasuryLedger is ReentrancyGuard {
         } else if (p.rolesCommit != l.rolesCommit || p.policyHash != l.policyHash) {
             revert StaleRoles();
         }
-        if (p.action > SET_LIMIT) revert BadAction();
+        if (p.action > SET_LIMIT || (p.action != CREATE && mailbox != address(0))) revert BadAction();
         bytes32[] memory x = new bytes32[](6);
         x[0] = bytes32(p.ledgerId);
         x[1] = bytes32(p.rolesCommit);
         x[2] = bytes32(p.policyHash);
         x[3] = bytes32(uint256(p.action));
         x[4] = bytes32(p.newValue);
-        x[5] = bytes32(uint256(keccak256(abi.encode(shares, config))) % FIELD);
+        x[5] = bytes32(uint256(keccak256(abi.encode(shares, config, mailbox))) % FIELD);
         if (!authVerifier.verify(p.proof, x)) revert InvalidProof();
 
         if (p.action == CREATE) {
             (l.rolesCommit, l.policyHash) = (p.rolesCommit, p.policyHash);
             emit LedgerCreated(p.ledgerId, p.rolesCommit, p.policyHash);
+            if (mailbox != address(0)) emit MailboxKey(p.ledgerId, mailbox);
         } else if (p.action == ROTATE) {
             l.rolesCommit = p.newValue;
             emit RolesRotated(p.ledgerId, p.newValue);

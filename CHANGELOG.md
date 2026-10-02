@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.4.0 (October 2026)
+
+Contract set v3.2 for the rescore of v3, redeployed while the desk held no positions.
+
+- **Credit slots (H-1 residual):** minimum position about $1,000 of collateral and 250 USDG of debt per class, so filling all 64 slots ties up $64,000. Eviction counts only opening, debt moves and collateral moves of at least the class minimum as activity (`activeAt`), so a 1-wei top-up no longer keeps an idle position.
+- **Step marks (L-a):** a step can use the previous price pin only if it is not higher than the current one.
+- **Defensive steps (L-b):** adding collateral and repaying are not rate limited; borrowing and withdrawing still wait 10 minutes.
+- **Mailbox key (L-c, L-d):** bound to the treasury's create proof (an argument in its ext hash), emitted as `MailboxKey`, and stored only once the create is confirmed.
+- **Leads:** `BatchSkipped` only for a batch whose proof verifies; mailbox posts authenticate before any chain read; the operator checks the snapshot's leaves hash before proving; the fallback desk script proves evictions.
+- **Build of record** (`cf7ed7de…`): `scripts/build-hash.mjs` compares every deployed contract and library with this repository's `forge build` (immutables, library links and metadata masked) and hashes the build, reproducible from a clone; `check-deployment` and the daily workflow run it.
+- **Tests:** `test_v32_*` per finding; API tests for the crons (tick, desk, pulls), alerts, transparency and operation status on a mocked database and chain, with CI failing under 85% of API lines (92% now).
+
 ## 3.3.0 (October 2026)
 
 - **Payment requests:** **Request payment** (Treasury tab, personal account or a treasury) makes a link and a QR code with your private address and an optional amount and note. Opening it shows the request, and after connecting a wallet the private send is filled in for review. Nothing about the request is stored or posted; the note travels in the link only. The QR code is drawn as inline SVG (`qrcode-generator`, MIT, no dependencies).

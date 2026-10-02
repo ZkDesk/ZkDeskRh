@@ -28,7 +28,8 @@ interface ISaleVenue {
 /// EVICT_AFTER can be evicted: its collateral goes back to the owner as a note (circuits/evict).
 /// Steps (audit N-1): every step moves something and leaves its position healthy at the liquidation
 /// threshold (a breached position can only be cured, closed or liquidated); a slot takes at most one
-/// step per STEP_INTERVAL, closing excepted. Marks are the current pin (the previous one only within
+/// step per STEP_INTERVAL; closing and risk-reducing steps (add collateral, repay) are exempt, so an
+/// owner can always defend a position (audit L-b). Marks are the current pin (the previous one only within
 /// ATTEST_GRACE of a new round); a step that adds risk also needs it fresh and unpaused.
 /// Rates follow a public utilization curve; the index is checkpointed by accrue() (the hourly
 /// rate-publisher) and proofs may use the latest or previous checkpoint.
@@ -171,7 +172,10 @@ contract CreditDesk is ReentrancyGuard, Ownable {
     uint256 public breachCommit;
     mapping(address asset => uint256) public totalCollateral;
     uint256[SLOTS] public slots;
-    uint64[SLOTS] public touchedAt;
+    uint64[SLOTS] public touchedAt; // last step or liquidation (the step interval)
+    /// Last activity that keeps a position from eviction: opening, debt moves, and collateral moves of
+    /// at least the class minimum. A tiny top-up does not count (audit H-1 residual).
+    uint64[SLOTS] public activeAt;
     mapping(uint256 id => Snapshot) public snapshots;
     uint256 public snapshotCount;
     uint256 public attestedSnapshot; // the snapshot the current breach set was proven against
@@ -296,12 +300,13 @@ contract CreditDesk is ReentrancyGuard, Ownable {
         if (p.inAsset != p.collAsset && p.inAsset != address(usdg)) revert BadAsset();
         if (p.collIn == 0 && p.collOut == 0 && p.draw == 0 && p.repay == 0) revert EmptyStep();
         if (slots[p.slot] != p.oldLeaf) revert SlotMismatch();
-        if (p.oldLeaf != 0 && p.newLeaf != 0 && block.timestamp < touchedAt[p.slot] + STEP_INTERVAL) revert TooSoon();
+        bool reducesRisk = p.draw == 0 && p.collOut == 0; // adds collateral or repays
+        if (p.oldLeaf != 0 && p.newLeaf != 0 && !reducesRisk && block.timestamp < touchedAt[p.slot] + STEP_INTERVAL) revert TooSoon();
         if (p.rateIndex != index && p.rateIndex != prevIndex) revert StaleIndex();
         // A position that remains is proven healthy at this mark, so it must be the latest pin (or the
         // previous one just after a new round). New risk also needs it fresh and unpaused. Closing
         // needs no mark: exits never wait on the oracle.
-        if (p.newLeaf != 0 && !_currentMark(p.collAsset, p.mark)) revert MarkUnusable();
+        if (p.newLeaf != 0 && !_stepMark(p.collAsset, p.mark)) revert MarkUnusable();
         if (p.draw > 0 || (p.collOut > 0 && p.newLeaf != 0)) {
             if (paused) revert DeskPaused();
             if (!marker.usable(p.collAsset, p.mark)) revert MarkUnusable();
@@ -333,6 +338,7 @@ contract CreditDesk is ReentrancyGuard, Ownable {
         pool.moduleInsert(p.outputCommitments[1], ext.encryptedOutput2);
         slots[p.slot] = p.newLeaf;
         touchedAt[p.slot] = uint64(block.timestamp);
+        if (p.oldLeaf == 0 || p.draw > 0 || p.repay > 0 || p.collIn >= c.minCollateral || p.collOut >= c.minCollateral) activeAt[p.slot] = uint64(block.timestamp);
         emit OperatorNote(p.slot, p.collAsset, p.operatorEph, p.operatorCipher);
         emit PositionUpdated(p.slot, p.newLeaf, ext.encryptedPosition);
         emit CreditFlow(p.collAsset, p.collIn, p.collOut, p.draw, p.repay);
@@ -427,17 +433,19 @@ contract CreditDesk is ReentrancyGuard, Ownable {
             n++;
         }
         if (n == 0) revert EmptyBatch();
+        if (!liquidationVerifier.verify(p.proof, _liquidationInputs(p, liqBps, open, classes[p.collAsset].minDebt))) revert InvalidProof();
         // A position stepped after the snapshot is healthy by the step rule: the batch is stale. Skip
-        // it (the next epoch re-plans) instead of reverting the whole call (audit N-1).
+        // it (the next epoch re-plans) instead of reverting the whole call (audit N-1). Only a valid
+        // batch is reported as skipped.
         if (changed) {
             emit BatchSkipped(p.collAsset, p.slots);
             return;
         }
-        if (!liquidationVerifier.verify(p.proof, _liquidationInputs(p, liqBps, open, classes[p.collAsset].minDebt))) revert InvalidProof();
 
         for (uint256 i; i < n; ++i) {
             slots[p.slots[i]] = p.newLeaves[i];
             touchedAt[p.slots[i]] = uint64(block.timestamp);
+            activeAt[p.slots[i]] = uint64(block.timestamp);
             emit PositionUpdated(p.slots[i], p.newLeaves[i], abi.encode(p.encSold[i], p.encRepaid[i]));
         }
         totalCollateral[p.collAsset] -= p.totalSold;
@@ -450,13 +458,13 @@ contract CreditDesk is ReentrancyGuard, Ownable {
         emit Liquidated(p.collAsset, n, p.totalSold, proceeds, p.totalRepay, p.price, p.totalWrittenOff);
     }
 
-    /// @notice Frees the slot of a position without debt that no step touched for EVICT_AFTER (audit
-    /// H-1). The proof (circuits/evict) shows the slot holds `collateral` and no debt, and that
+    /// @notice Frees the slot of a position without debt and without activity (activeAt) for
+    /// EVICT_AFTER (audit H-1). The proof (circuits/evict) shows the slot holds `collateral` and no debt, and that
     /// `commitment` is a note of that collateral for the same owner; the pool receives both.
     function evict(EvictProof calldata e) external nonReentrant {
         uint256 leaf = slots[e.slot];
         if (leaf == 0) revert SlotMismatch();
-        if (block.timestamp < touchedAt[e.slot] + EVICT_AFTER) revert NotIdle();
+        if (block.timestamp < activeAt[e.slot] + EVICT_AFTER) revert NotIdle();
         if (classes[e.asset].liqThresholdBps == 0) revert BadAsset();
         bytes32[] memory x = new bytes32[](4);
         x[0] = bytes32(leaf);
@@ -466,6 +474,7 @@ contract CreditDesk is ReentrancyGuard, Ownable {
         if (!evictVerifier.verify(e.proof, x)) revert InvalidProof();
         slots[e.slot] = 0;
         touchedAt[e.slot] = uint64(block.timestamp);
+        activeAt[e.slot] = uint64(block.timestamp);
         totalCollateral[e.asset] -= e.collateral;
         IERC20(e.asset).forceApprove(address(pool), e.collateral);
         pool.moduleGive(e.asset, e.collateral);
@@ -536,11 +545,13 @@ contract CreditDesk is ReentrancyGuard, Ownable {
         x[32] = bytes32(uint256(minDebt));
     }
 
-    /// The latest pin, or the previous one within ATTEST_GRACE of the latest round.
-    function _currentMark(address asset, uint256 mark) internal view returns (bool) {
+    /// A step's mark: the latest pin, or the previous one within ATTEST_GRACE of the latest round only
+    /// if it is not higher (a proof in flight may be conservative, never optimistic: audit L-a, a
+    /// breached position cannot "cure" at the old, higher price).
+    function _stepMark(address asset, uint256 mark) internal view returns (bool) {
         (uint64 current, uint64 updatedAt,) = marker.current(asset);
         if (mark == current) return true;
         (uint64 previous,,) = marker.previous(asset);
-        return mark == previous && block.timestamp <= updatedAt + ATTEST_GRACE;
+        return mark == previous && previous <= current && block.timestamp <= updatedAt + ATTEST_GRACE;
     }
 }
