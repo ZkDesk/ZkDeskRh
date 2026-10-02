@@ -299,14 +299,20 @@ ZKDESK_SEED=0x… node agent/cli.mjs balance`}</Code>
           </ol>
           <p>Each payment unlocks one request. A deposit still in screening does not count, because its sender can take it back. The service learns nothing about who paid.</p>
           <Code label="Service">{`import { createAgent } from './agent/index.mjs';
-import { createPaywall } from './agent/paywall.mjs';
+import { createPaywall, fileStore } from './agent/paywall.mjs';
 const account = await createAgent({ seed: process.env.SERVICE_SEED, network: 'mainnet' });
-const paywall = createPaywall({ agent: account, price: '0.25' });
+const paywall = createPaywall({ agent: account, price: '0.25', store: fileStore('./paywall.json') });
 http.createServer(async (req, res) => {
   if (await paywall.guard(req, res)) res.end('the paid answer');
 });`}</Code>
           <ul>
-            <li><strong>Memory:</strong> open challenges and used payments are kept in the service's memory. Run one instance per account; a restart forgets open challenges.</li>
+            <li><strong>State:</strong> open challenges and used payments live in a store.
+              <ul>
+                <li><C>memoryStore()</C>, the default, keeps them in one process and forgets them on a restart.</li>
+                <li><C>fileStore(path)</C> keeps them across restarts, for one process.</li>
+                <li><C>redisStore(client)</C> (a connected node-redis client) is for any number of instances. Each payment is claimed atomically, so it still unlocks exactly one request. The Redis must not evict keys early (<C>maxmemory-policy noeviction</C>), and each service account needs its own <C>prefix</C>.</li>
+                <li>Paywalls on one account that are given no store share one, so their amounts never collide.</li>
+              </ul></li>
             <li><strong>Limits:</strong> each caller can hold at most 5 open challenges (an IPv6 caller is counted by its /64), and a challenge expires after 5 minutes.</li>
             <li><strong>Behind a reverse proxy:</strong> pass <C>clientOf</C> to read the client address from the header your proxy sets. Otherwise every caller shares the proxy's limit.</li>
             <li><strong>On the paying side:</strong> <C>zkdesk_fetch_paid</C> fetches only public https hosts and refuses a challenge that expires within two minutes. After paying, it never throws: if the service does not answer, it returns what it paid and the request id to finish with. <C>ZKDESK_ALLOW_HTTP=1</C> lifts the https and public-host rules for local tests only.</li>

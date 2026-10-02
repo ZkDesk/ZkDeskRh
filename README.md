@@ -289,6 +289,7 @@ ZKDESK_SEED=0x… node agent/mcp.mjs             # MCP server (stdio) for Claude
 - The agent pays with `zkdesk_fetch_paid` and repeats the request with `x-zkdesk-request`.
 - One payment of exactly that amount, made after the challenge and in the pool (not a deposit in screening), unlocks that request once.
 - Behind a reverse proxy, pass `clientOf` so the per-caller limit (5 open challenges) reads the real client address.
+- **State:** `memoryStore()` (default, one process), `fileStore(path)` (survives restarts) or `redisStore(client)` (several instances; payments are claimed atomically; use `maxmemory-policy noeviction` and one `prefix` per account).
 - `ZKDESK_ALLOW_HTTP=1` is for local tests only.
 
 ## Testing and CI

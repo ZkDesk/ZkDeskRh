@@ -4,7 +4,8 @@
 // a max_price below the price pays nothing; and a deposit of the exact amount, still in screening (its
 // sender could take it back), does not unlock a challenge. A service that drops the connection after
 // the payment: fetchPaid keeps retrying and is served, and if it never is, returns what it paid and the
-// request id instead of throwing (so the model does not pay twice).
+// request id instead of throwing (so the model does not pay twice). Lasting state: with a file store, an
+// agent pays a challenge, the service restarts, and the paid request is still served once.
 // Usage: RPC_URL_SERVER=<rpc> DB_SCHEMA=<schema> node scripts/ops/e2e-paywall.mjs <siteUrl>
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -18,7 +19,7 @@ for (const line of readFileSync('.env.local', 'utf8').split(/\r?\n/)) {
 const site = process.argv[2] ?? 'http://localhost:5199';
 const RPC = process.env.RPC_URL_SERVER || undefined;
 const { createAgent, newSeed } = await import('../../agent/index.mjs');
-const { createPaywall } = await import('../../agent/paywall.mjs');
+const { createPaywall, fileStore } = await import('../../agent/paywall.mjs');
 const opts = { network: 'testnet', api: site, rpc: RPC, allowHttp: true, stateDir: (await import('node:os')).tmpdir() };
 const service = await createAgent({ seed: newSeed(), ...opts });
 const agent = await createAgent({ seed: newSeed(), ...opts, maxPerTx: '5' });
@@ -42,7 +43,9 @@ const step = async (name, fn) => { const t = performance.now(); console.log(`▶
 const check = (ok, what) => { if (!ok) throw new Error(`FAILED: ${what}`); console.log(`  ✓ ${what}`); };
 
 // The paid API: one JSON answer per payment.
-const paywall = createPaywall({ agent: service, price: '0.5', origin: site, recheckMs: 2000 });
+const statePath = (await import('node:path')).join((await import('node:fs')).mkdtempSync((await import('node:path')).join((await import('node:os')).tmpdir(), 'zkd-wall-')), 'paywall.json');
+const start = () => createPaywall({ agent: service, price: '0.5', origin: site, recheckMs: 2000, store: fileStore(statePath) });
+let paywall = start();
 let served = 0;
 let drops = 0;
 const api = createServer(async (req, res) => {
@@ -66,7 +69,7 @@ try {
       throw new Error('deposit did not clear');
     });
   }
-  await step('Owner funds the agent with 150 tUSDG', () => owner.send({ amount: 150_000000n, to: parseZkAddress(agent.address) }));
+  await step('Owner funds the agent with 300 tUSDG', () => owner.send({ amount: 300_000000n, to: parseZkAddress(agent.address) }));
 
   const low = await agent.fetchPaid({ url, maxPrice: '0.4' }).then(() => 'paid', (e) => e.message);
   check(/above max_price.*Nothing was paid/.test(low), `max_price below the price pays nothing (${low.slice(0, 60)}…)`);
@@ -86,12 +89,26 @@ try {
   await mine();
   const blocked = await new Promise((r) => setTimeout(r, 2500)).then(() => fetch(url, { headers: { 'x-zkdesk-request': challenge.zkdesk.requestId } }));
   check(blocked.status === 402 && (await blocked.json()).pending === true, 'a screened deposit does not unlock the API');
-  check(served === 2, 'served exactly twice');
+  check(served === 2, 'served exactly twice so far');
 
   const flaky = await step('Agent fetches a service that drops the first two retries after the payment', () => agent.fetchPaid({ url: url.replace('/answer', '/flaky'), maxPrice: '1', timeoutSeconds: 30 }));
   check(flaky.status === 200 && flaky.paid?.confirmed, 'it kept retrying and was served');
   const broken = await step('Agent fetches a service that never answers after the payment', () => agent.fetchPaid({ url: url.replace('/answer', '/broken'), maxPrice: '1', timeoutSeconds: 8 }));
   check(broken.status === null && broken.paid?.confirmed && /^[A-Za-z0-9_-]{24}$/.test(broken.requestId) && /Do not pay again/.test(broken.message), 'no throw: it reports what it paid and the request id');
+
+  // Lasting state: pay, restart the service (a new paywall on the same file), then get served.
+  const pending = await fetch(url).then((r) => r.json());
+  const p = await step('Agent pays a challenge', () => agent.payLink(pending.zkdesk.link));
+  check(p.confirmed, 'paid');
+  paywall = start(); // the restart: nothing in memory, the state comes from the file
+  let afterRestart;
+  for (let i = 0; i < 10 && afterRestart?.status !== 200; i++) {
+    afterRestart = await fetch(url, { headers: { 'x-zkdesk-request': pending.zkdesk.requestId } });
+    if (afterRestart.status !== 200) await new Promise((r) => setTimeout(r, 3000));
+  }
+  check(afterRestart.status === 200, 'the payment made before the restart is honoured after it');
+  const replay = await fetch(url, { headers: { 'x-zkdesk-request': pending.zkdesk.requestId } });
+  check(replay.status === 402 && (await replay.json()).zkdesk.requestId !== pending.zkdesk.requestId, 'and only once');
   console.log('Paywall e2e passed.');
 } finally {
   api.close();

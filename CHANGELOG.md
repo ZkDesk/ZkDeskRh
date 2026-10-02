@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.14.0 (October 2026)
+
+- **Lasting paywall state:** `createPaywall({ store })` keeps open challenges, reserved amounts, used payments and per-caller slots in a store with three atomic operations: add-if-absent with an expiry, get and delete.
+  - `memoryStore()`, the default: one process, forgotten on a restart.
+  - `fileStore(path)`: one process, kept across restarts; written privately and atomically.
+  - `redisStore(client)`: any number of instances sharing a node-redis client; no new dependency.
+- **Across instances:** each payment is claimed with add-if-absent, so it unlocks exactly one request even when two instances see it at once. A challenge issued by one instance is served by another, and the per-caller bound counts across them. A used payment stays claimed for 30 days.
+- The open challenges are bounded by the 9,999 amounts, which replaces `maxOpen`.
+- Paywalls on one account that are given no store share one, so their amounts never collide.
+- **Reviewed adversarially before release.** Two rounds found and fixed:
+  - a paid caller left unserved when the store failed after the payment was claimed, or when the file store could not save (a change that is not saved is now undone)
+  - a stale copy of a challenge on another instance claiming a newer challenge's payment
+  - unbounded state from long URLs (over 2,048 bytes is a 414; routes are stored hashed)
+  - caller slots and amounts kept after a failure, and too many store calls when amounts run short
+  - IPv6 callers keyed before their address was expanded
+  - the file store's temporary file (now created new, synced, then renamed) and a corrupt file being overwritten (it now stops the start)
+  - Redis: it must not evict keys early (`maxmemory-policy noeviction`)
+
 ## 3.13.0 (October 2026)
 
 - **Combine notes for agents:** `zkdesk_combine` / `combine({ target })` merges the agent's USDG notes, largest first, two per relayed self-transfer, until one note holds `target` or one note is left. A payment can spend at most two notes, so an agent paid many times (for example through a paywall) combines before a larger payment.
