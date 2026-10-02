@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.5.0 (October 2026)
+
+- **Credit health gauge:** each borrowing position on the Credit tab shows its live health against the liquidation threshold (Safe, Watch, At risk, Liquidatable), the current price and the price at which it would be liquidated, with how far the price can fall. A warning above the positions names any position close to or below its threshold. Computed in the browser from your private notes and the pinned marks; nothing new is revealed.
+
 ## 3.4.0 (October 2026)
 
 Contract set v3.2 for the rescore of v3, redeployed while the desk held no positions.

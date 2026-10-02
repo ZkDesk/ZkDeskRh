@@ -127,6 +127,8 @@ async function refresh() {
     collateral: usd(valueOf(p.collateral, m.marks[plain(p.symbol)])), debt: usd(debtOf(p.debtScaled, m.index)),
     // Health vs the liquidation threshold at the pinned mark (1 = at the threshold); private, computed here.
     health: p.debtScaled ? Number(healthBps(p, m.marks[plain(p.symbol)], stocks[p.symbol].liqBps, m.index)) / 1e4 : null,
+    // Health is linear in the price, so the position reaches the threshold at mark / health.
+    mark: Number(m.marks[plain(p.symbol)]) / 1e8,
     liquidatedSold: p.liquidated.length ? tokens(p.liquidated.reduce((t, l) => t + l.sold, 0n)) : 0,
     raw: p,
   }));
