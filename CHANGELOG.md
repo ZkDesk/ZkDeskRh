@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.9.0 (October 2026)
+
+- **Incoming payments for agents:** `zkdesk_incoming` lists the payments others made to the agent, newest first, with the kind of each:
+  - private payment
+  - mandate payment (has a receipt)
+  - deposit (in screening)
+
+  The agent's own change and self-transfers are left out: a note made by a transaction that also spent the agent's notes is not a payment received.
+- `zkdesk_wait_for_payment` waits, up to 15 minutes, for a new payment (optionally of an exact amount, such as the amount of a link the agent shared) so the agent can deliver once it is paid.
+- SDK: `incoming` and `waitForPayment`. The client's notes now carry the transaction that created and the one that spent them.
+
 ## 3.8.0 (October 2026)
 
 - **Payment links for agents:** `zkdesk_pay_link` pays a ZKdesk payment request link, from the agent's own balance or from a treasury where it is Payer.

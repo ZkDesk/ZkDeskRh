@@ -15,6 +15,18 @@ const usdg = (x) => {
 };
 const fmt = (raw) => formatUnits(raw, 6);
 const hexId = (id) => '0x' + id.toString(16).padStart(64, '0');
+const POLL_MS = 5_000;
+
+/**
+ * Notes of `asset` paid to this account by others, newest first: a note made by a transaction that
+ * also spent one of our notes is our own change or self-transfer, not a payment received.
+ */
+export function receivedNotes(notes, asset, since = 0) {
+  const own = new Set(notes.map((n) => n.spentIn).filter(Boolean));
+  return notes
+    .filter((n) => BigInt(n.asset) === BigInt(asset) && n.tx && !own.has(n.tx) && Number(n.block) > Number(since))
+    .sort((a, b) => Number(BigInt(b.block) - BigInt(a.block)));
+}
 
 /** A new agent seed (32 random bytes, hex). Whoever holds it can spend what the agent can. */
 export const newSeed = () => '0x' + Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('hex');
@@ -74,6 +86,21 @@ export async function createAgent({ seed, network = 'mainnet', api = 'https://zk
     const r = await client.ledgerAct(L, mover(L), { action: 'transfer', amount: raw, ...dest });
     if (r?.requested) return { requested: true, message: `Above ${fmt(L.config.dualThreshold)} USDG: sent to the treasury Owner for approval. Complete it once approved.` };
     return done(r);
+  }
+  const blockTimes = new Map();
+  const timeOf = async (block) => {
+    if (!blockTimes.has(block)) blockTimes.set(block, new Date(Number((await publicClient.getBlock({ blockNumber: block })).timestamp) * 1000).toISOString());
+    return blockTimes.get(block);
+  };
+  async function incoming({ since = 0, limit = 20 } = {}) {
+    await client.sync();
+    const receipts = new Set(client.receipts().map((r) => r.note.commitment));
+    const paid = receivedNotes(client.notes(), USDG, since).slice(0, Math.min(Math.max(Number(limit) || 20, 1), 100));
+    return Promise.all(paid.map(async (n) => ({
+      id: n.commitment.toString(16), amount: fmt(n.amount), status: n.status, block: Number(n.block), at: await timeOf(n.block),
+      kind: receipts.has(n.commitment) ? 'mandate payment (has a receipt)' : n.status === 'pending' ? 'deposit (in screening)' : 'private payment',
+      tx: config.explorerTx(n.tx),
+    })));
   }
   function readLink(link) {
     let url;
@@ -162,6 +189,28 @@ export async function createAgent({ seed, network = 'mainnet', api = 'https://zk
       const m = client.mandates(L).find((x) => hexId(x.commit) === String(mandateId).toLowerCase());
       if (!m) throw new Error(`No mandate ${mandateId} in this treasury.`);
       return done(await client.payMandate(L, mover(L), m, amountOf(amount)));
+    },
+    /**
+     * USDG paid to the agent by others, newest first: private sends, link payments, deposits to its
+     * address and mandate payments (not its own change or self-transfers). since: only after this block.
+     */
+    incoming,
+    /**
+     * Waits until a new payment arrives (of exactly `amount` USDG if given) and returns it, or
+     * { received: false } after `timeoutSeconds`. Only payments after the call count.
+     */
+    async waitForPayment({ amount, timeoutSeconds = 120 } = {}) {
+      const want = amount === undefined || amount === '' ? null : usdg(amount);
+      const seconds = Math.min(Math.max(Number(timeoutSeconds) || 0, 1), 900);
+      await client.sync();
+      const since = Number(client.state.toBlock);
+      const until = Date.now() + seconds * 1000;
+      for (;;) {
+        const hit = (await incoming({ since, limit: 50 })).find((p) => want === null || usdg(p.amount) === want);
+        if (hit) return { received: true, ...hit };
+        if (Date.now() >= until) return { received: false, message: `No ${want === null ? '' : `${fmt(want)} USDG `}payment arrived within ${seconds} s.` };
+        await new Promise((r) => setTimeout(r, Math.min(POLL_MS, until - Date.now())));
+      }
     },
     /** Payments the agent received under mandates; each can be proven with proveReceipt. */
     async receipts() {

@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { agentKeys, deriveKeys, passkeyKeys, zkAddress, parseZkAddress } from '../src/lib/zk/keys.js';
 import { createHandler, TOOLS } from './mcp.mjs';
-import { createAgent, newSeed } from './index.mjs';
+import { createAgent, newSeed, receivedNotes } from './index.mjs';
 import { paymentLink, readPaymentLink } from '../src/lib/zk/request-link.js';
 
 // Keys: deterministic, one account per chain, never the passkey or signature account of the same bytes.
@@ -30,6 +30,20 @@ await assert.rejects(agent.send({ to: agent.address, amount: '0' }), /greater th
 await assert.rejects(agent.send({ to: agent.address, amount: '1e3' }), /greater than zero/);
 await assert.rejects(agent.send({ to: 'zkd:1234', amount: '1' }), /Not a ZKdesk private address/);
 await assert.rejects(agent.withdraw({ to: '0x123', amount: '1' }), /Not a 0x address/);
+
+// Received payments: notes from transactions that spent our own notes are change, not payments.
+{
+  const U = 0x1n;
+  const notes = [
+    { asset: U, block: 10n, tx: '0xa', spentIn: '0xb', amount: 100n }, // received in 0xa, later spent in 0xb
+    { asset: U, block: 11n, tx: '0xb', amount: 40n }, // change of our own spend in 0xb
+    { asset: U, block: 12n, tx: '0xc', amount: 7n }, // a payment
+    { asset: 0x2n, block: 13n, tx: '0xd', amount: 9n }, // another asset
+    { asset: U, block: 14n, amount: 1n }, // no transaction (an evicted position's collateral)
+  ];
+  assert.deepEqual(receivedNotes(notes, U).map((n) => n.amount), [7n, 100n]);
+  assert.deepEqual(receivedNotes(notes, U, 10).map((n) => n.amount), [7n]);
+}
 
 // Payment request links: the dashboard's format, created and read by the agent, checked before paying.
 const zkTo = zkAddress(agentKeys('0x' + '11'.repeat(32), 4663));

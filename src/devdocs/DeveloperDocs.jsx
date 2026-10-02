@@ -281,6 +281,7 @@ ZKDESK_SEED=0x… node agent/cli.mjs balance`}</Code>
             ['zkdesk_treasuries, zkdesk_pay', 'Treasuries where the agent holds a role; pay from one'],
             ['zkdesk_requests, zkdesk_complete', "Payments above the Owner's threshold wait for approval; complete them once approved"],
             ['zkdesk_mandates, zkdesk_pay_mandate', "Pay a mandate's current period, up to its cap"],
+            ['zkdesk_incoming, zkdesk_wait_for_payment', 'Payments the agent received from others, or wait for one (optionally of an exact amount) before acting'],
             ['zkdesk_pay_link, zkdesk_request_link', 'Pay a payment request link (from the dashboard or another agent), or create one so others can pay the agent'],
             ['zkdesk_receipts, zkdesk_prove_receipt, zkdesk_verify_receipt', "Prove a payment the agent received, or check anyone's receipt"],
           ]} />

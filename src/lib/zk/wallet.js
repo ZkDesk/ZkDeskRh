@@ -88,8 +88,9 @@ async function syncOnce(client, deployment, minBlock) {
   return {
     tree,
     indexOf: new Map(leaves.map((l) => [l.commitment, l.index])),
-    ciphertexts: n.map((l) => ({ commitment: l.args.commitment, ciphertext: l.args.ciphertext, block: l.blockNumber })),
+    ciphertexts: n.map((l) => ({ commitment: l.args.commitment, ciphertext: l.args.ciphertext, block: l.blockNumber, tx: l.transactionHash })),
     spent: new Set(x.map((l) => l.args.nullifier)),
+    spentIn: new Map(x.map((l) => [l.args.nullifier, l.transactionHash])),
     slots,
     slotHistory,
     ledgerEvents: g.map((l) => ({ name: l.eventName, ...l.args, block: l.blockNumber, tx: l.transactionHash })),
@@ -100,17 +101,22 @@ async function syncOnce(client, deployment, minBlock) {
   };
 }
 
-/** Notes this key set can open. status: 'pending' (in standby), 'unspent' or 'spent'. */
+/**
+ * Notes this key set can open. status: 'pending' (in standby), 'unspent' or 'spent'. tx: the
+ * transaction that created the note; spentIn: the one that spent it (so a note created by a
+ * transaction that spent our own notes is change or a self-transfer, not a payment received).
+ */
 export function myNotes(state, keys) {
   const notes = [];
-  for (const { commitment, ciphertext, block } of state.ciphertexts) {
+  for (const { commitment, ciphertext, block, tx } of state.ciphertexts) {
     const opened = decryptNote(ciphertext, keys.encSecret);
     if (!opened || opened.amount === 0n) continue;
     // A sender could encrypt garbage; only accept notes whose commitment really is ours.
     if (noteCommitment({ ...opened, owner: keys.owner }) !== commitment) continue;
     const leafIndex = state.indexOf.get(commitment);
-    const spent = state.spent.has(nullifier(commitment, keys.nk));
-    notes.push({ ...opened, commitment, leafIndex, block, status: spent ? 'spent' : leafIndex === undefined ? 'pending' : 'unspent' });
+    const nf = nullifier(commitment, keys.nk);
+    const spent = state.spent.has(nf);
+    notes.push({ ...opened, commitment, leafIndex, block, tx, spentIn: state.spentIn?.get(nf), status: spent ? 'spent' : leafIndex === undefined ? 'pending' : 'unspent' });
   }
   // An evicted position's collateral (CreditDesk.evict) comes back without a ciphertext: the owner
   // derives the note from the position it replaces.

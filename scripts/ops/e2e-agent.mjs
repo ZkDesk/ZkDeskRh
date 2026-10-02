@@ -5,7 +5,8 @@
 // a request -> Owner approves -> agent completes -> Owner gives the agent a 25/month mandate -> agent
 // pays it once (a second pay is refused) -> agent proves the receipt and it verifies -> payment links:
 // the agent pays the Owner's link (own balance, then from the treasury) and the Owner pays the agent's
-// link -> the agent's per-transaction limit refuses 600.
+// link while the agent waits for it -> incoming payments list (no change) -> the agent's
+// per-transaction limit refuses 600.
 // Usage (testnet or a local fork with the site served by serve.mjs-style server and DB_SCHEMA set):
 //   RPC_URL_SERVER=<rpc> node scripts/ops/e2e-agent.mjs <siteUrl>
 import { readFileSync } from 'node:fs';
@@ -108,8 +109,15 @@ check((await step("Agent pays the Owner's 3 tUSDG link from its balance", () => 
 check((await step('Agent pays an open-amount link from the treasury (5)', () => agent.payLink(ownerLink(''), { amount: '5', treasury: id }))).confirmed, 'link paid from the treasury');
 const asking = await step('Agent creates a link asking for 4', () => agent.requestLink({ amount: '4', memo: 'agent invoice' }));
 const before = Number((await agent.balance()).usdg);
+const waiting = agent.waitForPayment({ amount: '4', timeoutSeconds: 180 });
 await step("Owner pays the agent's link", () => { const r = readPaymentLink(new URL(asking).searchParams); return owner.send({ amount: BigInt(Math.round(Number(r.amount) * 1e6)), to: parseZkAddress(r.to) }); });
+const arrived = await step('Agent was waiting for it', () => waiting);
+check(arrived.received && arrived.amount === '4' && arrived.kind === 'private payment', 'the wait returned the 4 tUSDG payment');
 check(Math.abs(Number((await agent.balance()).usdg) - before - 4) < 1e-9, 'the agent received exactly 4');
+const got = await step('Agent lists incoming payments', () => agent.incoming().then((list) => list.map((p) => `${p.amount} ${p.kind}`)));
+check(got.includes('4 private payment') && got.includes('800 private payment') && got.includes('25 mandate payment (has a receipt)'), 'payments from others are listed');
+check(got.length === 3, 'its own change and self-transfers are not');
+check((await step('Agent waits 3 s for 999 that never comes', () => agent.waitForPayment({ amount: '999', timeoutSeconds: 3 }))).received === false, 'the wait times out');
 await refused('600 above the agent limit', () => agent.pay(id, { to: ownerZk, amount: '600' }), /above this agent's limit/);
 console.log(`Agent balance now ${(await agent.balance()).usdg} tUSDG. Agent e2e passed. (${record})`);
 process.exit(0);
