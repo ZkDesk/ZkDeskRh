@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.15.0 (October 2026)
+
+- **TypeScript types for the agent SDK:** `agent/index.d.mts` and `agent/paywall.d.mts` describe `createAgent` and every agent method, `createPaywall`, and the memory, file and Redis stores, including the result shapes. A payment is either confirmed with its transaction or not confirmed with a status. A paid fetch either has the answer, or has the request id to retry with. Editors complete and check every call; nothing changes at run time.
+- `pnpm test:types` compiles a usage example against the types (also in CI), and `pnpm test` fails if a method or export is added without its type.
+- **Fix (found by the review):** checking a payment receipt (`verifyReceipt`, `zkdesk_verify_receipt`, `scripts/verify-receipt.mjs`) asked whichever contract the receipt itself named. A forged receipt naming a contract that always answers "valid" passed. Receipts are now checked only against ZKdesk's own MandateRegistry on the agent's network (the current one, or a replaced contract set's for an older receipt). A receipt naming another contract or network is refused.
+- `scripts/verify-receipt.mjs` now verifies mainnet receipts: it takes the network from the receipt; before, it always checked testnet. Pass your address as `expected-verifier` to check a receipt is meant for you. `zkdesk_verify_receipt` now returns what a valid receipt proves (who it is for, the treasury, the period, the amount if disclosed) alongside `valid`.
+
 ## 3.14.0 (October 2026)
 
 - **Lasting paywall state:** `createPaywall({ store })` keeps open challenges, reserved amounts, used payments and per-caller slots in a store with three atomic operations: add-if-absent with an expiry, get and delete.

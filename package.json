@@ -20,7 +20,8 @@
     "preview": "vite preview --host 127.0.0.1 --port 5184",
     "zk:fixtures": "node circuits/scripts/fixtures.mjs",
     "abis": "node contracts/script/export-abis.mjs",
-    "privacy": "node scripts/privacy-check.mjs"
+    "privacy": "node scripts/privacy-check.mjs",
+    "test:types": "tsc --noEmit --strict --module nodenext --moduleResolution nodenext --target es2022 --types node agent/types-check.mts"
   },
   "dependencies": {
     "@aztec/bb.js": "5.0.0-nightly.20260522",
@@ -38,7 +39,9 @@
     "viem": "2.56.9"
   },
   "devDependencies": {
+    "@types/node": "22.7.5",
     "@vitejs/plugin-react": "5.2.0",
+    "typescript": "5.9.3",
     "vite": "7.3.6"
   }
 }

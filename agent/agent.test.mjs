@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FIELD } from '../src/lib/zk/notes.js';
@@ -29,6 +29,24 @@ await assert.rejects(createAgent({ seed: '0x12' }), /32 bytes of hex/);
 await assert.rejects(createAgent({ seed, network: 'devnet' }), /mainnet" or "testnet/);
 const stateDir = mkdtempSync(join(tmpdir(), 'zkdesk-agent-'));
 const agent = await createAgent({ seed, network: 'mainnet', maxPerTx: '50', stateDir });
+// A receipt is checked only against ZKdesk's own registry on this chain, whatever contract the record
+// names (a forged one could answer true). Refused before any chain read.
+await assert.rejects(agent.verifyReceipt({ registry: '0x' + 'de'.repeat(20), chainId: 4663, proof: {} }), /not ZKDesk's MandateRegistry/);
+await assert.rejects(agent.verifyReceipt({ chainId: 46630, proof: {} }), /another network/);
+await assert.rejects((await import('../src/lib/zk/client.js')).verifyReceipt({ chain: { id: 46630 } }, { proof: {} }), /client on chain 4663\./);
+// The TypeScript declarations name every method and export (pnpm test:types checks they compile).
+{
+  const dts = (f) => readFileSync(new URL(f, import.meta.url), 'utf8');
+  const members = dts('./index.d.mts').match(/export interface Agent \{([\s\S]*?)\n\}/)[1].match(/^  (\w+)[(:]/gm).map((m) => m.slice(2, -1));
+  assert.deepEqual(members.sort(), Object.keys(agent).sort(), 'Agent in index.d.mts lists every method');
+  const fields = (name) => dts('./index.d.mts').match(new RegExp(`export interface ${name} \\{([\\s\\S]*?)\\n\\}`))[1].match(/^  (\w+)\??:/gm).map((m) => m.slice(2).replace(/\??:$/, '')).sort();
+  const link = paymentLink('https://zkdesk.tech', { to: agent.address, amount: '1', memo: 'hi', network: 'mainnet' }).toString();
+  assert.deepEqual(Object.keys(agent.readLink(link)).sort(), fields('PaymentLink'), 'readLink returns the declared fields');
+  const declared = (f) => [...dts(f).matchAll(/^export function (\w+)/gm)].map((m) => m[1]).sort();
+  const internal = ['receivedNotes', 'spendLog']; // exported for tests only
+  assert.deepEqual(declared('./index.d.mts'), Object.keys(await import('./index.mjs')).filter((k) => !internal.includes(k)).sort());
+  assert.deepEqual(declared('./paywall.d.mts'), Object.keys(await import('./paywall.mjs')).sort());
+}
 assert.equal(agent.address, zkAddress(k));
 await assert.rejects(createAgent({ seed, network: 'testnet' }), /one network per process/);
 await assert.rejects(agent.send({ to: agent.address, amount: '50.000001' }), /above this agent's limit of 50 USDG/);
@@ -164,4 +182,4 @@ assert.equal(lines.find((l) => l.id === 1).result.serverInfo.name, 'zkdesk');
 assert.equal(JSON.parse(lines.find((l) => l.id === 2).result.content[0].text).address, zkAddress(k));
 assert.equal(lines.find((l) => l.id === null).error.code, -32700);
 
-console.log('agent checks passed: agent keys, SDK input guards and per-transaction limit, payment request links, MCP initialize/tools/list/tools/call, argument validation, serialized spends, stdio session');
+console.log('agent checks passed: agent keys, type declarations, SDK input guards and per-transaction limit, payment request links, MCP initialize/tools/list/tools/call, argument validation, serialized spends, stdio session');

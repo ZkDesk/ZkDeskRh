@@ -605,11 +605,20 @@ const FRIENDLY = {
 export const friendly = (code) => FRIENDLY[code] || code || 'The transaction failed.';
 export { debtOf, maxDebt, valueOf, LENDING };
 
-/** Checks an exported receipt (proveReceipt output) against the MandateRegistry. No keys needed. */
+/**
+ * Checks an exported receipt (proveReceipt output) against ZKDesk's MandateRegistry on this chain: the
+ * current one, or a replaced contract set's for an older receipt. No keys needed.
+ */
 export async function verifyReceipt(publicClient, record) {
   const p = record.proof;
+  // The record names its registry and chain: only ZKDesk's own count, or a forged contract could answer true.
+  if (publicClient.chain?.id !== deployment.chainId) throw new Error(`Verify with a client on chain ${deployment.chainId}.`);
+  if (record.chainId !== undefined && Number(record.chainId) !== deployment.chainId) throw new Error('This receipt is for another network.');
+  const ours = [deployment, ...Object.values(deployment)].map((d) => d?.mandates).filter(Boolean).map((a) => a.toLowerCase());
+  const registry = String(record.registry ?? deployment.mandates).toLowerCase();
+  if (!ours.includes(registry)) throw new Error("This receipt names a contract that is not ZKDesk's MandateRegistry on this network.");
   return publicClient.readContract({
-    address: record.registry ?? deployment.mandates, abi: abis.mandates, functionName: 'verifyReceipt',
+    address: registry, abi: abis.mandates, functionName: 'verifyReceipt',
     args: [{ ...p, receiptRoot: BigInt(p.receiptRoot), ledgerId: BigInt(p.ledgerId), k: BigInt(p.k), verifier: BigInt(p.verifier), amount: BigInt(p.amount), owner: BigInt(p.owner) }],
   });
 }
