@@ -57,6 +57,16 @@ await assert.rejects(agent.withdraw({ to: '0x123', amount: '1' }), /Not a 0x add
   log.check(10_000_000n);
   assert.equal(log.total(), 0n, 'older than 24 h no longer counts');
   assert.equal(spendLog(join(stateDir, 'day.json'), 10_000_000n, () => 1_000_001).total(), 6_000_000n, 'kept across restarts');
+  // A step that failed before anything was sent gives its reservation back (combine review M-2).
+  const back = spendLog(join(stateDir, 'back.json'), 10_000_000n, () => t);
+  const at = back.add(6_000_000n);
+  t += 1_800_000; // a step that failed half an hour later
+  back.add(-6_000_000n, at); // released with the reservation's own time
+  assert.equal(back.total(), 0n);
+  back.check(10_000_000n);
+  t += 86_400_000 - 1_800_000; // 24 h after the reservation: both expire together, no extra room
+  back.add(9_000_000n);
+  assert.throws(() => back.check(1_000_001n), /per 24 hours/);
 }
 
 // Received payments: notes from transactions that spent our own notes are change, not payments.

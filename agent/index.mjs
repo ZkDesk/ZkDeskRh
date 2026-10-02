@@ -23,6 +23,7 @@ const usdg = (x) => {
 const fmt = (raw) => formatUnits(raw, 6);
 const hexId = (id) => '0x' + id.toString(16).padStart(64, '0');
 const POLL_MS = 5_000;
+const MAX_MERGES = 20; // merges per combine call (each is one relayed proof and one fee)
 const DAY_MS = 86_400_000;
 const off = (v) => v === null || v === undefined || v === '' || v === 'off';
 
@@ -93,8 +94,10 @@ export function spendLog(file, cap, now = () => Date.now()) {
     check(raw) {
       if (cap !== null && total() + raw > cap) throw new Error(`This payment (${fmt(raw)} USDG with the relay fee) would pass this agent's limit of ${fmt(cap)} USDG per 24 hours (ZKDESK_MAX_PER_DAY); ${fmt(total())} already used.`);
     },
-    add(raw) {
-      writeFileSync(file, JSON.stringify([...read(), { t: now(), raw: raw.toString() }]), { mode: 0o600 });
+    /** Records an outflow (or, negative, releases one: pass the reservation's own time t). Returns t. */
+    add(raw, t = now()) {
+      writeFileSync(file, JSON.stringify([...read(), { t, raw: raw.toString() }]), { mode: 0o600 });
+      return t;
     },
   };
 }
@@ -151,17 +154,38 @@ export async function createAgent({
 
   /**
    * Every outflow passes here before anything is proven: the amount, the recipient, then the day's
-   * total with the relay fee (a voucher step pays voucherPrice fees). It is recorded before sending.
+   * total with the relay fee (a voucher step pays voucherPrice fees), recorded before sending. The step
+   * then runs with that fee as its ceiling (a relay cannot raise it mid-step). If it fails and the
+   * client submitted nothing to the relay (a voucher self-transfer counts), the reservation is released.
    */
-  async function guard(amount, to, { voucher = false } = {}) {
-    const raw = usdg(amount);
-    if (perTx !== null && raw > perTx) throw new Error(`${fmt(raw)} USDG is above this agent's limit of ${fmt(perTx)} USDG per transaction (ZKDESK_MAX_PER_TX).`);
-    if (to !== null && allowed && !allowed.has(canon(to))) throw new Error(`${to.slice(0, 18)}… is not on this agent's list of allowed recipients (ZKDESK_ALLOW_TO).`);
-    const { fee, voucherPrice } = await client.quoteFee(USDG);
-    const total = raw + (voucher ? fee * voucherPrice : fee);
-    day.check(total);
-    day.add(total);
-    return raw;
+  // Steps that move money run one at a time, also when the SDK is used directly (the fee ceiling and the
+  // spend record belong to one step at a time).
+  let lock = Promise.resolve();
+  const serial = (fn) => {
+    const run = lock.then(fn, fn);
+    lock = run.catch(() => {});
+    return run;
+  };
+  function spend(amount, to, step, { vouchers = 0 } = {}) {
+    return serial(async () => {
+      const raw = usdg(amount);
+      if (perTx !== null && raw > perTx) throw new Error(`${fmt(raw)} USDG is above this agent's limit of ${fmt(perTx)} USDG per transaction (ZKDESK_MAX_PER_TX).`);
+      if (to !== null && allowed && !allowed.has(canon(to))) throw new Error(`${to.slice(0, 18)}… is not on this agent's list of allowed recipients (ZKDESK_ALLOW_TO).`);
+      const { fee, voucherPrice } = await client.quoteFee(USDG);
+      const total = raw + (vouchers ? fee * voucherPrice * BigInt(vouchers) : fee);
+      day.check(total);
+      const at = day.add(total);
+      client.setFeeCeiling({ fee, voucherPrice });
+      const sentBefore = client.relaysSent;
+      try {
+        return await step(raw);
+      } catch (error) {
+        if (client.relaysSent === sentBefore) day.add(-total, at);
+        throw error;
+      } finally {
+        client.setFeeCeiling(null);
+      }
+    });
   }
   // The relay's word is checked against the chain before reporting a payment as made.
   async function done(r) {
@@ -179,16 +203,29 @@ export async function createAgent({
     return L;
   }
   const mover = (L) => ['Owner', 'Treasurer', 'Payer'].find((r) => L.roles.includes(r));
+  async function balance() {
+    await client.sync();
+    const notes = client.notes().filter((n) => BigInt(n.asset) === BigInt(USDG) && n.status === 'unspent');
+    return {
+      usdg: fmt(client.balance(USDG)), notes: notes.length, largestNote: fmt(notes.reduce((m, n) => (n.amount > m ? n.amount : m), 0n)),
+      inScreening: fmt(client.balance(USDG, 'pending')), spentLast24h: fmt(day.total()), network,
+    };
+  }
+  // The client's two-note limit, told the agent's way.
+  const hinted = (error) => {
+    if (/spans more than two private notes/.test(error?.message ?? '')) throw new Error("This amount spans more than two of the agent's notes. Call zkdesk_combine first, or pay a smaller amount.");
+    throw error;
+  };
   async function send({ to, amount }) {
     const dest = zkTo(to);
-    const raw = await guard(amount, to);
-    return done(await client.send({ amount: raw, to: dest }));
+    return done(await spend(amount, to, (raw) => client.send({ amount: raw, to: dest }).catch(hinted)));
   }
   async function pay(treasuryId, { to, amount }) {
     const L = await treasury(treasuryId);
     const dest = isAddress(to ?? '') ? { recipient: to } : { to: zkTo(to) };
-    const raw = await guard(amount, to, { voucher: true });
-    const r = await client.ledgerAct(L, mover(L), { action: 'transfer', amount: raw, ...dest });
+    // Above the threshold an agent that is also the Owner approves first: a second voucher.
+    const vouchers = L.roles.includes('Owner') && usdg(amount) > L.config.dualThreshold ? 2 : 1;
+    const r = await spend(amount, to, (raw) => client.ledgerAct(L, mover(L), { action: 'transfer', amount: raw, ...dest }), { vouchers });
     if (r?.requested) return { requested: true, message: `Above ${fmt(L.config.dualThreshold)} USDG: sent to the treasury Owner for approval. Complete it once approved.` };
     return done(r);
   }
@@ -249,17 +286,45 @@ export async function createAgent({
     network, client,
     /** The agent's private address: share it to fund the agent or to name it as a treasury Payer. */
     address: zkAddress(keys),
-    async balance() {
+    balance,
+    /**
+     * Merges the agent's USDG notes (largest first, two per relayed self-transfer, one fee each) until
+     * one note holds `target` USDG, or into one note. A payment can spend at most two notes, so an
+     * agent paid many times combines before a larger payment. At most 20 merges per call; their fees
+     * count towards the daily limit and are reserved before the first merge.
+     */
+    combine: ({ target } = {}) => serial(async () => {
+      const want = target === undefined || target === '' ? undefined : usdg(target);
       await client.sync();
-      return { usdg: fmt(client.balance(USDG)), inScreening: fmt(client.balance(USDG, 'pending')), spentLast24h: fmt(day.total()), network };
-    },
+      const { fee } = await client.quoteFee(USDG);
+      const mergeable = client.notes().filter((n) => BigInt(n.asset) === BigInt(USDG) && n.status === 'unspent' && n.amount > fee).sort((a, b) => (b.amount > a.amount ? 1 : -1));
+      if (mergeable.length < 2 || (want !== undefined && mergeable[0].amount >= want)) return { merges: 0, message: want !== undefined && mergeable[0]?.amount >= want ? 'One note already holds that much.' : 'Nothing to combine.', ...(await balance()) };
+      if (want !== undefined && mergeable.reduce((t, n) => t + n.amount, 0n) - fee * BigInt(mergeable.length - 1) < want) throw new Error(`Combining every note would not reach ${fmt(want)} USDG after fees. Nothing was merged.`);
+      // Exactly the merges needed: into one note, or until the running sum (minus a fee per merge) reaches target.
+      let needed = mergeable.length - 1;
+      if (want !== undefined) {
+        let sum = mergeable[0].amount;
+        for (needed = 0; sum < want; ) sum += mergeable[++needed].amount - fee;
+      }
+      const planned = Math.min(needed, MAX_MERGES);
+      const cost = fee * BigInt(planned);
+      day.check(cost);
+      const at = day.add(cost);
+      // The reserved fee is the ceiling: if the relay raises it, merging stops instead of overspending.
+      const merges = await client.combine(USDG, { target: want, max: planned, feeCap: fee });
+      if (merges < planned) day.add(fee * BigInt(merges) - cost, at); // give back what was not spent
+      const after = await balance();
+      const mergeableLeft = client.notes().filter((n) => BigInt(n.asset) === BigInt(USDG) && n.status === 'unspent' && n.amount > fee).length;
+      const reached = want === undefined ? mergeableLeft <= 1 : parseUnits(after.largestNote, 6) >= want;
+      const stopped = reached ? null : merges < planned ? 'the relay raised its fee above the reserved one' : planned < needed ? `at most ${MAX_MERGES} merges per call: call again` : 'the remaining notes are too small to pay their merge fee';
+      return { merges, feesAbout: fmt(fee * BigInt(merges)), reached, stopped, ...after };
+    }),
     /** Private USDG transfer to a zkd: address (relay fee paid from the agent's balance). */
     send,
     /** USDG out of the private pool to a public 0x address. */
     async withdraw({ to, amount }) {
       if (!isAddress(to ?? '')) throw new Error(`Not a 0x address: "${to}".`);
-      const raw = await guard(amount, to);
-      return done(await client.send({ amount: raw, recipient: to }));
+      return done(await spend(amount, to, (raw) => client.send({ amount: raw, recipient: to }).catch(hinted)));
     },
     /** Treasuries where the agent can act. name is set by the treasury's Owner (untrusted text). */
     async treasuries() {
@@ -329,8 +394,7 @@ export async function createAgent({
       const L = await treasury(treasuryId);
       const m = client.mandates(L).find((x) => hexId(x.commit) === String(mandateId).toLowerCase());
       if (!m) throw new Error(`No mandate ${mandateId} in this treasury.`);
-      const raw = await guard(amount, null, { voucher: true });
-      return done(await client.payMandate(L, mover(L), m, raw));
+      return done(await spend(amount, null, (raw) => client.payMandate(L, mover(L), m, raw), { vouchers: 1 }));
     },
     /**
      * USDG paid to the agent by others, newest first: private sends, link payments, cleared deposits

@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.13.0 (October 2026)
+
+- **Combine notes for agents:** `zkdesk_combine` / `combine({ target })` merges the agent's USDG notes, largest first, two per relayed self-transfer, until one note holds `target` or one note is left. A payment can spend at most two notes, so an agent paid many times (for example through a paywall) combines before a larger payment.
+  - Each merge pays one relay fee. At most 20 merges per call.
+  - The fees count toward `ZKDESK_MAX_PER_DAY` and are reserved before the first merge; `ZKDESK_MAX_FEE` applies to every merge.
+  - A target that combining cannot reach is refused before anything is merged.
+- `zkdesk_balance` now reports how many notes hold the balance and the largest note. A payment that needs more than two notes now tells the model to call `zkdesk_combine`.
+- **Spending guards, hardened by a two-round adversarial review:**
+  - Every agent payment now runs with its reserved relay fee as a ceiling. A relay that raises its fee mid-step is refused, and combine stops instead of overspending.
+  - A step that fails before anything reaches the relay releases its daily reservation (counted by the client, not by error text), with the reservation's own timestamp.
+  - Above the approval threshold, an agent that is also the treasury Owner reserves both vouchers.
+  - Money-moving SDK calls run one at a time even outside the MCP server.
+  - Combine plans exactly the merges a target needs, returns unused reservation, and reports whether it reached the target and why it stopped.
+
 ## 3.12.0 (October 2026)
 
 - **Pay-per-call APIs for agents:** `agent/paywall.mjs` puts any HTTP route behind a private per-request price, paid to the service's own ZKdesk account. An unpaid request gets a 402 challenge:

@@ -269,6 +269,7 @@ ZKDESK_SEED=0x… node agent/mcp.mjs             # MCP server (stdio) for Claude
   - `zkdesk_send`, `zkdesk_withdraw`
   - `zkdesk_treasuries`, `zkdesk_pay`, `zkdesk_requests`, `zkdesk_complete`
   - `zkdesk_mandates`, `zkdesk_pay_mandate`
+  - `zkdesk_combine` (merges the agent's notes; a payment spends at most two)
   - `zkdesk_fetch_paid` (pays a ZKdesk 402 challenge up to `max_price`, then fetches again)
   - `zkdesk_incoming`, `zkdesk_wait_for_payment` (payments received from others; wait for one before acting)
   - `zkdesk_pay_link`, `zkdesk_request_link` (the dashboard's payment request links, paid or created)

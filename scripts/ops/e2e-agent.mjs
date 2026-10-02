@@ -7,7 +7,9 @@
 // the agent pays the Owner's link (own balance, then from the treasury) and the Owner pays the agent's
 // link while the agent waits for it -> incoming payments list (no change) -> the agent's
 // per-transaction limit refuses 600 -> a deposit to the agent that its sender refunds during screening
-// is reported as pending, never as received.
+// is reported as pending, never as received -> combine: a second agent paid six times cannot send an
+// amount that needs three notes (hint to combine), a daily limit below the merge fees refuses before any
+// merge, and after combining into one note the payment goes through.
 // Usage (testnet or a local fork with the site served by serve.mjs-style server and DB_SCHEMA set):
 //   RPC_URL_SERVER=<rpc> node scripts/ops/e2e-agent.mjs <siteUrl>
 import { readFileSync } from 'node:fs';
@@ -135,5 +137,27 @@ await step('Owner takes it back (refundToOrigin)', async () => {
 });
 check(!(await agent.incoming()).some((p) => p.amount === '7') && !(await agent.incoming({ pending: true })).some((p) => p.amount === '7'), 'the refunded deposit is neither received nor pending');
 check((await agent.waitForPayment({ amount: '7', timeoutSeconds: 3 })).pending !== true, 'and no longer reported at all');
+// Combine: many received notes, one payment that needs three of them.
+{
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const seed2 = newSeed();
+  const payee = await createAgent({ seed: seed2, network: 'testnet', api: site, rpc: RPC, stateDir: mkdtempSync(join(tmpdir(), 'zkd-a2-')) });
+  await step('Owner pays a second agent six times 80 tUSDG', async () => {
+    for (let i = 0; i < 6; i++) await owner.send({ amount: 80_000000n, to: parseZkAddress(payee.address) });
+  });
+  const before = await payee.balance();
+  check(before.notes === 6 && before.usdg === '480', `six notes, 480 tUSDG (${before.notes} notes)`);
+  await refused('a payment needing three notes', () => payee.send({ to: ownerZk, amount: '200' }), /Call zkdesk_combine first/);
+  const capped = await createAgent({ seed: seed2, network: 'testnet', api: site, rpc: RPC, maxPerDay: '100', stateDir: mkdtempSync(join(tmpdir(), 'zkd-a3-')) });
+  await refused('combine past the daily limit', () => capped.combine(), /per 24 hours/);
+  check((await payee.balance()).notes === 6, 'nothing was merged');
+  await refused('a target combining cannot reach', () => payee.combine({ target: '470' }), /would not reach 470 USDG after fees. Nothing was merged/);
+  const merged = await step('Second agent combines its notes', () => payee.combine());
+  check(merged.merges === 5 && merged.notes === 1, `5 merges into one note of ${merged.largestNote}`);
+  check(merged.reached === true && Math.abs(Number(merged.spentLast24h) - Number(merged.feesAbout)) < 1e-6, `the daily record holds only the merge fees (${merged.spentLast24h}); the refused payment was released`);
+  check((await step('...and now sends 200', () => payee.send({ to: ownerZk, amount: '200' }))).confirmed, 'the payment goes through');
+}
 console.log(`Agent balance now ${(await agent.balance()).usdg} tUSDG. Agent e2e passed. (${record})`);
 process.exit(0);

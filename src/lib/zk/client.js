@@ -52,10 +52,16 @@ export function createClient({ publicClient, walletClient = null, address = null
     return info;
   }
   // maxFee (agents): refuse a relay that quotes more than this per step in USDG, or a voucher price above 2.
+  // ceiling (agents, per step): the fee the agent reserved for the step; a relay that raises its quote
+  // after that is refused before anything is proven.
+  let ceiling = null;
   function quote(info, asset) {
     const fee = payableFee(info.fees?.[String(asset).toLowerCase()] ?? minRelayFee(asset));
     if (maxFee !== null && big(asset) === USDG && (fee > maxFee || Number(info.voucherPrice ?? 2) > 2)) {
       throw new Error(`The relay quotes ${Number(fee) / 1e6} USDG per step (voucher ×${info.voucherPrice ?? 2}), above this agent's fee limit of ${Number(maxFee) / 1e6} USDG.`);
+    }
+    if (ceiling && big(asset) === USDG && (fee > ceiling.fee || BigInt(info.voucherPrice ?? 2) > ceiling.voucherPrice)) {
+      throw new Error('The relay fee rose after it was reserved. Nothing was paid; try again.');
     }
     return fee;
   }
@@ -95,7 +101,9 @@ export function createClient({ publicClient, walletClient = null, address = null
     throw new Error(`This step needs a relay fee of about ${usd.toFixed(2)} ${USD_SYMBOL} from your private balance. Add funds first.`);
   }
 
+  let relaysSent = 0; // counted before each submission: an agent releases a fee reservation only if nothing was sent
   async function submitRelay(body) {
+    relaysSent++;
     status('Submitting through the relayer…');
     const r = await relay(body);
     if (r.status !== 'confirmed') throw new Error(friendly(r.errorCode || (r.status === 'submitted' || r.status === 'queued' ? 'pending_long' : r.message || r.error)));
@@ -165,11 +173,13 @@ export function createClient({ publicClient, walletClient = null, address = null
   /**
    * Merges this asset's private notes, two at a time by relayed self-transfer (each pays its relay
    * fee), largest first, until one note holds `target` (default: all of them) or one note is left.
-   * Notes that cannot pay their own merge fee are left alone. Returns the number of merges.
+   * Notes that cannot pay their own merge fee are left alone. Returns the number of merges (at most max).
    */
-  async function combine(asset = deployment.usdg, { target } = {}) {
+  async function combine(asset = deployment.usdg, { target, max, feeCap } = {}) {
     for (let merges = 0; ; merges++) {
+      if (max !== undefined && merges >= max) return merges;
       const { fee, relayer } = await relayFee(asset);
+      if (feeCap !== undefined && fee > feeCap) return merges; // the relay raised its fee: stop, do not overspend
       await sync();
       const list = unspent(asset).filter((n) => n.amount > fee);
       if (list.length < 2 || (target !== undefined && list[0].amount >= target)) return merges;
@@ -543,6 +553,10 @@ export function createClient({ publicClient, walletClient = null, address = null
     balance: (asset, st = 'unspent') => balanceOf(notes(), big(asset), st),
     market, get state() { return state; },
     owner: keys.owner,
+    /** Relays submitted so far (counted before each submission, whatever its outcome). */
+    get relaysSent() { return relaysSent; },
+    /** Agents: the most a step may pay in relay fees (null: no ceiling). */
+    setFeeCeiling: (c) => { ceiling = c; },
     /** The relay fee a step paid in `asset` costs now (a voucher step costs voucherPrice times this). */
     quoteFee: async (asset = deployment.usdg) => { const info = await relayInfo(); return { fee: quote(info, asset), voucherPrice: BigInt(info.voucherPrice ?? 2) }; },
     /** The wallet that funds deposits; a passkey account links one only when it adds funds. */
