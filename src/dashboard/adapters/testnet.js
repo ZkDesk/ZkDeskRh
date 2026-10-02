@@ -195,6 +195,8 @@ async function refresh() {
       scheduler: deployment.scheduler,
       ledger: L && { scheduled: parseZkAddress(deployment.scheduler ?? '')?.owner === L.config.payer, name: L.name, allocCap: usd(L.config.allocCap), dualThreshold: usd(L.config.dualThreshold), attested: L.attested && { epoch: L.attested.epoch, liabilities: usd(L.attested.liabilities) } },
       pending: usd(balance(deployment.usdg, 'pending')), stockBalances, shares: shares.toString(),
+      // Personal USDG notes worth merging (each pays more than one merge fee): client.combine.
+      combinable: L ? 0 : notes.filter((n) => n.status === 'unspent' && n.asset === BigInt(deployment.usdg) && n.amount > m.fee).length,
       marks: Object.fromEntries(Object.entries(m.marks).map(([k, v]) => [k, Number(v) / 1e8])),
       liquidity: usd(m.liquidity), fee: usd(m.fee), shareFee: m.shareFee.toString(), syncedAt: Date.now(), desk: m.desk,
     },
@@ -218,7 +220,7 @@ function validate(state, type, values) {
   const errors = {};
   const m = state.meta;
   const amount = Number(values.amount);
-  const needAmount = !['close', 'open', 'ledger', 'roles', 'mandate', 'pause', 'resume', 'revoke', 'approve', 'complete'].includes(type);
+  const needAmount = !['close', 'open', 'ledger', 'roles', 'mandate', 'pause', 'resume', 'revoke', 'approve', 'complete', 'combine'].includes(type);
   if (needAmount && !(Number.isFinite(amount) && amount > 0 && amount <= 1e9)) errors.amount = 'Enter an amount greater than zero.';
   const position = state.positions.find((p) => p.id === values.id);
   const ledger = m.ledger;
@@ -252,6 +254,9 @@ function validate(state, type, values) {
       for (const k of ['treasurer', 'payer', 'auditor']) zkOrBlank(k);
       if (!(Number(values.cap) > 0)) errors.cap = 'Enter the largest single allocation.';
       if (!(Number(values.threshold) > 0)) errors.threshold = 'Enter the dual-control threshold.';
+      break;
+    case 'combine':
+      if (ledger || !(state.meta?.combinable > 1)) errors.general = 'There is nothing to combine: your private USDG is already in one note.';
       break;
     case 'attest':
       if (!ledger) errors.general = 'Treasury statements are made from a treasury workspace.';
@@ -356,6 +361,7 @@ async function submit(state, type, values) {
   switch (type) {
     case 'deposit': await client.deposit(tokenOf(values.asset), values.asset === 'USDG' ? usdg(values.amount) : toks(values.amount)); break;
     case 'send': await client.send({ amount: usdg(values.amount), to: parseZkAddress(values.recipient) }); break;
+    case 'combine': await client.combine(deployment.usdg); break;
     case 'withdraw': await client.send({ amount: usdg(values.amount), recipient: values.recipient }); break;
     case 'allocate': await client.lend(usdg(values.amount)); break;
     case 'deallocate': {

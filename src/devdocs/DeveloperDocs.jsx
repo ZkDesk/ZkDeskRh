@@ -152,7 +152,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
           <ul>
             <li>Commitments are appended to an incremental Merkle tree of depth 20 (about one million notes). The pool accepts proofs against any of its 64 most recent roots, so concurrent users do not invalidate each other's proofs.</li>
             <li>Each new note is encrypted to its recipient with X25519 key agreement and XChaCha20-Poly1305 and posted in a contract event, with a one-byte view tag that lets clients skip notes that are not theirs cheaply.</li>
-            <li>Transfers are 2-in / 2-out join-splits: up to two notes are spent and up to two are created (typically the payment and your change). A payment that needs more than two notes asks you to combine them first.</li>
+            <li>Transfers are 2-in / 2-out join-splits: up to two notes are spent and up to two are created (typically the payment and your change). A payment that needs more than two notes asks you to combine them first: <strong>Combine notes</strong> (Treasury tab, personal account) merges your USDG notes into one with private self-transfers, one relay fee per merge.</li>
           </ul>
         </Section>
 
@@ -380,7 +380,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
         <Section id="states" eyebrow="Reference" title="Operation states and errors">
           <Table head={['State', 'Meaning']} rows={[['queued', 'Accepted; not yet sent, or sending is being confirmed'], ['submitted', 'Sent; waiting for the block'], ['confirmed', 'Included and successful'], ['failed', 'Reverted or refused; nothing moved']]} />
           <Table head={['Message', 'What to do']} rows={[
-            ['This amount spans more than two private notes', 'Send a smaller amount first to combine notes, then retry'],
+            ['This amount spans more than two private notes', 'Use Combine notes on the Treasury tab of your personal account, then retry'],
             ['The desk health attestation is overdue', 'New borrowing is paused until the next epoch; repay and close still work'],
             ['The lending pool does not have enough USDG right now', 'Try a smaller amount or wait for repayments'],
             ['The network RPC is behind', 'Wait a moment and retry; the client waits for the node to catch up'],

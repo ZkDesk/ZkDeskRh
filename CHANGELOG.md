@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.2.0 (October 2026)
+
+- **Combine notes:** a balance spread over several private notes can be merged into one from the dashboard (Treasury tab, personal account: **Combine notes**). Each merge is a private self-transfer paying one relay fee; notes too small to pay their own merge are left alone. Sends that need more than two notes now point to it instead of failing without a way forward (`client.combine`, `scripts/ops/e2e-combine.mjs`).
+
 ## 3.1.0 (October 2026)
 
 - **Market hours:** the desk's market-hours flag follows the NYSE calendar: exchange holidays count as off-hours (1-hour epochs, the wider off-hours band and deep liquidations only), and early-close days end at 13:00. Rules-based, so no yearly data file; unscheduled closures can be added by date (`api/_lib/nyse.js`). Checked against the published 2025-2027 calendars (`api/nyse.test.mjs`).

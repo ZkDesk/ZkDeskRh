@@ -42,7 +42,7 @@ export function createClient({ publicClient, walletClient = null, address = null
     if (list.length > 1 && list[0].amount + list[1].amount >= needed) return list.slice(0, 2);
     const total = list.reduce((t, n) => t + n.amount, 0n);
     throw new Error(total >= needed
-      ? 'This amount spans more than two private notes. Use a smaller amount first to combine them.'
+      ? 'This amount spans more than two private notes. Combine them first (Combine notes, on the Treasury tab of your personal account), or use a smaller amount.'
       : 'Not enough available private balance.');
   }
 
@@ -152,6 +152,23 @@ export function createClient({ publicClient, walletClient = null, address = null
     const outputs = to ? [{ amount, ...to }, { amount: change, ...self }] : [{ amount: change, ...self }];
     const ext = to ? { relayer, fee } : { recipient, extAmount: -amount, relayer, fee };
     return submitRelay(await transactBody({ asset, inputs, outputs, ext }));
+  }
+
+  /**
+   * Merges this asset's private notes, two at a time by relayed self-transfer (each pays its relay
+   * fee), largest first, until one note holds `target` (default: all of them) or one note is left.
+   * Notes that cannot pay their own merge fee are left alone. Returns the number of merges.
+   */
+  async function combine(asset = deployment.usdg, { target } = {}) {
+    for (let merges = 0; ; merges++) {
+      const { fee, relayer } = await relayFee(asset);
+      await sync();
+      const list = unspent(asset).filter((n) => n.amount > fee);
+      if (list.length < 2 || (target !== undefined && list[0].amount >= target)) return merges;
+      status(`Combining notes (${merges + 1} of ${merges + list.length - 1})…`);
+      const inputs = list.slice(0, 2);
+      await submitRelay(await transactBody({ asset, inputs, outputs: [{ amount: inputs[0].amount + inputs[1].amount - fee, owner: keys.owner }], ext: { relayer, fee } }));
+    }
   }
 
   /** Private USDG -> lending shares (lend) or shares -> USDG (redeem). */
@@ -496,7 +513,7 @@ export function createClient({ publicClient, walletClient = null, address = null
   }
 
   return {
-    sync, notes, positions, deposit, send, credit, deskHealth,
+    sync, notes, positions, deposit, send, combine, credit, deskHealth,
     ledgers, ledgerNotes, createLedger, updateLedger, ledgerAct, ledgerAttest, ledgerRequests, approveRequest, completeRequest, setTransferLimit,
     mandates, createMandate, manageMandate, payMandate, receipts, proveReceipt,
     ledgerBalance: (ledger, asset, st = 'unspent') => balanceOf(ledgerNotes(ledger), big(asset), st),
