@@ -282,12 +282,34 @@ ZKDESK_SEED=0x… node agent/cli.mjs balance`}</Code>
             ['zkdesk_treasuries, zkdesk_pay', 'Treasuries where the agent holds a role; pay from one'],
             ['zkdesk_requests, zkdesk_complete', "Payments above the Owner's threshold wait for approval; complete them once approved"],
             ['zkdesk_mandates, zkdesk_pay_mandate', "Pay a mandate's current period, up to its cap"],
+            ['zkdesk_fetch_paid', 'Fetch an https URL; if it asks for payment (402), pay up to max_price and fetch again'],
             ['zkdesk_incoming, zkdesk_wait_for_payment', 'Payments the agent received from others, or wait for one (optionally of an exact amount) before acting'],
             ['zkdesk_pay_link, zkdesk_request_link', 'Pay a payment request link (from the dashboard or another agent), or create one so others can pay the agent'],
             ['zkdesk_receipts, zkdesk_prove_receipt, zkdesk_verify_receipt', "Prove a payment the agent received, or check anyone's receipt"],
           ]} />
           <p>In code: <C>{"const agent = await createAgent({ seed, network: 'mainnet', maxPerTx: '50' })"}</C> from <C>agent/index.mjs</C>, then <C>agent.send({'{'} to, amount {'}'})</C>, <C>agent.pay(treasuryId, {'{'} to, amount {'}'})</C> and so on. Amounts are USDG decimal strings.</p>
           <p>From the dashboard: open the treasury, go to <em>Treasury → AI agent → Add an agent</em>, and paste the agent's address. Set the amount above which you approve each payment, and optionally how many payments it may make without approval per day or week. The panel shows the current Payer, the threshold and the count used. <em>Remove agent</em> makes you the Payer again. A removed agent can no longer pay, but it keeps the viewing key it was given and can still read the treasury until its funds move to a new treasury (re-keying is not built yet).</p>
+          <h3>Pay-per-call APIs</h3>
+          <p>Any HTTP API can charge agents per request with <C>agent/paywall.mjs</C>, using its own ZKdesk account.</p>
+          <ol>
+            <li>An unpaid request gets <C>402</C> with a one-time challenge: a request id, a payment link to the service's private address and an expiry. Each open challenge has its own amount: the price plus a few millionths of a USDG.</li>
+            <li>The agent (<C>zkdesk_fetch_paid</C>, never above its <C>max_price</C> and within its limits) pays privately and repeats the request with the <C>x-zkdesk-request</C> header.</li>
+            <li>The service answers once a payment of exactly that amount, made after the challenge, is in the pool.</li>
+          </ol>
+          <p>Each payment unlocks one request. A deposit still in screening does not count, because its sender can take it back. The service learns nothing about who paid.</p>
+          <Code label="Service">{`import { createAgent } from './agent/index.mjs';
+import { createPaywall } from './agent/paywall.mjs';
+const account = await createAgent({ seed: process.env.SERVICE_SEED, network: 'mainnet' });
+const paywall = createPaywall({ agent: account, price: '0.25' });
+http.createServer(async (req, res) => {
+  if (await paywall.guard(req, res)) res.end('the paid answer');
+});`}</Code>
+          <ul>
+            <li><strong>Memory:</strong> open challenges and used payments are kept in the service's memory. Run one instance per account; a restart forgets open challenges.</li>
+            <li><strong>Limits:</strong> each caller can hold at most 5 open challenges (an IPv6 caller is counted by its /64), and a challenge expires after 5 minutes.</li>
+            <li><strong>Behind a reverse proxy:</strong> pass <C>clientOf</C> to read the client address from the header your proxy sets. Otherwise every caller shares the proxy's limit.</li>
+            <li><strong>On the paying side:</strong> <C>zkdesk_fetch_paid</C> fetches only public https hosts and refuses a challenge that expires within two minutes. After paying, it never throws: if the service does not answer, it returns what it paid and the request id to finish with. <C>ZKDESK_ALLOW_HTTP=1</C> lifts the https and public-host rules for local tests only.</li>
+          </ul>
           <h3>Where the limits are enforced</h3>
           <ul>
             <li><strong>By the contracts and circuits</strong>, when the agent is a treasury's Payer: it can pay mandates up to their caps, once per period, and transfer up to the Owner's dual-control threshold. Anything above becomes a request that only the Owner can approve, within the treasury's transfer-count limit. It cannot allocate, change roles or approve. The Owner can revoke it in Manage roles at any time.</li>

@@ -269,6 +269,7 @@ ZKDESK_SEED=0x… node agent/mcp.mjs             # MCP server (stdio) for Claude
   - `zkdesk_send`, `zkdesk_withdraw`
   - `zkdesk_treasuries`, `zkdesk_pay`, `zkdesk_requests`, `zkdesk_complete`
   - `zkdesk_mandates`, `zkdesk_pay_mandate`
+  - `zkdesk_fetch_paid` (pays a ZKdesk 402 challenge up to `max_price`, then fetches again)
   - `zkdesk_incoming`, `zkdesk_wait_for_payment` (payments received from others; wait for one before acting)
   - `zkdesk_pay_link`, `zkdesk_request_link` (the dashboard's payment request links, paid or created)
   - `zkdesk_receipts`, `zkdesk_prove_receipt`, `zkdesk_verify_receipt`
@@ -277,6 +278,17 @@ ZKDESK_SEED=0x… node agent/mcp.mjs             # MCP server (stdio) for Claude
 - **Local guards** (`off` removes one): `ZKDESK_MAX_PER_TX` (default 50 USDG), `ZKDESK_MAX_PER_DAY` (rolling 24 h with fees, default 100, kept in a 0600 file), `ZKDESK_ALLOW_TO` (allowed recipients), `ZKDESK_TREASURIES` (allowed treasuries), `ZKDESK_MAX_FEE` (per relay step, default 2).
 - **Getting paid:** only payments in the pool count as received. A deposit in screening can still be taken back by its sender, so it is reported as pending.
 - **Binding limits** come from making the agent a treasury's **Payer**: mandate caps, the Owner's approval threshold and the transfer-count limit are enforced on-chain. The local guards protect against a confused or prompt-injected model; anyone with the seed controls the agent's account.
+
+### Pay-per-call APIs
+
+`agent/paywall.mjs` puts any HTTP route behind a private per-request price:
+`createPaywall({ agent, price }).guard(req, res)` with the service's own ZKdesk account.
+
+- An unpaid request gets a 402 challenge: a unique amount, a payment link and a request id.
+- The agent pays with `zkdesk_fetch_paid` and repeats the request with `x-zkdesk-request`.
+- One payment of exactly that amount, made after the challenge and in the pool (not a deposit in screening), unlocks that request once.
+- Behind a reverse proxy, pass `clientOf` so the per-caller limit (5 open challenges) reads the real client address.
+- `ZKDESK_ALLOW_HTTP=1` is for local tests only.
 
 ## Testing and CI
 

@@ -1,5 +1,31 @@
 # Changelog
 
+## 3.12.0 (October 2026)
+
+- **Pay-per-call APIs for agents:** `agent/paywall.mjs` puts any HTTP route behind a private per-request price, paid to the service's own ZKdesk account. An unpaid request gets a 402 challenge:
+  - a request id
+  - its own amount (the price plus 1 to 9,999 millionths)
+  - a payment link
+  - an expiry
+
+  The challenge is bound to the method and path. The route is served once a payment of exactly that amount, made after the challenge, is in the pool. Each payment unlocks one request; deposits in screening don't count. Open challenges are bounded, and the chain is read at most every few seconds however many requests arrive.
+- **`zkdesk_fetch_paid` / `fetchPaid`:**
+  - pays a 402 challenge only up to `max_price`, and through every agent limit (per payment, per day, allowed recipients, fee cap)
+  - then fetches again
+  - https only, no redirects, at most 64 KB of the body, returned as `untrustedBody`
+- **Reviewed adversarially before release.** Two rounds found and fixed:
+  - a request that could crash the service
+  - one chain sync per concurrent retry
+  - open-challenge exhaustion: now at most 5 per caller, 5-minute expiry
+  - reuse of a freed amount by a late payment
+  - a head that could go backwards
+  - an unbounded 402 body
+  - a payer left without its request id when the service failed after the payment
+  - an amount-picker hang
+  - per-caller limits defeated by IPv6
+  - IPv6 forms of private addresses
+  - The agent also refuses private and loopback hosts and challenges about to expire.
+
 ## 3.11.0 (October 2026)
 
 Contract set v3.3 for the contract findings of the "V39 RESCORE" report. Circuits, verifiers and fixtures are unchanged. Live on mainnet since block 78408404 (pool `0xc1D05420b6EA4128F4D4eeb33152fe671D7326A9`, desk `0xF8eCB1f27F5878Db30ca46c4d299339AF2331bF3`), deployed while the desk held no positions; the v3.2 set is kept under `v3-replaced-3`. Build of record `c2c00380…` (42/42 contracts and libraries match).

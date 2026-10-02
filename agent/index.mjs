@@ -9,6 +9,8 @@
 import { readFile } from 'node:fs/promises';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import { join } from 'node:path';
 import { createPublicClient, formatUnits, http, isAddress, parseUnits } from 'viem';
 
@@ -23,6 +25,40 @@ const hexId = (id) => '0x' + id.toString(16).padStart(64, '0');
 const POLL_MS = 5_000;
 const DAY_MS = 86_400_000;
 const off = (v) => v === null || v === undefined || v === '' || v === 'off';
+
+const v4Private = (a, b) => a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+/** An IPv6 address as its eight 16-bit groups (an embedded dotted IPv4 tail included). */
+function groups6(ip) {
+  let v = ip.toLowerCase().split('%')[0];
+  const tail = /(\d+\.\d+\.\d+\.\d+)$/.exec(v);
+  if (tail) {
+    const [a, b, c, d] = tail[1].split('.').map(Number);
+    v = v.slice(0, -tail[1].length) + `${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const [head, rest] = v.includes('::') ? v.split('::') : [v, null];
+  const h = head ? head.split(':') : [];
+  const r = rest === null ? [] : rest ? rest.split(':') : [];
+  const fill = rest === null ? [] : Array(8 - h.length - r.length).fill('0');
+  return [...h, ...fill, ...r].map((x) => parseInt(x || '0', 16));
+}
+/**
+ * Loopback, private, link-local, unique- and site-local addresses, and IPv6 forms that embed an IPv4
+ * one (mapped, compatible, NAT64, 6to4): never fetched for a model. allowHttp (tests only) skips this.
+ */
+export function isPrivateAddress(ip) {
+  if (isIP(ip) === 4) {
+    const [a, b] = ip.split('.').map(Number);
+    return v4Private(a, b);
+  }
+  if (isIP(ip) !== 6) return true;
+  const g = groups6(ip);
+  const v4 = (hi) => v4Private(hi >> 8, hi & 0xff);
+  if (g.slice(0, 7).every((x) => x === 0)) return g[7] <= 1; // :: and ::1
+  if (g.slice(0, 5).every((x) => x === 0) && (g[5] === 0xffff || g[5] === 0)) return v4(g[6]); // ::ffff:a.b.c.d, ::a.b.c.d
+  if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)) return v4(g[6]); // NAT64
+  if (g[0] === 0x2002) return v4(g[1]); // 6to4
+  return (g[0] & 0xfe00) === 0xfc00 || (g[0] & 0xffc0) === 0xfe80 || (g[0] & 0xffc0) === 0xfec0;
+}
 
 /**
  * Notes of `asset` paid to this account by others, newest first. Only notes in the tree count: a
@@ -76,6 +112,7 @@ export const newSeed = () => '0x' + Buffer.from(crypto.getRandomValues(new Uint8
 export async function createAgent({
   seed, network = 'mainnet', api = 'https://zkdesk.tech', rpc, onStatus = () => {},
   maxPerTx = null, maxPerDay = null, maxFee = null, allowTo = null, treasuries: allowTreasuries = null, stateDir = join(homedir(), '.zkdesk'),
+  allowHttp = false,
 }) {
   if (!SEED.test(seed ?? '')) throw new Error('The agent seed must be 32 bytes of hex (0x + 64 characters). Make one with: node agent/cli.mjs keygen');
   if (!['mainnet', 'testnet'].includes(network)) throw new Error('network must be "mainnet" or "testnet".');
@@ -169,6 +206,31 @@ export async function createAgent({
       kind: pending ? 'deposit in screening: not received yet, the sender can still take it back' : receipts.has(n.commitment) ? 'mandate payment (has a receipt)' : 'private payment',
       tx: config.explorerTx(n.tx),
     })));
+  }
+  // The 402 body of agent/paywall.mjs: { zkdesk: { version: 1, requestId, link, ... } }.
+  async function readChallenge(r) {
+    const c = await limited(r, 16_384).then(({ text }) => JSON.parse(text)?.zkdesk, () => null).catch(() => null);
+    if (!c || c.version !== 1 || typeof c.link !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(c.requestId ?? '')) throw new Error('The service answered 402 without a valid ZKdesk payment challenge. Nothing was paid.');
+    return c;
+  }
+  // Reads at most `max` bytes of a body and cancels the rest.
+  async function limited(r, max) {
+    const reader = r.body?.getReader();
+    const chunks = [];
+    let size = 0;
+    while (reader) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      size += value.length;
+      if (size >= max) { await reader.cancel(); break; }
+    }
+    return { text: new TextDecoder().decode(Buffer.concat(chunks).subarray(0, max)), truncated: size >= max };
+  }
+  // At most 64 KB of the body; the text is the service's, not instructions for the model.
+  async function answer(r, paid) {
+    const { text, truncated } = await limited(r, 65_536);
+    return { status: r.status, contentType: r.headers.get('content-type'), untrustedBody: text, truncated, paid };
   }
   function readLink(link) {
     let url;
@@ -297,6 +359,65 @@ export async function createAgent({
           return { received: false, message: `No ${want === null ? '' : `${fmt(want)} USDG `}payment arrived within ${seconds} s.` };
         }
         await new Promise((r) => setTimeout(r, Math.min(POLL_MS, until - Date.now())));
+      }
+    },
+    /** Current block of the synced chain view (a paywall records it when it issues a challenge). */
+    async head() {
+      await client.sync();
+      return Number(client.state.toBlock);
+    },
+    /** Payments received after block `since`, exact amounts in base units, no timestamps (cheap). */
+    async payments({ since = 0 } = {}) {
+      await client.sync();
+      return receivedNotes(client.notes(), USDG, since).map((n) => ({ id: n.commitment.toString(16), raw: n.amount, block: Number(n.block) }));
+    },
+    /**
+     * Fetches a URL; if the service answers 402 with a ZKdesk challenge (agent/paywall.mjs), pays it
+     * (never more than maxPrice, and through every guard of send) and fetches again with the request id.
+     * https only (allowHttp for local tests), no redirects, at most 64 KB of the body, returned as
+     * untrustedBody: it is the service's text, not instructions.
+     */
+    async fetchPaid({ url, maxPrice, method = 'GET', body, timeoutSeconds = 45 }) {
+      let target;
+      try {
+        target = new URL(String(url));
+      } catch {
+        throw new Error(`Not a URL: "${url}".`);
+      }
+      if (!(target.protocol === 'https:' || (allowHttp && target.protocol === 'http:'))) throw new Error('Only https:// URLs can be fetched.');
+      if (!allowHttp) {
+        const host = target.hostname.replace(/^\[|\]$/g, '');
+        const ips = isIP(host) ? [host] : (await lookup(host, { all: true }).catch(() => [])).map((x) => x.address);
+        if (!ips.length || ips.some(isPrivateAddress)) throw new Error('Only public hosts can be fetched (not localhost or private networks).');
+      }
+      if (!['GET', 'POST'].includes(method)) throw new Error('method must be GET or POST.');
+      const max = usdg(maxPrice);
+      const init = { method, redirect: 'error', headers: body === undefined ? {} : { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(20_000) };
+      const call = (extra = {}) => fetch(target, { ...init, signal: AbortSignal.timeout(20_000), headers: { ...init.headers, ...extra } });
+      let r = await call();
+      if (r.status !== 402) return answer(r, null);
+      const challenge = await readChallenge(r);
+      // Pay only a challenge that will still be open once the payment confirms (about a minute).
+      if (!(Date.parse(challenge.expiresAt) - Date.now() > 120_000)) throw new Error('The payment request expires too soon to pay safely. Nothing was paid.');
+      const asked = readLink(challenge.link);
+      if (!asked.amount) throw new Error('The service did not state a price.');
+      if (usdg(asked.amount) > max) throw new Error(`The service asks ${asked.amount} USDG, above max_price ${fmt(max)} USDG. Nothing was paid.`);
+      const paid = { amount: asked.amount, to: asked.to, ...(await send({ to: asked.to, amount: asked.amount })) };
+      if (!paid.confirmed) throw new Error(`The payment did not confirm (${paid.status}); nothing was retried.`);
+      // Paid: from here nothing throws, so the caller always learns that it paid and the request id
+      // to finish with (a flaky or hostile service must not make the model pay twice).
+      const until = Date.now() + Math.min(Math.max(Number(timeoutSeconds) || 0, 5), 120) * 1000;
+      let lastError = null;
+      for (;;) {
+        try {
+          r = await call({ 'x-zkdesk-request': challenge.requestId });
+          if (r.status !== 402) return await answer(r, paid);
+          await r.body?.cancel();
+        } catch (error) {
+          lastError = error?.message ?? String(error);
+        }
+        if (Date.now() >= until) return { status: null, paid, requestId: challenge.requestId, error: lastError, message: 'Paid, but the service has not answered with access yet. Do not pay again: retry later with this requestId in the x-zkdesk-request header.' };
+        await new Promise((ok) => setTimeout(ok, 3000));
       }
     },
     /** Payments the agent received under mandates; each can be proven with proveReceipt. */
