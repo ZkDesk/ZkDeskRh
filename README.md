@@ -63,6 +63,7 @@ ZKdesk is a **client-proved** system:
 | --- | --- |
 | **Shielded pool** | UTXO-style notes (commitments to asset, amount, owner and blinding). Spending publishes a nullifier, which prevents double spends without revealing the note. |
 | **Private transfers** | Send and receive privately. Relayed actions don't show your public address and need no gas; the relay fee is paid from your private notes. Deposits and withdrawals are public at the edge of the pool. |
+| **Payment requests** | Ask to be paid privately with a link or QR code. It opens ZKdesk with a private send to your address (and optional amount and note) filled in; nothing about the request is posted anywhere. Your balances can also be merged into one note (**Combine notes**) so any amount goes out in one step. |
 | **Confidential credit** | Borrow USDG against stock-token collateral. Each position is a hidden commitment in one of the desk's 64 slots, with a minimum size per collateral class; an idle position without debt is evicted after a day, and its collateral returns to the owner as a note. A USDG lending pool supplies the liquidity. |
 | **Proven solvency** | The desk operator regularly proves a health epoch over every slot: total collateral, total debt and a commitment to exactly which positions are liquidatable. If no epoch is attested in time, new borrowing halts. |
 | **Sealed liquidations** | Breached positions are liquidated in sealed batches that are checked against the attested epoch. |

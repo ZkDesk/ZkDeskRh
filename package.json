@@ -28,6 +28,7 @@
     "html-react-parser": "5.2.17",
     "pg": "8.23.0",
     "poseidon-lite": "0.3.0",
+    "qrcode-generator": "2.0.4",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "viem": "2.56.9"

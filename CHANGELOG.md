@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.3.0 (October 2026)
+
+- **Payment requests:** **Request payment** (Treasury tab, personal account or a treasury) makes a link and a QR code with your private address and an optional amount and note. Opening it shows the request, and after connecting a wallet the private send is filled in for review. Nothing about the request is stored or posted; the note travels in the link only. The QR code is drawn as inline SVG (`qrcode-generator`, MIT, no dependencies).
+
 ## 3.2.0 (October 2026)
 
 - **Combine notes:** a balance spread over several private notes can be merged into one from the dashboard (Treasury tab, personal account: **Combine notes**). Each merge is a private self-transfer paying one relay fee; notes too small to pay their own merge are left alone. Sends that need more than two notes now point to it instead of failing without a way forward (`client.combine`, `scripts/ops/e2e-combine.mjs`).
