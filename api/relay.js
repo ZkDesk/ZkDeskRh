@@ -142,7 +142,18 @@ function parseMandatePull(p, e) {
   return { kind: 'mandate_pull', nullifiers: [proof.pullNullifier], target: mandatesTarget('pull'), args: [proof, { encryptedOutput1: e.encryptedOutput1, encryptedOutput2: e.encryptedOutput2 }] };
 }
 
-const PARSERS = { position: parsePosition, ledger: parseLedger, ledger_auth: parseLedgerAuth, ledger_attest: parseLedgerAttest, mandate_auth: parseMandateAuth, mandate_pull: parseMandatePull };
+// A Map, not an object literal: a kind such as "constructor" or "__proto__" must never resolve to an
+// inherited property (it made `tx` attacker-controlled JSON).
+const PARSERS = new Map(Object.entries({
+  transact: parseTransact, position: parsePosition, ledger: parseLedger, ledger_auth: parseLedgerAuth,
+  ledger_attest: parseLedgerAttest, mandate_auth: parseMandateAuth, mandate_pull: parseMandatePull,
+}));
+/** The only calls the relayer ever signs for a user: checked again just before signing. */
+const ALLOWED = new Map([
+  [deployment.pool, ['transact']], [deployment.desk, ['act']],
+  [deployment.ledger, ['act', 'authorize', 'attest']], [deployment.mandates, ['manage', 'pull']],
+].filter(([a]) => a).map(([a, fns]) => [a.toLowerCase(), new Set(fns)]));
+const allowed = (target) => Boolean(target && typeof target.address === 'string' && ALLOWED.get(target.address.toLowerCase())?.has(target.functionName));
 
 const hashToken = (t) => keccak256(t);
 
@@ -162,7 +173,10 @@ export default async function handler(req, res) {
   try {
     body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
     if (!body?.proof || (!body?.ext && body.kind !== 'ledger_attest')) throw new Error('Missing proof or ext.');
-    tx = (PARSERS[body.kind] ?? parseTransact)(body.proof, body.ext);
+    const parse = PARSERS.get(body.kind ?? 'transact'); // no kind: a plain transact (older clients)
+    if (!parse) throw new Error('Unknown kind.');
+    tx = parse(body.proof, body.ext);
+    if (!allowed(tx.target)) throw new Error('Unsupported call.');
     if (body.voucher === true && tx.kind !== 'transfer') throw new Error('A voucher is bought with a private transfer.');
   } catch (error) {
     return json(res, 400, { error: 'invalid_request', message: error.message });

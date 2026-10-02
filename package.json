@@ -11,7 +11,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5184",
     "build": "vite build",
-    "test": "node src/dashboard/model.test.js && node src/lib/zk/zk.test.js",
+    "test": "node src/dashboard/model.test.js && node src/lib/zk/zk.test.js && node api/relay.test.mjs",
     "preview": "vite preview --host 127.0.0.1 --port 5184",
     "zk:fixtures": "node circuits/scripts/fixtures.mjs",
     "abis": "node contracts/script/export-abis.mjs",

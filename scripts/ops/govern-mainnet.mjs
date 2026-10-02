@@ -42,9 +42,12 @@ const same = (a, b) => a.toLowerCase() === b.toLowerCase();
 const SENTINEL = '0x0000000000000000000000000000000000000001';
 const NEW_DELAY = 48n * 3600n;
 
-// The Phase B batch. A fixed salt makes it one identifiable operation.
+// The Phase B batch. A fixed salt makes it one identifiable operation. It was scheduled against the
+// v1 desk guardian and gate (v2 was deployed with its guardian and screener already set), so after the
+// v2 switch those targets come from deployment.v1.
+const v1 = deployment.v1 ?? deployment;
 const batch = {
-  targets: [deployment.deskGuardian, deployment.assetGate, deployment.timelock],
+  targets: [v1.deskGuardian, v1.assetGate, deployment.timelock],
   values: [0n, 0n, 0n],
   payloads: [
     encodeFunctionData({ abi: ROLES, functionName: 'setGuardian', args: [guardian.address] }),
