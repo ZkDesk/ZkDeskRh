@@ -222,7 +222,7 @@ async function snapshots() {
 
 export default async function handler(req, res) {
   if (!cronAuthorized(req)) return json(res, 401, { error: 'unauthorized' });
-  if (!deploymentReady) return json(res, 200, { skipped: 'network still on v1 contracts' });
+  if (!deploymentReady) return json(res, 200, { skipped: 'network still on older contracts' });
   const report = { indexed: await index() };
   if (keeper) {
     report.cleared = await clearDue();

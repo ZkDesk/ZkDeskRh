@@ -1,7 +1,9 @@
 // Vercel Cron, every 15 minutes (hourly off-hours): the desk operator. It is the testnet stand-in
 // for the TEE health-prover and liquidation sequencer, and holds DESK_OPERATOR_SK. Each run:
-//   1. replays CreditDesk events and opens every live slot with the operator key
-//   2. proves the epoch (circuits/health_epoch) at the current pinned marks
+//   1. snapshots the slots (CreditDesk.snapshot), replays CreditDesk events up to the snapshot and
+//      opens every live slot with the operator key
+//   2. proves the epoch (circuits/health_epoch) over that snapshot at the current pinned marks; later
+//      steps cannot invalidate it, and batches over changed slots are skipped on-chain (audit N-1)
 //   3. for each class with breached slots, prices the sale at the venue (salePrice) and proves sealed
 //      batches (circuits/liquidate) at that uniform price
 //   4. attests and liquidates in one transaction (attestAndLiquidate, audit M-1); if a batch would
@@ -9,7 +11,7 @@
 //   5. evicts idle positions without debt (circuits/evict, audit H-1), a few per run
 // Nothing is stored off-chain; the indexer mirrors Attested / Liquidated events.
 // Fallback when Functions are too slow or down: node scripts/ops/desk.mjs
-import { parseAbi, parseAbiItem } from 'viem';
+import { encodeEventTopics, parseAbi, parseAbiItem } from 'viem';
 import { abis, cachedProver, cronAuthorized, deployment, keeper, publicClient, secret, sendFromKeeper, revertName, json } from '../_lib/server.js';
 import { deploymentReady } from '../_lib/server.js';
 import { QUOTER } from '../_lib/fees.js';
@@ -26,18 +28,20 @@ const EVENTS = {
 const AMM = parseAbi(['function quote(address) view returns (uint256)']);
 const VENUE = parseAbi(['function feeOf(address) view returns (uint24)']);
 const RANGE = 50_000n;
+const SNAPSHOT_TOPIC = encodeEventTopics({ abi: [parseAbiItem('event SnapshotTaken(uint256 indexed id, bytes32 leavesHash)')] })[0];
 const MIN_KEEPER_WEI = 5n * 10n ** 14n; // 0.0005 ETH ≈ 10 epochs
 const MAX_EVICTIONS = 4; // per run: each is a proof and a transaction
 const desk = { address: deployment.desk, abi: abis.desk };
 const read = (address, abi, functionName, args = []) => publicClient.readContract({ address, abi, functionName, args });
 
-async function deskEvents(toBlock) {
+/** Desk events up to `toBlock`, or strictly before log `before` ({block, logIndex}) of that block. */
+async function deskEvents(toBlock, before) {
   const from = BigInt(deployment.deskBlock ?? deployment.deployBlock);
   const ranges = [];
   for (let f = from; f <= toBlock; f += RANGE) ranges.push([f, f + RANGE - 1n < toBlock ? f + RANGE - 1n : toBlock]);
   const logs = (await Promise.all(ranges.map(([fromBlock, to]) => publicClient.getLogs({ address: deployment.desk, events: Object.values(EVENTS), fromBlock, toBlock: to })))).flat();
   logs.sort((a, b) => (a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1));
-  return logs.map((l) => (l.eventName === 'OperatorNote'
+  return logs.filter((l) => !before || l.blockNumber < before.block || l.logIndex < before.logIndex).map((l) => (l.eventName === 'OperatorNote'
     ? { type: 'operator', slot: Number(l.args.slot), asset: l.args.asset, eph: [...l.args.eph], cipher: [...l.args.cipher] }
     : { type: 'position', slot: Number(l.args.slot), leaf: l.args.leaf, ciphertext: l.args.ciphertext }));
 }
@@ -48,7 +52,7 @@ async function classes() {
     const asset = await read(deployment.desk, abis.desk, 'classList', [BigInt(k)]).catch(() => null);
     if (!asset) break;
     const [[mark], cls] = await Promise.all([read(deployment.marker, abis.marker, 'current', [asset]), read(deployment.desk, abis.desk, 'classes', [asset])]);
-    out.push({ asset: BigInt(asset), address: asset, mark: BigInt(mark), liqBps: Number(cls[1]) });
+    out.push({ asset: BigInt(asset), address: asset, mark: BigInt(mark), liqBps: Number(cls[1]), minDebt: cls[5] });
   }
   return out;
 }
@@ -58,7 +62,7 @@ async function submit(functionName, args) {
   const { hash } = await sendFromKeeper(functionName, args, sim.request.gas, desk);
   const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 60_000 });
   if (receipt.status !== 'success') throw new Error(`${functionName} reverted: ${hash}`);
-  return { hash, block: receipt.blockNumber, gas: receipt.gasUsed };
+  return { hash, block: receipt.blockNumber, gas: receipt.gasUsed, logs: receipt.logs };
 }
 
 /**
@@ -80,18 +84,21 @@ export async function salePrice(asset, amount) {
 export async function runDesk({ operatorSk, prove, log = () => {} }) {
   // The keeper falls back to the relayer key until KEEPER_PRIVATE_KEY is set; keep a margin either way.
   if ((await publicClient.getBalance({ address: keeper.address })) < MIN_KEEPER_WEI) throw Object.assign(new Error('keeper_low_balance'), { shortMessage: 'keeper_low_balance' });
-  const head = await publicClient.getBlockNumber({ cacheTime: 0 });
+  // The epoch proves a snapshot, so steps landing while it is proven cannot make it revert.
+  const snap = await submit('snapshot', []);
+  const taken = snap.logs.find((l) => l.address.toLowerCase() === deployment.desk.toLowerCase() && l.topics[0] === SNAPSHOT_TOPIC);
+  const snapshotId = BigInt(taken.topics[1]);
   const [events, cls, index, marketOpen] = await Promise.all([
-    deskEvents(head), classes(), read(deployment.desk, abis.desk, 'index'), read(deployment.marker, abis.marker, 'marketOpen'),
+    deskEvents(snap.block, { block: snap.block, logIndex: taken.logIndex }), classes(), read(deployment.desk, abis.desk, 'index'), read(deployment.marker, abis.marker, 'marketOpen'),
   ]);
   const positions = replaySlots(events, operatorSk);
   const live = positions.filter(Boolean).length;
-  const h = buildHealth({ positions, classes: cls, rateIndex: index });
+  const h = buildHealth({ positions, classes: cls, rateIndex: index, snapshotId });
   log(`epoch: ${live} live positions, ${h.breached.length} breached`);
   const t0 = Date.now();
   const { proof } = await prove('health_epoch', h.witness);
   const marks = [...cls.map((c) => c.mark), ...Array(CLASSES - cls.length).fill(0n)];
-  const health = { proof, marks, rateIndex: index, sumValue: h.public.sumValue, sumDebt: h.public.sumDebt, breachCommit: h.public.breachCommit };
+  const health = { proof, snapshotId, leaves: h.public.leaves, marks, rateIndex: index, sumValue: h.public.sumValue, sumDebt: h.public.sumDebt, breachCommit: h.public.breachCommit };
   const report = { live, breached: h.breached, sumValue: h.public.sumValue, sumDebt: h.public.sumDebt, proveMs: Date.now() - t0, batches: [], evicted: [] };
 
   // Sealed batches for the breached set this epoch commits to, proven before anything is sent.
@@ -107,7 +114,7 @@ export async function runDesk({ operatorSk, prove, log = () => {} }) {
       report.batches.push({ asset: c.address, error: revertName(error) });
       continue;
     }
-    for (const b of planLiquidations({ positions, bitmap: h.bitmap, salt: h.salt, asset: c.asset, mark: c.mark, price, liqBps: c.liqBps, rateIndex: index, marketOpen })) {
+    for (const b of planLiquidations({ positions, bitmap: h.bitmap, salt: h.salt, asset: c.asset, mark: c.mark, price, liqBps: c.liqBps, minDebt: c.minDebt, rateIndex: index, marketOpen })) {
       const p = b.public;
       log(`batch ${c.address}: slots ${p.slots.slice(0, b.rows.length)}`);
       const { proof: bp } = await prove('liquidate', b.witness);
@@ -157,7 +164,7 @@ const prove = cachedProver(createProver, { health_epoch: healthCircuit, liquidat
 
 export default async function handler(req, res) {
   if (!cronAuthorized(req)) return json(res, 401, { error: 'unauthorized' });
-  if (!deploymentReady) return json(res, 200, { skipped: 'network still on v1 contracts' });
+  if (!deploymentReady) return json(res, 200, { skipped: 'network still on older contracts' });
   if (!keeper || !secret('DESK_OPERATOR_SK')) return json(res, 503, { error: 'desk_operator_unavailable' });
   // Epochs are 15 minutes in market hours and hourly off-hours.
   const open = await read(deployment.marker, abis.marker, 'marketOpen');

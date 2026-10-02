@@ -29,7 +29,7 @@ const str = (x) => x.toString();
  */
 /** blindings: optional {position, outputs: [b0, b1], operator} to reproduce a draft (ciphertexts are made first). */
 /** operatorPk: the desk operator's Grumpkin key [x, y] (CreditDesk.operatorPk). */
-export function buildPosition({ tree, sk, collAsset, usdgAsset, mark, ltvBps, minColl = 0n, rateIndex, operatorPk, old = null, collIn = 0n, collOut = 0n, draw = 0n, repay = 0n, inputs = [], ext, blindings = {} }) {
+export function buildPosition({ tree, sk, collAsset, usdgAsset, mark, ltvBps, minColl = 0n, liqBps = 10_000, minDebt = 0n, rateIndex, operatorPk, old = null, collIn = 0n, collOut = 0n, draw = 0n, repay = 0n, inputs = [], ext, blindings = {}, checks = true }) {
   if ((collIn && repay) || (draw && collOut)) throw new Error('Combine at most one payment in and one payout per step.');
   for (const v of [collIn, collOut, draw, repay]) if (v < 0n || v > MAX_AMOUNT) throw new Error('Amount out of range.');
   const owner = ownerPk(sk);
@@ -48,7 +48,13 @@ export function buildPosition({ tree, sk, collAsset, usdgAsset, mark, ltvBps, mi
   const newDebtScaled = oldDebt + drawScaled - repayScaled;
   if (newColl < 0n) throw new Error('That is more collateral than the position holds.');
   if (newDebtScaled < 0n) throw new Error('That repays more than the position owes.');
+  // checks = false only builds witnesses the circuit must refuse (circuits/scripts/fixtures.mjs).
+  if (checks && !collIn && !collOut && !draw && !repay) throw new Error('A credit step must move collateral or debt.');
   if ((newColl || newDebtScaled) && (!old || collOut) && newColl < minColl) throw new Error('A position must keep at least the minimum collateral for this asset.');
+  if (newColl || newDebtScaled) {
+    if (checks && newDebtScaled * rateIndex * HEALTH_SCALE > newColl * mark * BigInt(liqBps)) throw new Error('After this step the position would still be below its liquidation threshold. Repay or add enough to cure it, or close it.');
+    if (checks && newDebtScaled && newDebtScaled * rateIndex < minDebt * WAD) throw new Error('Debt must be zero or at least the minimum for this asset. Repay it in full instead.');
+  }
   if ((draw || collOut) && newDebtScaled * rateIndex * HEALTH_SCALE > newColl * mark * BigInt(ltvBps)) {
     throw new Error('This would exceed the loan-to-value limit at the current price.');
   }
@@ -72,7 +78,7 @@ export function buildPosition({ tree, sk, collAsset, usdgAsset, mark, ltvBps, mi
   const pub = {
     root, extDataHash: positionExtHash(ext), collAsset, usdgAsset, inAsset, mark, ltvBps: BigInt(ltvBps), rateIndex,
     oldLeaf, newLeaf, collIn, collOut, draw, repay, drawScaled, repayScaled, inputNullifiers, outputCommitments: outputs.map((o) => o.commitment),
-    operatorPk, operatorEph: op.eph, operatorCipher: op.cipher, minColl,
+    operatorPk, operatorEph: op.eph, operatorCipher: op.cipher, minColl, liqBps: BigInt(liqBps), minDebt,
   };
   const witness = {
     root: str(root), ext_data_hash: str(pub.extDataHash), coll_asset: str(collAsset), usdg_asset: str(usdgAsset), in_asset: str(inAsset),
@@ -82,7 +88,7 @@ export function buildPosition({ tree, sk, collAsset, usdgAsset, mark, ltvBps, mi
     sk: str(sk), old_coll: str(oldColl), old_debt_scaled: str(oldDebt), old_blinding: str(oldBlinding), new_blinding: str(newBlinding),
     in_amounts: ins.map((n) => str(n.amount)), in_blindings: ins.map((n) => str(n.blinding)),
     in_path_depths: paths.map((p) => p.depth), in_path_indices: paths.map((p) => str(p.index)), in_path_siblings: paths.map((p) => p.siblings.map(str)),
-    operator_pk: operatorPk.map(str), operator_eph: op.eph.map(str), operator_cipher: op.cipher.map(str), min_coll: str(minColl),
+    operator_pk: operatorPk.map(str), operator_eph: op.eph.map(str), operator_cipher: op.cipher.map(str), min_coll: str(minColl), liq_bps: str(liqBps), min_debt: str(minDebt),
     out_blindings: outBlindings.map(str), change: str(change), operator_r: str(op.r),
   };
   const position = closed ? null : { asset: collAsset, collateral: newColl, debtScaled: newDebtScaled, blinding: newBlinding };

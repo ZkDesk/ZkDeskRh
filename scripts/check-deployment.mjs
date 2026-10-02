@@ -22,7 +22,9 @@ const ABI = parseAbi([
   'function gate() view returns (address)',
   'function pool() view returns (address)',
   'function isAllowed(address) view returns (bool)',
-  'function classes(address) view returns (uint16 ltvBps, uint16 liqThresholdBps, bool enabled, uint128 maxCollateral, uint128 minCollateral)',
+  'function classes(address) view returns (uint16 ltvBps, uint16 liqThresholdBps, bool enabled, uint128 maxCollateral, uint128 minCollateral, uint128 minDebt)',
+  'function STEP_INTERVAL() view returns (uint64)',
+  'function SNAPSHOT_TTL() view returns (uint64)',
   'function venue() view returns (address)',
   'function bonusSink() view returns (address)',
   'function lending() view returns (address)',
@@ -166,11 +168,11 @@ await check('desk wired to this pool, lending pool, marker and venue', async () 
   const ok = eq(pool, d.pool) && eq(lending, d.lending) && eq(marker, d.marker) && eq(lendDesk, d.desk) && (!d.venue || eq(venue, d.venue)) && (net !== 'mainnet' || eq(sink, d.safe));
   return { ok, detail: `venue ${venue}; bonus to ${sink}` };
 });
-await check('every collateral class is listed, enabled and has a minimum position', async () => {
+await check('every collateral class is listed, enabled and has a minimum position and debt', async () => {
   const bad = [];
   for (const [symbol, s] of Object.entries(d.stocks)) {
     const [c, allowed] = await Promise.all([read(d.desk, 'classes', [s.token]), read(d.assetGate, 'isAllowed', [s.token])]);
-    if (!allowed || !c[2] || c[4] === 0n || c[0] !== s.ltvBps || c[1] !== s.liqBps) bad.push(symbol);
+    if (!allowed || !c[2] || c[4] === 0n || c[5] === 0n || c[0] !== s.ltvBps || c[1] !== s.liqBps) bad.push(symbol);
   }
   return { ok: bad.length === 0, detail: bad.length ? `wrong: ${bad.join(', ')}` : Object.keys(d.stocks).join(', ') };
 });
@@ -183,6 +185,10 @@ await check('contract sources verified on Sourcify', async () => {
 await check('idle positions can be evicted', async () => {
   const after = Number(await read(d.desk, 'EVICT_AFTER'));
   return { ok: after > 0, detail: `after ${after / 3600} h without debt or activity` };
+});
+await check('steps are spaced and epochs prove recent single-use snapshots', async () => {
+  const [step, ttl] = (await Promise.all([read(d.desk, 'STEP_INTERVAL'), read(d.desk, 'SNAPSHOT_TTL')])).map(Number);
+  return { ok: step > 0 && ttl > 0, detail: `one step per slot every ${step / 60} min (closing exempt); snapshots valid ${ttl / 60} min` };
 });
 
 const width = Math.max(...results.map((r) => r.name.length));

@@ -20,6 +20,7 @@ fn main(
     sum_value: pub Field, // floor(sum of collateral * mark / 1e20), USDG
     sum_debt: pub Field, // ceil(sum of debt_scaled * index / 1e18), USDG
     breach_commit: pub Field, // H(bitmap of breached slots, salt)
+    snapshot_id: pub Field, // the desk snapshot the leaves come from: binds the proof to one use
     class: [u32; SLOTS],
     collateral: [Field; SLOTS],
     debt_scaled: [Field; SLOTS],
@@ -28,6 +29,7 @@ fn main(
     salt: Field,
 ) {
     rate_index.assert_max_bit_size::<96>();
+    snapshot_id.assert_max_bit_size::<64>();
     for k in 0..CLASSES {
         marks[k].assert_max_bit_size::<64>();
         liq_bps[k].assert_max_bit_size::<16>();

@@ -148,7 +148,7 @@ contract MandateRegistry is ReentrancyGuard {
         if (m.status != ACTIVE || m.ledgerId != p.ledgerId) revert NotActive();
         if (pulled[p.pullNullifier]) revert AlreadyPaid();
         if (p.t > block.timestamp || p.t + MAX_PROOF_AGE < block.timestamp) revert StaleTime();
-        if (!pool.gate().isAllowed(p.asset)) revert BadAsset();
+        // Paying a committed mandate never checks the asset listing (audit M-3): it is an outflow.
         if (p.asset == usdg) {
             if (p.mark != 0) revert BadAsset();
         } else if (!marker.usable(p.asset, p.mark)) {

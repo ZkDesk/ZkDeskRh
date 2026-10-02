@@ -63,8 +63,14 @@ contract LendingPoolUSDG is ERC4626, Ownable, IConverter {
         return Math.min(debt * 10_000 / assets, 10_000);
     }
 
+    /// Cash not set aside as reserves (zero, never an underflow, when nearly fully lent out).
+    function available() public view returns (uint256) {
+        uint256 c = cash();
+        return c > reserves ? c - reserves : 0;
+    }
+
     function borrow(uint256 amount, address to) external onlyDesk {
-        if (amount > cash() - reserves) revert InsufficientLiquidity();
+        if (amount > available()) revert InsufficientLiquidity();
         IERC20(asset()).safeTransfer(to, amount);
         emit Borrowed(amount);
     }
@@ -75,11 +81,11 @@ contract LendingPoolUSDG is ERC4626, Ownable, IConverter {
     }
 
     function maxWithdraw(address owner_) public view override returns (uint256) {
-        return Math.min(super.maxWithdraw(owner_), cash() - reserves);
+        return Math.min(super.maxWithdraw(owner_), available());
     }
 
     function maxRedeem(address owner_) public view override returns (uint256) {
-        return Math.min(super.maxRedeem(owner_), convertToShares(cash() - reserves));
+        return Math.min(super.maxRedeem(owner_), convertToShares(available()));
     }
 
     /// @notice USDG -> shares (supply) or shares -> USDG (redeem), for private notes in the pool.

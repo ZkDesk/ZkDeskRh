@@ -35,6 +35,7 @@ fn main(
     total_repay: pub Field,
     total_repaid_scaled: pub Field,
     total_written_off: pub Field,
+    min_debt: pub Field,
     bitmap: Field,
     salt: Field,
     collateral: [Field; B],
@@ -50,6 +51,7 @@ fn main(
     price.assert_max_bit_size::<64>();
     liq_bps.assert_max_bit_size::<16>();
     rate_index.assert_max_bit_size::<96>();
+    min_debt.assert_max_bit_size::<100>();
     assert(rate_index != 0);
     assert_eq(hash_2([bitmap, salt]), breach_commit);
     let breached: [bool; 64] = bitmap.to_le_bits();
@@ -94,14 +96,19 @@ fn main(
             repaid_scaled[i].assert_max_bit_size::<128>();
             assert(lte(repaid_scaled[i] * rate_index, repays[i] * WAD));
             assert(!lte(repaid_scaled[i] * rate_index + rate_index, repays[i] * WAD));
-            // Close factor.
+            // Close factor: a shallow breach sells at most 20% of the debt, unless that would leave
+            // dust (below min_debt, audit H-1): then the whole debt may be repaid.
             assert(lte(repaid_scaled[i], debt));
-            if !deep {
-                assert(lte(repaid_scaled[i] * 5, debt));
-            }
-
             let new_coll = coll - sold[i];
             let rest = debt - repaid_scaled[i];
+            let partial_leaves_dust = !lte(min_debt * WAD * 5, debt * 4 * rate_index);
+            if !deep & !((rest == 0) & partial_leaves_dust) {
+                assert(lte(repaid_scaled[i] * 5, debt));
+            }
+            // A position that keeps collateral keeps no dust debt.
+            if (new_coll != 0) & (rest != 0) {
+                assert(lte(min_debt * WAD, rest * rate_index));
+            }
             let mut written_off = 0;
             if new_coll == 0 {
                 written_off = rest;

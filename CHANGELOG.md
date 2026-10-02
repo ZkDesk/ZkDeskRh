@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.0.0 (October 2026)
+
+Contract fixes for the remaining findings of the re-audit after v2 (N-1, H-1 and M-3 residuals), deployed as a new set beside v2. v2 held no positions or notes when it was replaced.
+
+- **Credit steps (N-1):** a step must move collateral or debt; every step that leaves a position open proves it healthy at the class's liquidation threshold, at the latest pinned mark, so a breached position can only cure, close or be liquidated. A slot takes one step per 10 minutes, closing excepted.
+- **Health epochs (N-1, M-1):** the desk records snapshots of its slots (`snapshot()`, permissionless, never overwritten); an epoch proves one recent snapshot, and its id is a public input, so each proof is used once. A liquidation batch over a slot that changed after the snapshot is skipped instead of reverting the call.
+- **Dust debt (H-1 residual):** debt is zero or at least the class minimum (5 USDG), bound into the position and liquidation proofs; a partial liquidation that would leave dust repays the position in full.
+- **Exits (M-3 residual):** treasury transfers, mandate payments and pool converts no longer check the asset listing; only deposits do.
+- **Lending pool:** available cash saturates at zero when reserves exceed it.
+- **Tests:** a Foundry and a Noir test per finding (`test_v3_*`; `rejects_noop_step`, `rejects_breached_step_that_stays_breached`, `accepts_breached_step_that_cures`, `rejects_dust_debt`, `rejects_partial_sale_leaving_dust_debt`); invariant handlers for liquidations, stale batches, evictions, snapshots and treasury ledgers (1,600 runs of 64 calls); relay and mailbox handler tests on a mocked database and chain with coverage reported in CI.
+
 ## 2.1.0 (October 2026)
 
 Off-chain fixes from the re-audit after v2. No contract changes.

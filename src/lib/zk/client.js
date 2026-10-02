@@ -177,8 +177,8 @@ export function createClient({ publicClient, walletClient = null, address = null
     const token = stocks[symbol].token;
     operatorPk ??= await Promise.all([0n, 1n].map((i) => read(deployment.desk, abis.desk, 'operatorPk', [i])));
     const [[price], index, cls] = await Promise.all([read(deployment.marker, abis.marker, 'current', [token]), read(deployment.desk, abis.desk, 'index'), read(deployment.desk, abis.desk, 'classes', [token])]);
-    // classes(): ltvBps, liqThresholdBps, enabled, maxCollateral, minCollateral (the smallest position).
-    return { token, mark: big(price), ltvBps: stocks[symbol].ltvBps, liqBps: stocks[symbol].liqBps, minColl: cls[4] ?? 0n, index, operatorPk };
+    // classes(): ltvBps, liqThresholdBps, enabled, maxCollateral, minCollateral, minDebt.
+    return { token, mark: big(price), ltvBps: Number(cls[0]), liqBps: Number(cls[1]), minColl: cls[4] ?? 0n, minDebt: cls[5] ?? 0n, index, operatorPk };
   }
 
   /** Desk epoch status: last attestation, whether new draws are halted, epoch count. */
@@ -199,7 +199,7 @@ export function createClient({ publicClient, walletClient = null, address = null
     const slot = position ? position.slot : freeSlot(state);
     if (slot === null) throw new Error('The credit desk is full. Please try again later.');
     const old = position && { collateral: position.collateral, debtScaled: position.debtScaled, blinding: position.blinding };
-    const args = { tree: state.tree, sk: keys.sk, collAsset: big(m.token), usdgAsset: USDG, mark: m.mark, ltvBps: m.ltvBps, minColl: m.minColl, rateIndex: m.index, operatorPk: m.operatorPk, old, collIn, collOut, draw, repay, inputs };
+    const args = { tree: state.tree, sk: keys.sk, collAsset: big(m.token), usdgAsset: USDG, mark: m.mark, ltvBps: m.ltvBps, minColl: m.minColl, liqBps: m.liqBps, minDebt: m.minDebt, rateIndex: m.index, operatorPk: m.operatorPk, old, collIn, collOut, draw, repay, inputs };
     const empty = { relayer: zeroAddress, fee: 0n, encryptedOutput1: '0x', encryptedOutput2: '0x', encryptedPosition: '0x' };
     const draft = buildPosition({ ...args, ext: empty });
     const [o1, o2] = draft.outputs;
@@ -513,7 +513,9 @@ const FRIENDLY = {
   UnknownRoot: 'The pool moved on while your proof was being made. Please try again.',
   ExtDataHashMismatch: 'The transaction details changed after proving and were rejected.',
   InvalidProof: 'The proof was rejected by the verifier.',
-  MarkUnusable: 'The price is stale or paused, so new borrowing is blocked for now. Repaying still works.',
+  MarkUnusable: 'The price moved or is stale. Please refresh and try again; closing a position always works.',
+  TooSoon: 'A position can take one step every 10 minutes. Closing it is always available.',
+  EmptyStep: 'A credit step must move collateral or debt.',
   StaleIndex: 'Rates were just updated. Please try again.',
   SlotMismatch: 'That position changed. Please refresh and try again.',
   ExposureCap: 'This collateral class is at its exposure cap.',

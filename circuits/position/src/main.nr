@@ -39,6 +39,8 @@ fn main(
     operator_eph: pub [Field; 2],
     operator_cipher: pub [Field; 4],
     min_coll: pub Field,
+    liq_bps: pub Field,
+    min_debt: pub Field,
     sk: Field,
     old_coll: Field,
     old_debt_scaled: Field,
@@ -54,6 +56,8 @@ fn main(
     operator_r: Field,
 ) {
     let _ = ext_data_hash;
+    // Audit N-1: a step must move something. An empty step would only re-randomise the leaf.
+    assert((coll_in != 0) | (coll_out != 0) | (draw != 0) | (repay != 0));
     // Public parameters are bounded so every product below stays far under the field size.
     mark.assert_max_bit_size::<64>();
     ltv_bps.assert_max_bit_size::<16>();
@@ -121,6 +125,15 @@ fn main(
     if (new_coll == 0) & (new_debt_scaled == 0) {
         assert_eq(new_leaf, 0); // fully closed: the slot is freed
     } else {
+        // Audit N-1: every step that leaves a position leaves it healthy at the liquidation threshold,
+        // so a breached position can only be cured, closed or liquidated, never just touched.
+        liq_bps.assert_max_bit_size::<16>();
+        assert(lte(debt_term(new_debt_scaled, rate_index), value_term(new_coll, mark, liq_bps)));
+        // Audit H-1: debt is zero or at least the class minimum (no dust debt holding a slot).
+        if new_debt_scaled != 0 {
+            min_debt.assert_max_bit_size::<100>();
+            assert(lte(min_debt * WAD, new_debt_scaled * rate_index));
+        }
         // Audit H-1: opening, or withdrawing from, a position leaves at least the class minimum, so a
         // slot costs real capital. Repay and add stay open to a position a liquidation left below it.
         if (old_leaf == 0) | (coll_out != 0) {

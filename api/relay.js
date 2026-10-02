@@ -196,7 +196,7 @@ async function claimSpends(opId, spends) {
 const release = (opId) => db.query('delete from public.pending_spends where op_id = $1', [opId]);
 
 export default async function handler(req, res) {
-  if (!deploymentReady) return json(res, 503, { error: 'network_upgrading' }); // still on v1 contracts
+  if (!deploymentReady) return json(res, 503, { error: 'network_upgrading' }); // still on older contracts
   if (req.method === 'GET') {
     if (!relayer) return json(res, 200, { relayer: null, available: false });
     const [fees, balance] = await Promise.all([relayFees(), publicClient.getBalance({ address: relayer.address })]).catch(() => [null, 0n]);

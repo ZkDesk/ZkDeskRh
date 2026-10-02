@@ -194,6 +194,16 @@ contract MandatesTest is Test {
         assertEq(status, registry.REVOKED());
     }
 
+    /// M-3 (v3): paying a committed mandate never checks the asset listing.
+    function test_v3_delistedAssetStillPaysMandates() public {
+        _ready();
+        gate.setAsset(USDG, false);
+        gate.setAsset(SPY, false);
+        _runPull(6);
+        _runPull(7);
+        _runPull(8); // the SPY payroll
+    }
+
     function test_secondPullInTheSamePeriodReverts() public {
         _ready();
         _runPull(6);

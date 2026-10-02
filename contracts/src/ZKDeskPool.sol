@@ -10,8 +10,8 @@ import {AssetGate} from "./AssetGate.sol";
 import {IConverter} from "./interfaces/IConverter.sol";
 
 /// @notice Immutable multi-asset shielded pool. No owner, no pause: exits are never gated. The asset
-/// gate only governs what enters (deposits, and the output asset of a convert); transfers and
-/// withdrawals of a note never consult it (audit M-3).
+/// gate only governs deposits; converts need a gate-approved converter; transfers and withdrawals of
+/// a note never consult either (audit M-3).
 /// Notes are Poseidon commitments in one LeanIMT of depth 32; spends reveal only nullifiers.
 /// Deposits wait `standby` seconds (screening window) before their notes enter the tree,
 /// and the depositor can always take a pending deposit back to its origin.
@@ -127,8 +127,9 @@ contract ZKDeskPool is ReentrancyGuard {
     }
 
     function transact(Proof calldata p, ExtData calldata ext) external nonReentrant {
-        // Only what enters is gated: a deposit's asset and a convert's output asset.
-        if ((ext.extAmount > 0 && !gate.isAllowed(p.asset)) || (p.outAsset != p.asset && !gate.isAllowed(p.outAsset))) revert AssetNotAllowed();
+        // Only deposits are gated by the asset listing. Converts are governed by the converter list
+        // (a redeem into a de-listed asset still works, audit M-3); transfers and withdrawals never are.
+        if (ext.extAmount > 0 && !gate.isAllowed(p.asset)) revert AssetNotAllowed();
         if (p.extDataHash != uint256(keccak256(abi.encode(ext))) % FIELD) revert ExtDataHashMismatch();
         if (p.publicAmount != publicAmountOf(ext.extAmount, ext.fee)) revert PublicAmountMismatch();
         _spend(p.root, p.inputNullifiers);

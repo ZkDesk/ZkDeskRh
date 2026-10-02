@@ -200,7 +200,8 @@ contract TreasuryLedger is ReentrancyGuard {
             (address from, address to) = p.action == ALLOCATE ? (address(usdg), address(vault)) : (address(vault), address(usdg));
             if (p.asset != from || p.outAsset != to || e.recipient != address(0) || amount == 0) revert BadAsset();
         } else if (p.action == TRANSFER_OUT) {
-            if (p.asset != p.outAsset || !pool.gate().isAllowed(p.asset) || (amount > 0) != (e.recipient != address(0))) revert BadAsset();
+            // A transfer out never checks the asset listing: a de-listed asset can always leave (M-3).
+            if (p.asset != p.outAsset || (amount > 0) != (e.recipient != address(0))) revert BadAsset();
         } else {
             revert BadAction();
         }

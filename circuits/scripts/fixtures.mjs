@@ -53,12 +53,12 @@ const jsonable = (x) => JSON.parse(JSON.stringify(x, (_, v) => (typeof v === 'bi
 
 // Noir #[test]s per circuit (circuits/<name>/src/tests.nr): the same witnesses, accepted and rejected.
 const nrTests = {};
-const keepTest = (kind, label, witness, ok) => {
+const keepTest = (kind, label, witness, ok, name) => {
   const list = (nrTests[kind] ??= []);
-  if (list.filter((t) => t.ok === ok).length < (ok ? 3 : 6)) list.push({ label, witness, ok });
+  if (name || list.filter((t) => t.ok === ok && !t.name).length < (ok ? 3 : 6)) list.push({ label, witness, ok, name });
 };
-async function prove(kind, label, witness, extra = {}) {
-  keepTest(kind, label, witness, true);
+async function prove(kind, label, witness, extra = {}, name) {
+  keepTest(kind, label, witness, true, name);
   const t0 = performance.now();
   const { witness: w } = await C[kind].noir.execute(witness);
   const proof = await C[kind].backend.generateProof(w, EVM);
@@ -67,8 +67,8 @@ async function prove(kind, label, witness, extra = {}) {
   fixtures.push({ label, kind, proof: '0x' + Buffer.from(proof.proof).toString('hex'), publicInputs: proof.publicInputs, ...jsonable(extra) });
 }
 /** The circuit must refuse this witness (it cannot be proven). */
-async function rejects(kind, label, witness) {
-  keepTest(kind, label, witness, false);
+async function rejects(kind, label, witness, name) {
+  keepTest(kind, label, witness, false, name);
   const ok = await C[kind].noir.execute(witness).then(() => true, () => false);
   if (ok) throw new Error(`${label}: witness executed`);
   console.log(`${label}: circuit rejects ✓`);
@@ -82,8 +82,9 @@ async function tx(label, args) {
   await prove('transact', label, built.witness, { ext });
   return insert(built);
 }
-async function step(label, { slot = 0, collAsset = SPY, mark = MARK, ltvBps = LTV, ...args }) {
-  const built = buildPosition({ tree, sk: alice, collAsset, usdgAsset: USDG, mark, ltvBps, rateIndex: INDEX, operatorPk: OPERATOR_PK, ext: posExt, ...args });
+const LIQ = 7000;
+async function step(label, { slot = 0, collAsset = SPY, mark = MARK, ltvBps = LTV, liqBps = LIQ, ...args }) {
+  const built = buildPosition({ tree, sk: alice, collAsset, usdgAsset: USDG, mark, ltvBps, liqBps, rateIndex: INDEX, operatorPk: OPERATOR_PK, ext: posExt, ...args });
   await prove('position', label, built.witness, { ext: posExt, slot });
   // What the chain would emit, for the operator's replay.
   const events = [
@@ -119,6 +120,11 @@ const [spy] = await tx('deposit 10 SPY', { asset: SPY, outputs: [{ amount: 10n *
   await rejects('position', 'open below the minimum collateral', { ...dust.witness, min_coll: WAD.toString() });
   const r0 = buildPosition({ tree, sk: alice, collAsset: SPY, usdgAsset: USDG, mark: MARK, ltvBps: LTV, rateIndex: INDEX, operatorPk: OPERATOR_PK, ext: posExt, collIn: WAD, inputs: [spy], blindings: { operator: 0n } });
   await rejects('position', 'operator_r = 0', r0.witness);
+  // Audit N-1: a step that moves nothing (it would only re-randomize the leaf) cannot be proven.
+  const noop = buildPosition({ tree, sk: alice, collAsset: SPY, usdgAsset: USDG, mark: MARK, ltvBps: LTV, liqBps: LIQ, rateIndex: INDEX, operatorPk: OPERATOR_PK, ext: posExt, old: { collateral: WAD, debtScaled: 0n, blinding: 5n }, checks: false });
+  await rejects('position', 'no-op step', noop.witness, 'rejects_noop_step');
+  // Audit H-1: debt below the class minimum (here 5 USDG) cannot be opened.
+  await rejects('position', 'dust debt', buildPosition({ tree, sk: alice, collAsset: SPY, usdgAsset: USDG, mark: MARK, ltvBps: LTV, liqBps: LIQ, minDebt: 5_000000n, rateIndex: INDEX, operatorPk: OPERATOR_PK, ext: posExt, collIn: WAD, draw: 1_000000n, inputs: [spy], checks: false }).witness, 'rejects_dust_debt');
 }
 
 const open = await step('open: 10 SPY in, draw 500 USDG', { collIn: 10n * WAD, draw: 500_000000n, inputs: [spy] });
@@ -138,7 +144,7 @@ fixtures = [];
 const NV120 = 120_00000000n;
 const NV72 = 72_00000000n; // -40%
 const PRICE = (NV72 * 9_950n) / 10_000n; // MockAMM quote: mark - 0.5%
-const nv = { collAsset: NVDA, mark: NV120, ltvBps: 4500 };
+const nv = { collAsset: NVDA, mark: NV120, ltvBps: 4500, liqBps: 5500 };
 const classesAt = (nvMark) => [{ asset: SPY, mark: MARK, liqBps: 7000 }, { asset: NVDA, mark: nvMark, liqBps: 5500 }];
 const events = [];
 
@@ -153,9 +159,10 @@ const positions = replaySlots(events, OPERATOR_SK);
 if (positions.filter(Boolean).length !== 2 || positions[3].debtScaled !== 540_000000n) throw new Error('operator replay');
 
 const SALT = 777n;
-const e1 = buildHealth({ positions, classes: classesAt(NV120), rateIndex: INDEX, salt: SALT });
+// Epochs prove CreditDesk snapshots 1 and 2 (snapshot ids are single-use public inputs).
+const e1 = buildHealth({ positions, classes: classesAt(NV120), rateIndex: INDEX, snapshotId: 1n, salt: SALT });
 await prove('health_epoch', 'epoch at $120: no breach', e1.witness, { bitmap: e1.bitmap, marks: [MARK, NV120, 0n, 0n] });
-const e2 = buildHealth({ positions, classes: classesAt(NV72), rateIndex: INDEX, salt: SALT });
+const e2 = buildHealth({ positions, classes: classesAt(NV72), rateIndex: INDEX, snapshotId: 2n, salt: SALT });
 if (e2.bitmap !== ((1n << 3n) | (1n << 5n))) throw new Error(`expected slots 3 and 5 breached, got ${e2.breached}`);
 await prove('health_epoch', 'epoch at $72: slots 3 and 5 breached', e2.witness, { bitmap: e2.bitmap, marks: [MARK, NV72, 0n, 0n] });
 
@@ -167,7 +174,16 @@ for (let i = 0; i < 24; i++) {
 await rejects('health_epoch', 'omitted slot', { ...e2.witness, leaves: e2.witness.leaves.map((l, i) => (i === 5 ? '0' : l)) });
 await rejects('health_epoch', 'mispriced slot', { ...e2.witness, marks: e2.witness.marks.map((m, k) => (k === 1 ? NV120.toString() : m)) });
 
+// Audit N-1: at $72 A is breached (540 debt on $720 at 55%). A step that leaves it breached cannot be
+// proven; one that cures it can. Built on the tree after B opened (fixture root 2), proven last.
+const cureArgs = { tree, sk: alice, collAsset: NVDA, usdgAsset: USDG, mark: NV72, ltvBps: 4500, liqBps: 5500, rateIndex: INDEX, operatorPk: OPERATOR_PK, ext: posExt, old: a.position, inputs: [a.notes[1]] };
+await rejects('position', 'breached step that stays breached', buildPosition({ ...cureArgs, repay: 1_000000n, checks: false }).witness, 'rejects_breached_step_that_stays_breached');
+const cure = buildPosition({ ...cureArgs, repay: 150_000000n });
+
 const liq = { positions, bitmap: e2.bitmap, salt: SALT, asset: NVDA, mark: NV72, price: PRICE, liqBps: 5500, rateIndex: INDEX };
+// Audit H-1: under a 400 USDG minimum debt, B's 20% partial sale would leave dust, so B is repaid in full.
+const [dustBatch] = planLiquidations({ ...liq, marketOpen: true, minDebt: 400_000000n });
+if (dustBatch.rows[1].repaidScaled !== positions[5].debtScaled) throw new Error('dust rule: B should be repaid in full');
 const [batch] = planLiquidations({ ...liq, marketOpen: true });
 const [rA, rB] = batch.rows;
 if (!rA.deep || rB.deep || rA.repaidScaled !== positions[3].debtScaled || rB.repaidScaled * 5n > positions[5].debtScaled) throw new Error('close factors');
@@ -182,6 +198,7 @@ const one = (slot, extra = {}) => buildLiquidation({ ...liq, marketOpen: true, e
 await rejects('liquidate', 'shallow breach sold above the 20% close factor', one(5, { sold: rB.sold * 2n }));
 await rejects('liquidate', 'position not breached at $120', { ...one(3), mark: NV120.toString() });
 await rejects('liquidate', 'slot outside the attested set', { ...batch.witness, bitmap: (1n << 3n).toString(), breach_commit: hash2(1n << 3n, SALT).toString() });
+await rejects('liquidate', 'partial sale leaving dust debt', { ...batch.witness, min_debt: '400000000' }, 'rejects_partial_sale_leaving_dust_debt');
 
 // A's owner follows the liquidation (debt fully repaid) and takes the unsold collateral back.
 const afterEvents = [...events, ...batch.rows.map((r) => ({ type: 'position', slot: r.slot, leaf: r.newLeaf, ciphertext: '0x' + r.encSold.toString(16).padStart(64, '0') + r.encRepaid.toString(16).padStart(64, '0') }))];
@@ -195,6 +212,9 @@ const idle = await step('open C: 1 NVDA, no debt', { ...nv, mark: NV72, slot: 7,
 const ev = buildEvict({ asset: NVDA, collateral: WAD, debtScaled: 0n, owner: me, blinding: idle.position.blinding });
 await prove('evict', 'evict C after a day without activity', ev.witness, { slot: 7, asset: toHex(NVDA), collateral: WAD, commitment: ev.public.commitment });
 await rejects('evict', 'evict with a forged debt-free opening', { ...ev.witness, collateral: (2n * WAD).toString() });
+// 11: A cures at $72 (after fixture 2); 12: the 400 USDG minimum-debt batch (after fixture 4).
+await prove('position', 'A cures its breach: repay 150 USDG at $72', cure.witness, { ext: posExt, slot: 3 }, 'accepts_breached_step_that_cures');
+await prove('liquidate', 'batch with a 400 USDG minimum debt: B repaid in full', dustBatch.witness, { bitmap: e2.bitmap });
 const m3 = fixtures;
 
 // ---------------- M4 ----------------
@@ -368,7 +388,7 @@ for (const [kind, tests] of Object.entries(nrTests)) {
   const NL = '\n';
   const body = tests.map((t) => {
     const args = params.map((p) => literal(p.type, t.witness[p.name])).join(`,${NL}        `);
-    const name = fnName(`${t.ok ? '' : 'rejects '}${t.label}`, used);
+    const name = fnName(t.name ?? `${t.ok ? '' : 'rejects '}${t.label}`, used);
     return [t.ok ? '#[test]' : '#[test(should_fail)]', `fn ${name}() {`, '    super::main(', `        ${args},`, '    );', '}', ''].join(NL);
   }).join(NL);
   writeFileSync(`circuits/${kind}/src/tests.nr`, `// Generated by circuits/scripts/fixtures.mjs from the witnesses behind circuits/fixtures (do not edit):
@@ -381,6 +401,6 @@ const common = { usdg: toHex(USDG), spy: toHex(SPY), nvda: toHex(NVDA), lending:
 writeFileSync('circuits/fixtures/m2.json', JSON.stringify({ ...common, mark: MARK.toString(), ltvBps: LTV, shares: shares.toString(), redeemAssets: back.toString(), closedLeaf: closed.position === null, txs: m2 }, null, 2));
 writeFileSync('circuits/fixtures/m4.json', JSON.stringify(jsonable({ ...common, vault: toHex(VAULT), ledgerId: ledger.owner, ledgerId2: L2.owner, limit: LIMIT, rolesCommit: rolesOf(cfg), rolesCommit2: rolesOf(cfg2), policyHash: policyHash(cfg), intent: big.built.public.cosignIntent, attestAssets: ATTEST_ASSETS_FIX.map(toHex), prices: PRICES, shares600, vaultBack, txs: m4 }), null, 2));
 writeFileSync('circuits/fixtures/m5.json', JSON.stringify(jsonable({ ...common, ledgerId: L5.owner, T, commits: { payroll: cPay, invoice: cInv, spy: cSpy }, receiptRoot: receipts.root, spyRaw: p3.built.raw, txs: m5 }), null, 2));
-writeFileSync('circuits/fixtures/m3.json', JSON.stringify(jsonable({ ...common, price: PRICE, batch: batch.public, offHours: offHours.public, txs: m3 }), null, 2));
+writeFileSync('circuits/fixtures/m3.json', JSON.stringify(jsonable({ ...common, price: PRICE, batch: batch.public, offHours: offHours.public, cureLeaf: cure.public.newLeaf, txs: m3 }), null, 2));
 console.log(`wrote ${m2.length} M2, ${m3.length} M3, ${m4.length} M4 and ${m5.length} M5 fixtures`);
 await api.destroy();

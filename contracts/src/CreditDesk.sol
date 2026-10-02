@@ -23,9 +23,13 @@ interface ISaleVenue {
 /// Oracle fail-closed for new risk: draws and collateral withdrawals need a fresh, unpaused pinned
 /// mark and an unpaused desk. Repay, add collateral and close always work, also for a class that
 /// governance disabled (audit M-3): disabling a class stops only new risk.
-/// Slots (audit H-1): opening or withdrawing must leave at least the class's minimum collateral, and
-/// a position without debt that nobody touched for EVICT_AFTER can be evicted: its collateral goes
-/// back to the owner as a note (circuits/evict), and the slot is free again.
+/// Slots (audit H-1): opening or withdrawing must leave at least the class's minimum collateral, debt
+/// is zero or at least the class's minimum debt, and a position without debt that nobody touched for
+/// EVICT_AFTER can be evicted: its collateral goes back to the owner as a note (circuits/evict).
+/// Steps (audit N-1): every step moves something and leaves its position healthy at the liquidation
+/// threshold (a breached position can only be cured, closed or liquidated); a slot takes at most one
+/// step per STEP_INTERVAL, closing excepted. Marks are the current pin (the previous one only within
+/// ATTEST_GRACE of a new round); a step that adds risk also needs it fresh and unpaused.
 /// Rates follow a public utilization curve; the index is checkpointed by accrue() (the hourly
 /// rate-publisher) and proofs may use the latest or previous checkpoint.
 ///
@@ -33,10 +37,11 @@ interface ISaleVenue {
 /// epoch the operator proves the desk totals over all SLOTS leaves plus a commitment to the breached
 /// set (attest). If no epoch lands for 3 epoch lengths, new draws halt. Breached positions are
 /// liquidated in sealed batches at one uniform price within a band of the pinned mark (liquidate);
-/// the proof enforces the close factor, bonus and the off-hours 95% floor. An epoch must use the
-/// current marks and index (the previous ones only briefly after a new pin or checkpoint), so an old
-/// proof cannot be replayed to roll back the breached set (audit M-1); the operator attests and
-/// liquidates in one transaction (attestAndLiquidate).
+/// the proof enforces the close factor, bonus and the off-hours 95% floor. An epoch proves against a
+/// snapshot of the slots (snapshot()), which no later step can invalidate; the proof binds the
+/// snapshot id, so it is single-use (audit N-1, M-1). Marks and index are the current ones (previous
+/// only briefly). A batch whose positions changed after the snapshot is skipped, not reverted: by the
+/// step rule, a changed position is healthy.
 contract CreditDesk is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
 
@@ -59,6 +64,10 @@ contract CreditDesk is ReentrancyGuard, Ownable {
     uint64 public constant ATTEST_GRACE = 10 minutes;
     /// A position without debt that no step touched for this long can be evicted.
     uint64 public constant EVICT_AFTER = 1 days;
+    /// At most one step per slot in this interval, closing excepted (audit N-1 backstop).
+    uint64 public constant STEP_INTERVAL = 10 minutes;
+    /// An epoch must be proven against a snapshot at most this old.
+    uint64 public constant SNAPSHOT_TTL = 30 minutes;
 
     struct Class {
         uint16 ltvBps;
@@ -66,6 +75,12 @@ contract CreditDesk is ReentrancyGuard, Ownable {
         bool enabled;
         uint128 maxCollateral; // exposure cap in base units
         uint128 minCollateral; // smallest position after an open or a withdrawal, in base units
+        uint128 minDebt; // smallest non-zero debt, USDG base units
+    }
+
+    struct Snapshot {
+        bytes32 leavesHash;
+        uint64 takenAt;
     }
 
     struct PositionProof {
@@ -93,6 +108,8 @@ contract CreditDesk is ReentrancyGuard, Ownable {
 
     struct HealthProof {
         bytes proof;
+        uint256 snapshotId;
+        uint256[SLOTS] leaves; // the slots at the snapshot
         uint256[CLASSES] marks;
         uint256 rateIndex;
         uint256 sumValue;
@@ -155,6 +172,9 @@ contract CreditDesk is ReentrancyGuard, Ownable {
     mapping(address asset => uint256) public totalCollateral;
     uint256[SLOTS] public slots;
     uint64[SLOTS] public touchedAt;
+    mapping(uint256 id => Snapshot) public snapshots;
+    uint256 public snapshotCount;
+    uint256 public attestedSnapshot; // the snapshot the current breach set was proven against
     uint256 public totalDebtScaled;
     uint256 public index = WAD;
     uint256 public prevIndex = WAD;
@@ -162,7 +182,9 @@ contract CreditDesk is ReentrancyGuard, Ownable {
     uint64 public lastAccrual;
     bool public paused; // guardian pause: new risk only
 
-    event ClassSet(address indexed asset, uint16 ltvBps, uint16 liqThresholdBps, uint128 maxCollateral, uint128 minCollateral, bool enabled);
+    event ClassSet(address indexed asset, uint16 ltvBps, uint16 liqThresholdBps, uint128 maxCollateral, uint128 minCollateral, uint128 minDebt, bool enabled);
+    event SnapshotTaken(uint256 indexed id, bytes32 leavesHash);
+    event BatchSkipped(address indexed asset, uint8[4] slots);
     event Evicted(uint8 indexed slot, address indexed asset, uint256 collateral, uint256 commitment);
     event PositionUpdated(uint8 indexed slot, uint256 leaf, bytes ciphertext);
     event CreditFlow(address indexed asset, uint256 collIn, uint256 collOut, uint256 draw, uint256 repay);
@@ -188,6 +210,9 @@ contract CreditDesk is ReentrancyGuard, Ownable {
     error PriceOutOfBand();
     error EmptyBatch();
     error NotIdle();
+    error EmptyStep();
+    error TooSoon();
+    error StaleSnapshot();
 
     /// verifiers: [position, health_epoch, liquidate, evict]
     constructor(IVerifier[4] memory verifiers, ZKDeskPool pool_, Marker marker_, LendingPoolUSDG lending_, uint256[2] memory operatorPk_, address owner_) Ownable(owner_) {
@@ -204,14 +229,14 @@ contract CreditDesk is ReentrancyGuard, Ownable {
 
     // ---- Governance ----
 
-    function setClass(address asset, uint16 ltvBps, uint16 liqThresholdBps, uint128 maxCollateral, uint128 minCollateral, bool enabled) external onlyOwner {
+    function setClass(address asset, uint16 ltvBps, uint16 liqThresholdBps, uint128 maxCollateral, uint128 minCollateral, uint128 minDebt, bool enabled) external onlyOwner {
         if (asset == address(usdg) || asset == address(0) || ltvBps >= liqThresholdBps || liqThresholdBps >= 10_000) revert BadAsset();
         if (classes[asset].liqThresholdBps == 0) {
             if (classList.length == CLASSES) revert TooManyClasses();
             classList.push(asset);
         }
-        classes[asset] = Class(ltvBps, liqThresholdBps, enabled, maxCollateral, minCollateral);
-        emit ClassSet(asset, ltvBps, liqThresholdBps, maxCollateral, minCollateral, enabled);
+        classes[asset] = Class(ltvBps, liqThresholdBps, enabled, maxCollateral, minCollateral, minDebt);
+        emit ClassSet(asset, ltvBps, liqThresholdBps, maxCollateral, minCollateral, minDebt, enabled);
     }
 
     function setVenue(ISaleVenue venue_, address bonusSink_) external onlyOwner {
@@ -269,9 +294,14 @@ contract CreditDesk is ReentrancyGuard, Ownable {
         // A disabled class stops new risk only: opening, drawing, withdrawing from a live position.
         if (!c.enabled && (p.oldLeaf == 0 || p.draw > 0 || (p.collOut > 0 && p.newLeaf != 0))) revert ClassDisabled();
         if (p.inAsset != p.collAsset && p.inAsset != address(usdg)) revert BadAsset();
+        if (p.collIn == 0 && p.collOut == 0 && p.draw == 0 && p.repay == 0) revert EmptyStep();
         if (slots[p.slot] != p.oldLeaf) revert SlotMismatch();
+        if (p.oldLeaf != 0 && p.newLeaf != 0 && block.timestamp < touchedAt[p.slot] + STEP_INTERVAL) revert TooSoon();
         if (p.rateIndex != index && p.rateIndex != prevIndex) revert StaleIndex();
-        // New risk needs a live, fresh mark. Closing (collOut with an empty new position) does not.
+        // A position that remains is proven healthy at this mark, so it must be the latest pin (or the
+        // previous one just after a new round). New risk also needs it fresh and unpaused. Closing
+        // needs no mark: exits never wait on the oracle.
+        if (p.newLeaf != 0 && !_currentMark(p.collAsset, p.mark)) revert MarkUnusable();
         if (p.draw > 0 || (p.collOut > 0 && p.newLeaf != 0)) {
             if (paused) revert DeskPaused();
             if (!marker.usable(p.collAsset, p.mark)) revert MarkUnusable();
@@ -315,8 +345,17 @@ contract CreditDesk is ReentrancyGuard, Ownable {
         return block.timestamp <= lastAttestedAt + 3 * (marker.marketOpen() ? EPOCH : OFF_HOURS_EPOCH);
     }
 
-    /// @notice Epoch health proof over every slot at the current pinned marks. Permissionless: only
-    /// the desk operator can open the positions, and the proof binds the live slots of this block.
+    /// @notice Records the 64 slot leaves under a new id for an epoch proof. Permissionless: a
+    /// snapshot never replaces another, so taking one cannot invalidate a proof in flight.
+    function snapshot() external returns (uint256 id) {
+        id = ++snapshotCount;
+        bytes32 h = keccak256(abi.encode(slots));
+        snapshots[id] = Snapshot(h, uint64(block.timestamp));
+        emit SnapshotTaken(id, h);
+    }
+
+    /// @notice Epoch health proof over every slot of a recent snapshot at the current pinned marks.
+    /// Permissionless: only the desk operator can open the positions.
     function attest(HealthProof calldata h) external {
         _attest(h);
     }
@@ -329,10 +368,14 @@ contract CreditDesk is ReentrancyGuard, Ownable {
     }
 
     function _attest(HealthProof calldata h) internal {
+        // A newer snapshot than the last epoch's, recent, and exactly the leaves it recorded.
+        Snapshot memory s = snapshots[h.snapshotId];
+        if (h.snapshotId <= attestedSnapshot || s.takenAt == 0 || block.timestamp > s.takenAt + SNAPSHOT_TTL) revert StaleSnapshot();
+        if (keccak256(abi.encode(h.leaves)) != s.leavesHash) revert SlotMismatch();
         // The current index, or the previous one just after a checkpoint (a proof in flight).
         if (h.rateIndex != index && (h.rateIndex != prevIndex || block.timestamp > lastAccrual + ATTEST_GRACE)) revert StaleIndex();
-        bytes32[] memory x = new bytes32[](SLOTS + 3 * CLASSES + 4);
-        for (uint256 i; i < SLOTS; ++i) x[i] = bytes32(slots[i]);
+        bytes32[] memory x = new bytes32[](SLOTS + 3 * CLASSES + 5);
+        for (uint256 i; i < SLOTS; ++i) x[i] = bytes32(h.leaves[i]);
         for (uint256 k; k < CLASSES; ++k) {
             address asset = k < classList.length ? classList[k] : address(0);
             if (asset != address(0)) {
@@ -349,7 +392,9 @@ contract CreditDesk is ReentrancyGuard, Ownable {
         x[SLOTS + 3 * CLASSES + 1] = bytes32(h.sumValue);
         x[SLOTS + 3 * CLASSES + 2] = bytes32(h.sumDebt);
         x[SLOTS + 3 * CLASSES + 3] = bytes32(h.breachCommit);
+        x[SLOTS + 3 * CLASSES + 4] = bytes32(h.snapshotId); // single use: no replay to mask an outage
         if (!healthVerifier.verify(h.proof, x)) revert InvalidProof();
+        attestedSnapshot = h.snapshotId;
         epoch++;
         lastAttestedAt = uint64(block.timestamp);
         breachCommit = h.breachCommit;
@@ -373,14 +418,22 @@ contract CreditDesk is ReentrancyGuard, Ownable {
         if (p.price * 10_000 < p.mark * (10_000 - band) || p.price * 10_000 > p.mark * (10_000 + band)) revert PriceOutOfBand();
 
         uint256 n = 0;
+        bool changed;
         for (uint256 i; i < 4; ++i) {
             if (p.oldLeaves[i] == 0) continue;
             // Used entries come first, in strictly increasing slot order: no slot twice in a batch.
-            if (i != n || (n > 0 && p.slots[i] <= p.slots[i - 1]) || slots[p.slots[i]] != p.oldLeaves[i]) revert SlotMismatch();
+            if (i != n || (n > 0 && p.slots[i] <= p.slots[i - 1])) revert SlotMismatch();
+            if (slots[p.slots[i]] != p.oldLeaves[i]) changed = true;
             n++;
         }
         if (n == 0) revert EmptyBatch();
-        if (!liquidationVerifier.verify(p.proof, _liquidationInputs(p, liqBps, open))) revert InvalidProof();
+        // A position stepped after the snapshot is healthy by the step rule: the batch is stale. Skip
+        // it (the next epoch re-plans) instead of reverting the whole call (audit N-1).
+        if (changed) {
+            emit BatchSkipped(p.collAsset, p.slots);
+            return;
+        }
+        if (!liquidationVerifier.verify(p.proof, _liquidationInputs(p, liqBps, open, classes[p.collAsset].minDebt))) revert InvalidProof();
 
         for (uint256 i; i < n; ++i) {
             slots[p.slots[i]] = p.newLeaves[i];
@@ -426,7 +479,7 @@ contract CreditDesk is ReentrancyGuard, Ownable {
 
     /// Order must match the `pub` parameters of circuits/position/src/main.nr.
     function _publicInputs(PositionProof calldata p, Class memory c) internal view returns (bytes32[] memory x) {
-        x = new bytes32[](29);
+        x = new bytes32[](31);
         x[0] = bytes32(p.root);
         x[1] = bytes32(p.extDataHash);
         x[2] = bytes32(uint256(uint160(p.collAsset)));
@@ -453,11 +506,13 @@ contract CreditDesk is ReentrancyGuard, Ownable {
         x[23] = bytes32(p.operatorEph[1]);
         for (uint256 i; i < 4; ++i) x[24 + i] = bytes32(p.operatorCipher[i]);
         x[28] = bytes32(uint256(c.minCollateral));
+        x[29] = bytes32(uint256(c.liqThresholdBps));
+        x[30] = bytes32(uint256(c.minDebt));
     }
 
     /// Order must match the `pub` parameters of circuits/liquidate/src/main.nr.
-    function _liquidationInputs(LiquidationProof calldata p, uint16 liqBps, bool open) internal view returns (bytes32[] memory x) {
-        x = new bytes32[](32);
+    function _liquidationInputs(LiquidationProof calldata p, uint16 liqBps, bool open, uint128 minDebt) internal view returns (bytes32[] memory x) {
+        x = new bytes32[](33);
         x[0] = bytes32(breachCommit);
         x[1] = bytes32(uint256(uint160(p.collAsset)));
         x[2] = bytes32(p.mark);
@@ -477,5 +532,14 @@ contract CreditDesk is ReentrancyGuard, Ownable {
         x[29] = bytes32(p.totalRepay);
         x[30] = bytes32(p.totalRepaidScaled);
         x[31] = bytes32(p.totalWrittenOff);
+        x[32] = bytes32(uint256(minDebt));
+    }
+
+    /// The latest pin, or the previous one within ATTEST_GRACE of the latest round.
+    function _currentMark(address asset, uint256 mark) internal view returns (bool) {
+        (uint64 current, uint64 updatedAt,) = marker.current(asset);
+        if (mark == current) return true;
+        (uint64 previous,,) = marker.previous(asset);
+        return mark == previous && block.timestamp <= updatedAt + ATTEST_GRACE;
     }
 }

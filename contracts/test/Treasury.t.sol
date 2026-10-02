@@ -190,6 +190,14 @@ contract TreasuryTest is Test {
         assertGe(IERC20(USDG).balanceOf(address(pool)), pool.shieldedSupply(USDG) + pool.pendingSupply(USDG));
     }
 
+    /// M-3 (v3): a transfer never checks the asset listing, so a de-listed asset can still leave a treasury.
+    function test_v3_delistedAssetStillLeavesTreasury() public {
+        _through(4);
+        gate.setAsset(USDG, false);
+        _runAct(4); // the Payer's 50 USDG transfer
+        assertEq(pool.shieldedSupply(USDG), 400e6);
+    }
+
     function test_overThresholdNeedsOwnerApproval() public {
         _through(5); // up to the 50 transfer
         (TreasuryLedger.LedgerProof memory p, TreasuryLedger.LedgerExt memory e) = _act(5);

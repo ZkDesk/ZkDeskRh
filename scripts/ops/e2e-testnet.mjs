@@ -48,7 +48,7 @@ async function privateTx(label, keys, { inputs = [], outputs, ext }) {
   const { proof } = await prover.prove(tx.witness);
   console.log(`  ${label}: proof generated in ${Math.round(performance.now() - t0)} ms`);
   const p = tx.public;
-  return send(label, 'transact', [{ proof, root: p.root, publicAmount: p.publicAmount, extDataHash: p.extDataHash, asset: deployment.usdg, inputNullifiers: p.inputNullifiers, outputCommitments: p.outputCommitments }, ext2]);
+  return send(label, 'transact', [{ proof, root: p.root, publicAmount: p.publicAmount, extDataHash: p.extDataHash, asset: deployment.usdg, outAsset: deployment.usdg, publicAmountOut: 0n, inputNullifiers: p.inputNullifiers, outputCommitments: p.outputCommitments }, ext2]);
 }
 
 console.log(`Deployer ${account.address} | pool ${deployment.pool}`);

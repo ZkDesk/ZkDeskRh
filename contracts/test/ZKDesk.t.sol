@@ -62,7 +62,7 @@ contract ZKDeskTest is Test {
         address[] memory modules = new address[](1);
         modules[0] = address(desk);
         pool.setModules(modules);
-        desk.setClass(SPY, 6000, 7000, 1_000_000e18, 0, true);
+        desk.setClass(SPY, 6000, 7000, 1_000_000e18, 0, 0, true);
         vm.startPrank(alice);
         MockUSDG(USDG).faucet(1000e6);
         MockStockToken(SPY).faucet(10e18);
@@ -140,13 +140,29 @@ contract ZKDeskTest is Test {
 
     function _runPos(uint256 i) internal {
         (CreditDesk.PositionProof memory p, CreditDesk.PositionExt memory e) = _pos(i);
+        _space(p);
         desk.act(p, e);
     }
 
     function _expectPosRevert(uint256 i, bytes4 err) internal {
         (CreditDesk.PositionProof memory p, CreditDesk.PositionExt memory e) = _pos(i);
+        _space(p);
         vm.expectRevert(err);
         desk.act(p, e);
+    }
+
+    /// Steps on a live slot are STEP_INTERVAL apart (v3, audit N-1): wait it out and re-pin the marks.
+    function _space(CreditDesk.PositionProof memory p) internal {
+        if (p.oldLeaf == 0 || p.newLeaf == 0 || desk.slots(p.slot) != p.oldLeaf) return;
+        uint256 next = desk.touchedAt(p.slot) + desk.STEP_INTERVAL();
+        if (block.timestamp >= next) return;
+        vm.warp(next);
+        feed.setAnswer(500e8);
+        marker.pin(SPY);
+        if (address(nvFeed) != address(0)) {
+            nvFeed.setAnswer(nvNow);
+            marker.pin(NVDA);
+        }
     }
 
     /// Runs fixtures [0, n): deposits are cleared after standby like the cron does.
@@ -219,6 +235,7 @@ contract ZKDeskTest is Test {
         _through(4); // opened
         vm.warp(block.timestamp + 11 minutes);
         _runPos(4); // repay works while the oracle is stale
+        vm.warp(block.timestamp + desk.STEP_INTERVAL()); // the next step is due; the oracle is still stale
         _expectPosRevert(5, CreditDesk.MarkUnusable.selector); // withdraw collateral does not
         feed.setAnswer(500e8);
         marker.pin(SPY);
@@ -292,7 +309,7 @@ contract ZKDeskTest is Test {
 
     function test_exposureCap() public {
         _through(3);
-        desk.setClass(SPY, 6000, 7000, 5e18, 0, true);
+        desk.setClass(SPY, 6000, 7000, 5e18, 0, 0, true);
         _expectPosRevert(3, CreditDesk.ExposureCap.selector);
     }
 
@@ -377,6 +394,7 @@ contract ZKDeskTest is Test {
     address constant NVDA = address(0x4e7da);
     address bonusSink = makeAddr("bonusSink");
     MockAggregatorV3 nvFeed;
+    int256 nvNow;
     MockAMM amm;
 
     function _m3() internal {
@@ -386,7 +404,7 @@ contract ZKDeskTest is Test {
         nvFeed = new MockAggregatorV3("NVDA / USD", address(this), address(this));
         nvFeed.setAnswer(120e8);
         marker.setFeed(NVDA, IAggregatorV3(address(nvFeed)));
-        desk.setClass(NVDA, 4500, 5500, 1_000_000e18, 0, true); // classList: [SPY, NVDA]
+        desk.setClass(NVDA, 4500, 5500, 1_000_000e18, 0, 0, true); // classList: [SPY, NVDA]
         amm = new MockAMM(marker, MockUSDG(USDG));
         desk.setVenue(ISaleVenue(address(amm)), bonusSink);
         marker.setMarketOpen(true);
@@ -402,6 +420,7 @@ contract ZKDeskTest is Test {
 
     /// Posts and pins a new NVDA round (and refreshes SPY so both marks are usable).
     function _nvPrice(int256 price) internal {
+        nvNow = price;
         nvFeed.setAnswer(price);
         marker.pin(NVDA);
         feed.setAnswer(500e8);
@@ -411,11 +430,19 @@ contract ZKDeskTest is Test {
     function _health(uint256 i) internal view returns (CreditDesk.HealthProof memory h) {
         bytes32[] memory x = vm.parseJsonBytes32Array(json, _k(i, "publicInputs"));
         h.proof = vm.parseJsonBytes(json, _k(i, "proof"));
+        for (uint256 j; j < 64; ++j) h.leaves[j] = uint256(x[j]);
         for (uint256 k; k < 4; ++k) h.marks[k] = uint256(x[68 + k]);
         h.rateIndex = uint256(x[76]);
         h.sumValue = uint256(x[77]);
         h.sumDebt = uint256(x[78]);
         h.breachCommit = uint256(x[79]);
+        h.snapshotId = uint256(x[80]);
+    }
+
+    /// Snapshots the slots, then attests epoch fixture i (fixture 3 proves snapshot 1, fixture 4 snapshot 2).
+    function _attest(uint256 i) internal {
+        desk.snapshot();
+        desk.attest(_health(i));
     }
 
     function _liq(uint256 i) internal view returns (CreditDesk.LiquidationProof memory p) {
@@ -454,10 +481,10 @@ contract ZKDeskTest is Test {
             } else if (i == 6) {
                 continue; // the off-hours alternative to batch 5
             } else if (i == 3) {
-                desk.attest(_health(3));
+                _attest(3);
             } else if (i == 4) {
                 _nvPrice(72e8); // NVDA -40%
-                desk.attest(_health(4));
+                _attest(4);
             } else if (i == 5) {
                 desk.liquidate(_liq(5));
             } else {
@@ -479,15 +506,17 @@ contract ZKDeskTest is Test {
 
     function test_m3_omittedOrMispricedSlotFails() public {
         _m3();
-        _m3Through(2); // only A is live: the epoch proof (made over A and B) no longer matches the slots
-        vm.expectRevert();
+        _m3Through(2); // only A is live: the epoch proof (made over A and B) does not match snapshot 1
+        desk.snapshot();
+        vm.expectRevert(CreditDesk.SlotMismatch.selector);
         desk.attest(_health(3));
         _m3Steps(2, 3);
+        desk.snapshot(); // 2: A and B
         CreditDesk.HealthProof memory h = _health(4);
         h.marks[1] = 120e8; // the $72 proof presented at the $120 mark
         vm.expectRevert();
         desk.attest(h);
-        h = _health(3);
+        h = _health(4);
         h.sumDebt -= 1;
         vm.expectRevert();
         desk.attest(h);
@@ -497,6 +526,7 @@ contract ZKDeskTest is Test {
         _m3();
         _m3Through(3);
         vm.warp(block.timestamp + 11 minutes); // marks stale
+        desk.snapshot();
         vm.expectRevert(CreditDesk.MarkUnusable.selector);
         desk.attest(_health(3));
     }
@@ -573,8 +603,14 @@ contract ZKDeskTest is Test {
         vm.expectRevert(CreditDesk.SlotMismatch.selector);
         desk.liquidate(p);
         desk.liquidate(_liq(5));
-        vm.expectRevert(CreditDesk.SlotMismatch.selector);
+        // A replay finds its slots changed: skipped (v3), nothing moves.
+        uint256 debt = desk.totalDebtScaled();
+        uint256 coll = desk.totalCollateral(NVDA);
+        vm.expectEmit(address(desk));
+        emit CreditDesk.BatchSkipped(NVDA, _liq(5).slots);
         desk.liquidate(_liq(5));
+        assertEq(desk.totalDebtScaled(), debt);
+        assertEq(desk.totalCollateral(NVDA), coll);
     }
 
     function test_m3_twoMissedEpochsHaltDraws() public {
@@ -595,7 +631,7 @@ contract ZKDeskTest is Test {
         vm.warp(block.timestamp + 46 minutes);
         _nvPrice(120e8);
         assertFalse(desk.healthy());
-        desk.attest(_health(3));
+        _attest(3);
         assertTrue(desk.healthy());
         assertEq(desk.epoch(), 1);
     }
@@ -613,7 +649,7 @@ contract ZKDeskTest is Test {
     /// H-1: the class minimum is a public input of every position proof, so an open below it fails.
     function test_audit_h1_minimumCollateralIsBound() public {
         _through(3);
-        desk.setClass(SPY, 6000, 7000, 1_000_000e18, 11e18, true); // the fixture opens with 10 SPY
+        desk.setClass(SPY, 6000, 7000, 1_000_000e18, 11e18, 0, true); // the fixture opens with 10 SPY
         vm.expectRevert(); // proven with min 0: the verifier rejects it under min 11
         _runPos(3);
     }
@@ -654,10 +690,10 @@ contract ZKDeskTest is Test {
     function test_audit_m1_oldEpochCannotBeReplayed() public {
         _m3();
         _m3Through(5); // epoch at $72: A and B breached
-        vm.warp(block.timestamp + desk.ATTEST_GRACE() + 1);
-        _nvPrice(72e8); // another $72 round: $120 is no longer even the previous pin
-        vm.expectRevert(CreditDesk.MarkUnusable.selector);
-        desk.attest(_health(3)); // the $120 proof: no breach
+        vm.expectRevert(CreditDesk.StaleSnapshot.selector);
+        desk.attest(_health(3)); // the $120 proof (snapshot 1, no breach): snapshot ids are single-use
+        vm.expectRevert(CreditDesk.StaleSnapshot.selector);
+        desk.attest(_health(4)); // nor can the current epoch be re-sent to keep draws open
         assertEq(desk.breachCommit(), _health(4).breachCommit, "breached set unchanged");
     }
 
@@ -668,6 +704,7 @@ contract ZKDeskTest is Test {
         _nvPrice(72e8);
         CreditDesk.LiquidationProof[] memory batches = new CreditDesk.LiquidationProof[](1);
         batches[0] = _liq(5);
+        desk.snapshot();
         desk.attestAndLiquidate(_health(4), batches);
         assertEq(desk.slots(3), batches[0].newLeaves[0]);
         assertEq(desk.slots(5), batches[0].newLeaves[1]);
@@ -680,9 +717,12 @@ contract ZKDeskTest is Test {
         vm.warp(block.timestamp + 2 hours);
         desk.accrue(); // index moves on; the fixture was proven at the old one
         _nvPrice(120e8);
-        desk.attest(_health(3)); // within the grace period after the checkpoint
+        uint256 state = vm.snapshotState();
+        _attest(3); // within the grace period after the checkpoint
+        vm.revertToState(state);
         vm.warp(block.timestamp + desk.ATTEST_GRACE() + 1);
         _nvPrice(120e8);
+        desk.snapshot();
         vm.expectRevert(CreditDesk.StaleIndex.selector);
         desk.attest(_health(3));
     }
@@ -690,12 +730,12 @@ contract ZKDeskTest is Test {
     /// M-3: disabling a class stops new risk but never repay, add or close.
     function test_audit_m3_disabledClassStillExits() public {
         _through(4); // open
-        desk.setClass(SPY, 6000, 7000, 1_000_000e18, 0, false);
+        desk.setClass(SPY, 6000, 7000, 1_000_000e18, 0, 0, false);
         _runPos(4); // repay
         _expectPosRevert(5, CreditDesk.ClassDisabled.selector); // withdraw from a live position: new risk
-        desk.setClass(SPY, 6000, 7000, 1_000_000e18, 0, true);
+        desk.setClass(SPY, 6000, 7000, 1_000_000e18, 0, 0, true);
         _runPos(5);
-        desk.setClass(SPY, 6000, 7000, 1_000_000e18, 0, false);
+        desk.setClass(SPY, 6000, 7000, 1_000_000e18, 0, 0, false);
         _runPos(6); // close
         assertEq(desk.slots(0), 0);
     }
@@ -741,5 +781,115 @@ contract ZKDeskTest is Test {
         vm.prank(address(0xbad));
         vm.expectRevert(ZKDeskPool.NotAuthorized.selector);
         p2.setModules(modules); // only the deployer
+    }
+
+    // ---- v3 (fix-to-8 Parts A and C): each test fails on the v2 contracts ----
+
+    /// N-1: a step must move collateral or debt; a no-op re-randomization is refused before the verifier.
+    function test_v3_emptyStepRejected() public {
+        _through(4);
+        (CreditDesk.PositionProof memory p, CreditDesk.PositionExt memory e) = _pos(4);
+        _space(p);
+        (p.collIn, p.collOut, p.draw, p.repay) = (0, 0, 0, 0);
+        vm.expectRevert(CreditDesk.EmptyStep.selector);
+        desk.act(p, e);
+    }
+
+    /// N-1: a step on a live slot within STEP_INTERVAL of the last one is refused; closing is not.
+    function test_v3_stepsAreSpacedButCloseIsNot() public {
+        _through(4); // opened
+        (CreditDesk.PositionProof memory p, CreditDesk.PositionExt memory e) = _pos(4);
+        vm.expectRevert(CreditDesk.TooSoon.selector);
+        desk.act(p, e);
+        _runPos(4);
+        _runPos(5);
+        _runPos(6); // the close right after the withdrawal: never rate limited
+        assertEq(desk.slots(0), 0);
+    }
+
+    /// N-1: a breached position can only step to a cured state (the circuit refuses anything else, see
+    /// circuits/position tests), and only at the latest pin, not an old one.
+    function test_v3_breachedStepMustCure() public {
+        _m3();
+        _m3Through(3); // A and B open at $120
+        vm.warp(block.timestamp + desk.STEP_INTERVAL());
+        _nvPrice(72e8); // A breached at 55%
+        _nvPrice(80e8);
+        vm.warp(block.timestamp + desk.ATTEST_GRACE() + 1);
+        _nvPrice(90e8); // 72 is no longer pinned
+        _expectPosRevert(11, CreditDesk.MarkUnusable.selector);
+        _nvPrice(72e8);
+        _runPos(11); // repay 150 at $72: 390 debt <= 55% of 720
+        assertEq(desk.slots(3), vm.parseJsonUint(json, ".cureLeaf"));
+    }
+
+    /// N-1: a step between the snapshot and the liquidation neither blocks the epoch nor reverts the
+    /// call: the epoch is proven over the snapshot, and the stale batch is skipped.
+    function test_v3_churnBetweenSnapshotAndLiquidate() public {
+        _m3();
+        _m3Through(4); // epoch 1 at $120
+        vm.warp(block.timestamp + desk.STEP_INTERVAL());
+        _nvPrice(72e8);
+        desk.snapshot(); // 2: A and B breached
+        _runPos(11); // A cures after the snapshot
+        CreditDesk.LiquidationProof[] memory batches = new CreditDesk.LiquidationProof[](1);
+        batches[0] = _liq(5);
+        uint256 debt = desk.totalDebtScaled();
+        desk.attestAndLiquidate(_health(4), batches);
+        assertEq(desk.epoch(), 2, "the epoch lands");
+        assertEq(desk.breachCommit(), _health(4).breachCommit);
+        assertEq(desk.totalDebtScaled(), debt, "the stale batch is skipped, nothing sold");
+        assertEq(desk.slots(5), batches[0].oldLeaves[1], "B is liquidated next epoch");
+    }
+
+    /// H-1: debt is zero or at least the class minimum. The minimum is a public input of every step
+    /// and liquidation: a proof made under another minimum fails, and a partial sale that would leave
+    /// dust repays the position in full.
+    function test_v3_dustDebtCannotHoldSlots() public {
+        _m3();
+        _m3Through(5); // epoch at $72
+        desk.setClass(NVDA, 4500, 5500, 1_000_000e18, 0, 400e6, true);
+        vm.expectRevert(); // the 20% partial sale on B (408 debt) was proven with minimum 0
+        desk.liquidate(_liq(5));
+        desk.liquidate(_liq(12));
+        assertEq(desk.totalDebtScaled(), 0, "A and B repaid in full, no dust left");
+    }
+
+    /// The step's public inputs carry the class liquidation threshold: a proof made under another one
+    /// fails (so the health check cannot be proven at a looser threshold).
+    function test_v3_stepBindsLiquidationThreshold() public {
+        _through(3);
+        desk.setClass(SPY, 6000, 8000, 1_000_000e18, 0, 0, true);
+        vm.expectRevert();
+        _runPos(3);
+    }
+
+    /// H-1: the minimum debt is a public input of every step: the open (500 drawn, proven with minimum
+    /// 0) fails under a 1000 USDG minimum.
+    function test_v3_stepBindsMinimumDebt() public {
+        _through(3);
+        desk.setClass(SPY, 6000, 7000, 1_000_000e18, 0, 1000e6, true);
+        vm.expectRevert();
+        _runPos(3);
+    }
+
+    /// M-3: converts are governed by the converter list only, so redeeming lender shares into a
+    /// de-listed USDG still works; deposits of it do not.
+    function test_v3_delistedAssetStillConverts() public {
+        _through(7);
+        gate.setAsset(USDG, false);
+        gate.setAsset(LENDING, false);
+        _runTx(7, address(0xbeef)); // redeem shares into USDG notes
+        assertEq(lending.balanceOf(address(pool)), 0);
+    }
+
+    /// C: available cash saturates at zero instead of underflowing when reserves exceed cash.
+    function test_v3_lendingAvailableSaturates() public {
+        _through(4); // 500 of 600 lent
+        vm.warp(block.timestamp + 36_500 days);
+        desk.accrue();
+        assertGt(lending.reserves(), lending.cash());
+        assertEq(lending.available(), 0);
+        assertEq(lending.maxWithdraw(address(pool)), 0);
     }
 }

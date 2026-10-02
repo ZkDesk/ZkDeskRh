@@ -335,6 +335,10 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
             ['Mark validity', '25 hours on mainnet, 1 hour on testnet'],
             ['Governance delay', '48 hours on mainnet, 5 minutes on testnet'],
             ['Epoch marks', 'The current pin; the previous one only within 10 minutes of a new round'],
+            ['Minimum debt', '5 USDG: debt is zero or at least this; a partial liquidation that would leave less repays in full'],
+            ['Credit step rules', 'Every step moves collateral or debt and leaves the position healthy at the liquidation threshold, at the current pin'],
+            ['Step interval', 'One step per position every 10 minutes; closing is always available'],
+            ['Epoch snapshots', 'Each epoch proves one snapshot of the slots, at most 30 minutes old, used once; a batch over a changed slot is skipped'],
           ]} />
         </Section>
 

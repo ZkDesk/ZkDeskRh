@@ -61,7 +61,7 @@ const prove = async (kind, witness) => {
 
 export default async function handler(req, res) {
   if (!cronAuthorized(req)) return json(res, 401, { error: 'unauthorized' });
-  if (!deploymentReady) return json(res, 200, { skipped: 'network still on v1 contracts' });
+  if (!deploymentReady) return json(res, 200, { skipped: 'network still on older contracts' });
   if (!secret('SCHEDULER_SEED') || !deployment.mandates) return json(res, 503, { error: 'scheduler_unavailable' });
   try {
     return json(res, 200, await runPulls({ keys: seedKeys(secret('SCHEDULER_SEED')), prove }));

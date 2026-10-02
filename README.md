@@ -217,7 +217,7 @@ forge test
 
 Most suites verify real UltraHonk proofs generated from `circuits/fixtures`; `Invariants.t.sol` and `Fuzz.t.sol` cover accounting under random sequences. `MainnetFork.t.sol` runs only when `MAINNET_FORK` is set. Deployed addresses for each network are in `src/lib/chain/deployments/`.
 
-`bash contracts/deploy-v2.sh <testnet|mainnet> --broadcast` deploys the protocol and verifies every contract's source on Sourcify. Anyone can then confirm the governance and wiring with a read-only check:
+`RELEASE=v3 bash contracts/deploy-v2.sh <testnet|mainnet> --broadcast` deploys the protocol and verifies every contract's source on Sourcify; `node scripts/ops/merge-v2.mjs <chainId> v3` then makes it the app's current release. Anyone can then confirm the governance and wiring with a read-only check:
 
 ```sh
 node scripts/check-deployment.mjs mainnet
@@ -225,7 +225,7 @@ node scripts/check-deployment.mjs mainnet
 
 It checks the Safe threshold, the timelock delay, who owns each contract, the guardian and screener keys, the fixed pool modules, the tree depth and every collateral class.
 
-The first deployment (v1, tag `v1-final`) stays on-chain so its notes can still be withdrawn. Its `Marker` (price pins) is shared with v2; that contract's comment calls `marketOpen` an "informational market-hours flag", but the flag selects the liquidation price band, the epoch interval and the off-hours liquidation floor.
+Earlier deployments (v1, tag `v1-final`, and v2) stay on-chain so their notes can still be withdrawn. Their `Marker` (price pins) is shared with v3; that contract's comment calls `marketOpen` an "informational market-hours flag", but the flag selects the liquidation price band, the epoch interval and the off-hours liquidation floor.
 
 ## Circuits
 
@@ -256,14 +256,14 @@ Pushes to `main` and every pull request run on GitHub Actions, with every action
 
 | Job | What it runs |
 | --- | --- |
-| App | `pnpm test`, `pnpm build` and the privacy check (no client IPs or payload logging on the server, no keys in browser storage, no server secrets in the bundle) |
+| App | `pnpm test`, API coverage (`pnpm test:coverage`: the relay and mailbox handlers on a mocked database and chain, at least 70% of lines, report in the job summary), `pnpm build` and the privacy check (no client IPs or payload logging on the server, no keys in browser storage, no server secrets in the bundle) |
 | Contracts | `forge test`: real-proof suites, a test for each audit finding, invariants and fuzzing |
 | Circuits | `nargo check` and `nargo test` over all 12 crates; each circuit's tests replay accepted and rejected witnesses |
 | Slither | Static analysis of the contracts (generated verifiers stubbed); fails on any high-impact finding |
 | Semgrep | JavaScript and secret rules over the app and services |
 | gitleaks | Secret scanning over the full history |
 
-Invariants (`contracts/test/Invariants.t.sol`, 256 runs of 64 random calls):
+Invariants (`contracts/test/Invariants.t.sol`, 1,600 runs of 64 random calls over deposits, transfers, withdrawals, credit steps, snapshots and epochs, liquidations, stale batches, evictions and treasury ledger actions):
 
 | Invariant | Test |
 | --- | --- |
@@ -272,26 +272,28 @@ Invariants (`contracts/test/Invariants.t.sol`, 256 runs of 64 random calls):
 | Every insertion is a root, and the current root is always usable | `invariant_rootHistory` |
 | The desk holds exactly its positions' collateral, and its debt matches | `invariant_deskBooks` |
 | One slot per live position; lender value is cash plus debt minus reserves | `invariant_slotsAndLenderNav` |
+| The desk never keeps sale proceeds; a batch over changed slots moves nothing; a snapshot backs one epoch | `invariant_liquidationAndEpochs` |
+| A treasury approval pays for one transfer; unapproved intents never pay; transfer limits hold; the ledger keeps no funds | `invariant_treasuryLedger` |
 
 ## Deployed contracts
 
-Robinhood Chain mainnet (chain 4663), v2, deployed in block 77886136. Build of record: deploy commit `ed24551`, runtime-bytecode hash `c80c29d57c98cbd4dcf610278f2d78b1e875835b6107e8f6aa242242ffa8f92f` over the 42 contracts and libraries (reproduce with `forge build` and `node scripts/build-hash.mjs`). Every contract and library source is verified on [Sourcify](https://repo.sourcify.dev/4663/0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F), which the explorer imports. Check the governance, wiring and verification yourself with `node scripts/check-deployment.mjs mainnet`.
+Robinhood Chain mainnet (chain 4663), v3, deployed in block 77988084. Build of record: the `v3.0.0` commit, runtime-bytecode hash `3f69863f4a1c1a8fa139fd982f13b2bec00ae5adbd8ad0ecedace902fd0bfe61` over the 42 contracts and libraries (reproduce with `forge build` and `node scripts/build-hash.mjs`). Every contract and library source is verified on [Sourcify](https://repo.sourcify.dev/4663/0x7a85e135cc94AC8aB571C6BadfDA3a54334B5fA7), which the explorer imports. Check the governance, wiring and verification yourself with `node scripts/check-deployment.mjs mainnet`.
 
 | Contract | Address |
 | --- | --- |
-| ZKDeskPool (shielded pool) | [0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F](https://robinhoodchain.blockscout.com/address/0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F) |
-| AssetGate | [0x20C827ef24450ce51870343cb510Be3948c91650](https://robinhoodchain.blockscout.com/address/0x20C827ef24450ce51870343cb510Be3948c91650) |
-| CreditDesk | [0x924e2778adD4E92322AB2AA81eC70C233F82b58b](https://robinhoodchain.blockscout.com/address/0x924e2778adD4E92322AB2AA81eC70C233F82b58b) |
-| DeskGuardian | [0x4080eE52CDb548E982303aaCDd88B87205192252](https://robinhoodchain.blockscout.com/address/0x4080eE52CDb548E982303aaCDd88B87205192252) |
-| LendingPoolUSDG | [0x159430b0aa298AA734BBA73EAb0Fd030a51D777b](https://robinhoodchain.blockscout.com/address/0x159430b0aa298AA734BBA73EAb0Fd030a51D777b) |
-| UniswapV3Venue | [0x028FD6D8fD04e3fD8D6A558a8cf3C82C2293eEFe](https://robinhoodchain.blockscout.com/address/0x028FD6D8fD04e3fD8D6A558a8cf3C82C2293eEFe) |
-| TreasuryLedger | [0x5Be8E8036d403adB3f6391d1704092302700Ab2f](https://robinhoodchain.blockscout.com/address/0x5Be8E8036d403adB3f6391d1704092302700Ab2f) |
-| MandateRegistry | [0xF45403a2BAc9775c48D5749e14DB4a290B52CbcD](https://robinhoodchain.blockscout.com/address/0xF45403a2BAc9775c48D5749e14DB4a290B52CbcD) |
-| Marker (shared with v1) | [0xC3061368E66b5a4253E5E98346677c6Ce093A735](https://robinhoodchain.blockscout.com/address/0xC3061368E66b5a4253E5E98346677c6Ce093A735) |
+| ZKDeskPool (shielded pool) | [0x7a85e135cc94AC8aB571C6BadfDA3a54334B5fA7](https://robinhoodchain.blockscout.com/address/0x7a85e135cc94AC8aB571C6BadfDA3a54334B5fA7) |
+| AssetGate | [0xbbbCC0D92f7AC2eb80c1EB72631f1c5774Ff25C2](https://robinhoodchain.blockscout.com/address/0xbbbCC0D92f7AC2eb80c1EB72631f1c5774Ff25C2) |
+| CreditDesk | [0x3091B1f5FbaE1b7E8B0c72fA4459473dc2a69a49](https://robinhoodchain.blockscout.com/address/0x3091B1f5FbaE1b7E8B0c72fA4459473dc2a69a49) |
+| DeskGuardian | [0xE065F61ef89152071Ec0b79C8940504612c2cA70](https://robinhoodchain.blockscout.com/address/0xE065F61ef89152071Ec0b79C8940504612c2cA70) |
+| LendingPoolUSDG | [0x43c21A9E21CeC7E68C8fa97b709Cd5108f97def0](https://robinhoodchain.blockscout.com/address/0x43c21A9E21CeC7E68C8fa97b709Cd5108f97def0) |
+| UniswapV3Venue | [0xE590D2D7A591773353c10db4A92B1B7a8b6C23cE](https://robinhoodchain.blockscout.com/address/0xE590D2D7A591773353c10db4A92B1B7a8b6C23cE) |
+| TreasuryLedger | [0x377BACD1e43Cc42b99Ee722444EfEF9B0eF82Db9](https://robinhoodchain.blockscout.com/address/0x377BACD1e43Cc42b99Ee722444EfEF9B0eF82Db9) |
+| MandateRegistry | [0xD021a576d1B5314424853e145a5277445d3B669C](https://robinhoodchain.blockscout.com/address/0xD021a576d1B5314424853e145a5277445d3B669C) |
+| Marker (shared with v1 and v2) | [0xC3061368E66b5a4253E5E98346677c6Ce093A735](https://robinhoodchain.blockscout.com/address/0xC3061368E66b5a4253E5E98346677c6Ce093A735) |
 | Governance Safe (2-of-3) | [0x1abAE714C8A68c73627b021F18FB3A68d9BE4EF8](https://robinhoodchain.blockscout.com/address/0x1abAE714C8A68c73627b021F18FB3A68d9BE4EF8) |
 | TimelockController | [0xe89b6689d8C1C30fD9FF47b4dbcFe5c4b790c0fF](https://robinhoodchain.blockscout.com/address/0xe89b6689d8C1C30fD9FF47b4dbcFe5c4b790c0fF) |
 
-The v1 contracts (tag `v1-final`) remain on-chain so their notes can be withdrawn; v1 pool: [0x804170e2A552EFF5b29710E9378E7c7Df31D607A](https://robinhoodchain.blockscout.com/address/0x804170e2A552EFF5b29710E9378E7c7Df31D607A). Testnet (46630) addresses are in `src/lib/chain/deployments/46630.json`.
+Earlier releases remain on-chain so their notes can always be withdrawn: v2 pool [0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F](https://robinhoodchain.blockscout.com/address/0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F) (empty when v3 replaced it; build hash `c80c29d57c98cbd4dcf610278f2d78b1e875835b6107e8f6aa242242ffa8f92f`) and v1 pool (tag `v1-final`) [0x804170e2A552EFF5b29710E9378E7c7Df31D607A](https://robinhoodchain.blockscout.com/address/0x804170e2A552EFF5b29710E9378E7c7Df31D607A). Testnet (46630) addresses are in `src/lib/chain/deployments/46630.json`.
 
 ## Operations
 
@@ -311,7 +313,7 @@ Findings of the automated audit (October 2026) and their fixes:
 | H-2: the relayer could be drained with free relays | Every relay pays its gas (a fee note, or a prepaid voucher for steps without a fee field); a separate keeper key runs the desk | `scripts/ops/relay-test.mjs` |
 | M-1: an old health proof could roll back the liquidatable set | Epochs use the current marks and index; the operator attests and liquidates in one transaction | `test_audit_m1_*` |
 | M-2: a full note tree would freeze exits | Tree depth 32 and a 1,024-root history; the empty root is only accepted while the tree is empty | `test_audit_m2_rootHistory` |
-| M-3: governance could block exits | Delisting and disabling stop new deposits and new risk only on the pool and the desk. Treasury transfers and mandate payments still check the listing (fixed in the next contract version) | `test_audit_m3_*` |
+| M-3: governance could block exits | Delisting and disabling stop new deposits and new risk only. Since v3, treasury transfers, mandate payments and converts do not check the listing either | `test_audit_m3_*`, `test_v3_delisted*` |
 | M-4: dual control could be bypassed from a second treasury | Approvals belong to one treasury and are used once; owners can limit transfers without approval per period | `test_audit_m4_*` |
 | M-5: one position could halt the operator | The circuit rejects `operator_r = 0`, and the operator decodes the point at infinity | `zk.test.js`, `circuits/position` tests |
 | M-6: the approval mailbox could be flooded | Posts are signed with a key only treasury members hold; per-treasury daily cap; 14-day expiry | `scripts/ops/e2e-approvals.mjs` |
@@ -327,9 +329,9 @@ Findings of the re-audit after v2 (October 2026):
 | N-3: the payment scheduler could be starved | Fixed. Only successful payments count, one per treasury per run, and the starting treasury rotates | `api/relay.test.mjs` |
 | M-1 (residual): the operator's fallback sent liquidations separately | Fixed. A batch that would revert is dropped from the atomic call, never sent on its own | `scripts/ops/e2e-liquidation.mjs` |
 | M-6 (residual), N-4: mailbox flooding and squatting | Fixed. A mailbox key is registered only by the treasury's own create request (no public registration), and posts are accepted only for treasuries that exist on-chain | `api/relay.test.mjs`, `scripts/ops/e2e-approvals.mjs` |
-| N-1: a no-op position step can block an epoch | Open: fixed in the next contract version | — |
-| H-1 (residual): a position with dust debt cannot be evicted | Open: next contract version | — |
-| M-3 (residual): treasury transfers and mandate payments check the asset listing | Open: next contract version | — |
+| N-1: a no-op position step can block an epoch | Fixed in v3. Every step moves something and leaves its position healthy at the latest mark (a breached position can only cure, close or be liquidated), one step per slot per 10 minutes (closing exempt). Epochs prove single-use snapshots of the slots, and a batch over a changed slot is skipped, not reverted | `test_v3_emptyStepRejected`, `test_v3_breachedStepMustCure`, `test_v3_churnBetweenSnapshotAndLiquidate`; Noir `rejects_noop_step`, `rejects_breached_step_that_stays_breached`, `accepts_breached_step_that_cures` |
+| H-1 (residual): a position with dust debt cannot be evicted | Fixed in v3. Debt is zero or at least the class minimum (5 USDG), in the position and liquidation proofs; a partial liquidation that would leave dust repays in full | `test_v3_dustDebtCannotHoldSlots`, `test_v3_stepBindsMinimumDebt`; Noir `rejects_dust_debt`, `rejects_partial_sale_leaving_dust_debt` |
+| M-3 (residual): treasury transfers and mandate payments check the asset listing | Fixed in v3. Only deposits check it | `test_v3_delistedAssetStillLeavesTreasury`, `test_v3_delistedAssetStillPaysMandates`, `test_v3_delistedAssetStillConverts` |
 
 Slither reports no high-impact issues. Its medium findings are reentrancy patterns in functions that already hold a reentrancy lock and only call the protocol's own immutable contracts, and return values that are deliberately ignored.
 

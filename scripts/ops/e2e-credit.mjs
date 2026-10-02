@@ -41,6 +41,15 @@ const show = async () => {
   return pos;
 };
 
+// Steps on a live position are STEP_INTERVAL apart (audit N-1). A local fork skips ahead; the testnet waits.
+const spaced = async () => {
+  const gap = Number(await publicClient.readContract({ address: deployment.desk, abi: abis.desk, functionName: 'STEP_INTERVAL' }));
+  console.log(`  … next step on this position in ${gap}s`);
+  if (!/127\.0\.0\.1|localhost/.test(process.env.RPC_URL_SERVER ?? '')) return new Promise((r) => setTimeout(r, (gap + 5) * 1000));
+  await publicClient.request({ method: 'evm_increaseTime', params: [gap] });
+  await publicClient.request({ method: 'evm_mine', params: [] });
+};
+
 await step('deposit 2000 tUSDG + 12 tSPY from wallet', async () => { await client.deposit(deployment.usdg, 2000_000000n); await client.deposit(SPY, 12n * 10n ** 18n); });
 await step(`wait standby (${deployment.standbySeconds}s), then cron clears`, async () => {
   await new Promise((r) => setTimeout(r, (deployment.standbySeconds + 15) * 1000));
@@ -51,10 +60,13 @@ await step('lend 500 tUSDG privately', () => client.lend(500_000000n));
 await show();
 await step('open: 10 tSPY collateral, borrow 1000 tUSDG', () => client.credit({ symbol: 'tSPY', collIn: 10n * 10n ** 18n, draw: 1000_000000n }));
 let [pos] = await show();
+await spaced();
 await step('repay 400 tUSDG', () => client.credit({ symbol: 'tSPY', position: pos, repay: 400_000000n }));
 [pos] = await show();
+await spaced();
 await step('add 2 tSPY collateral', () => client.credit({ symbol: 'tSPY', position: pos, collIn: 2n * 10n ** 18n }));
 [pos] = await show();
+await spaced();
 await step('withdraw 3 tSPY collateral', () => client.credit({ symbol: 'tSPY', position: pos, collOut: 3n * 10n ** 18n }));
 [pos] = await show();
 const index = await publicClient.readContract({ address: deployment.desk, abi: abis.desk, functionName: 'index' });

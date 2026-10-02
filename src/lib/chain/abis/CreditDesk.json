@@ -219,6 +219,19 @@
   },
   {
     "type": "function",
+    "name": "SNAPSHOT_TTL",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "SPREAD_BPS",
     "inputs": [],
     "outputs": [
@@ -226,6 +239,19 @@
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "STEP_INTERVAL",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
       }
     ],
     "stateMutability": "view"
@@ -444,6 +470,16 @@
             "internalType": "bytes"
           },
           {
+            "name": "snapshotId",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "leaves",
+            "type": "uint256[64]",
+            "internalType": "uint256[64]"
+          },
+          {
             "name": "marks",
             "type": "uint256[4]",
             "internalType": "uint256[4]"
@@ -487,6 +523,16 @@
             "name": "proof",
             "type": "bytes",
             "internalType": "bytes"
+          },
+          {
+            "name": "snapshotId",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "leaves",
+            "type": "uint256[64]",
+            "internalType": "uint256[64]"
           },
           {
             "name": "marks",
@@ -603,6 +649,19 @@
   },
   {
     "type": "function",
+    "name": "attestedSnapshot",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "bonusSink",
     "inputs": [],
     "outputs": [
@@ -679,6 +738,11 @@
       },
       {
         "name": "minCollateral",
+        "type": "uint128",
+        "internalType": "uint128"
+      },
+      {
+        "name": "minDebt",
         "type": "uint128",
         "internalType": "uint128"
       }
@@ -1079,6 +1143,11 @@
         "internalType": "uint128"
       },
       {
+        "name": "minDebt",
+        "type": "uint128",
+        "internalType": "uint128"
+      },
+      {
         "name": "enabled",
         "type": "bool",
         "internalType": "bool"
@@ -1133,6 +1202,56 @@
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "snapshot",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "id",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "snapshotCount",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "snapshots",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "leavesHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "takenAt",
+        "type": "uint64",
+        "internalType": "uint64"
       }
     ],
     "stateMutability": "view"
@@ -1311,6 +1430,25 @@
   },
   {
     "type": "event",
+    "name": "BatchSkipped",
+    "inputs": [
+      {
+        "name": "asset",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "slots",
+        "type": "uint8[4]",
+        "indexed": false,
+        "internalType": "uint8[4]"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "ClassSet",
     "inputs": [
       {
@@ -1339,6 +1477,12 @@
       },
       {
         "name": "minCollateral",
+        "type": "uint128",
+        "indexed": false,
+        "internalType": "uint128"
+      },
+      {
+        "name": "minDebt",
         "type": "uint128",
         "indexed": false,
         "internalType": "uint128"
@@ -1559,6 +1703,25 @@
   },
   {
     "type": "event",
+    "name": "SnapshotTaken",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "leavesHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "VenueSet",
     "inputs": [
       {
@@ -1594,6 +1757,11 @@
   {
     "type": "error",
     "name": "EmptyBatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "EmptyStep",
     "inputs": []
   },
   {
@@ -1686,7 +1854,17 @@
   },
   {
     "type": "error",
+    "name": "StaleSnapshot",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "TooManyClasses",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TooSoon",
     "inputs": []
   }
 ]

@@ -35,12 +35,15 @@ interface IFeeOf {
 /// and feeds, the Marker (and its pinner), the yield vault, the Safe and the timelock. Deploys a new
 /// gate, pool (module set fixed here), lending pool, desk, venue, treasury ledgers and mandates; the
 /// timelock owns them all, through a new DeskGuardian for the desk. v1 stays deployed for exits.
-/// Writes deployments/<chainId>.v2.json; scripts/ops/merge-v2.mjs folds it into the deployment file.
-/// Env: DEPLOYER_PRIVATE_KEY (MAINNET_ on mainnet), DESK_OPERATOR_PK_X / _Y, GUARDIAN, SCREENER.
+/// Also deploys later releases the same way (v3: audit fix-to-8 Parts A and C), beside the current one.
+/// Writes deployments/<chainId>.<RELEASE>.json; scripts/ops/merge-v2.mjs folds it into the deployment file.
+/// Env: DEPLOYER_PRIVATE_KEY (MAINNET_ on mainnet), DESK_OPERATOR_PK_X / _Y, GUARDIAN, SCREENER,
+/// RELEASE (default v2).
 contract DeployV2 is Script {
     uint64 constant STANDBY = 60;
     uint128 constant MAX_COLLATERAL = 100_000e18; // per class, in stock tokens
     uint256 constant MIN_POSITION_USD = 25e8; // smallest position, 8 dp USD (audit H-1)
+    uint128 constant MIN_DEBT = 5e6; // 5 USDG: debt is zero or at least this (audit H-1)
     ISwapRouter02 constant ROUTER = ISwapRouter02(0xCaf681a66D020601342297493863E78C959E5cb2); // mainnet
     uint256 constant TESTNET_SEED_LIQUIDITY = 50_000e6;
 
@@ -117,7 +120,7 @@ contract DeployV2 is Script {
             n.gate.setAsset(o.tokens[i], true);
             (uint64 price,,) = Marker(o.marker).current(o.tokens[i]);
             uint128 minColl = uint128(MIN_POSITION_USD * 1e18 / price); // price: 8 dp USD per 1e18 base units
-            n.desk.setClass(o.tokens[i], o.ltv[i], o.liq[i], MAX_COLLATERAL, minColl, true);
+            n.desk.setClass(o.tokens[i], o.ltv[i], o.liq[i], MAX_COLLATERAL, minColl, MIN_DEBT, true);
             if (mainnet) UniswapV3Venue(n.venue).setPool(o.tokens[i], IFeeOf(o.venue).feeOf(o.tokens[i]));
         }
         n.desk.setVenue(ISaleVenue(n.venue), o.bonusSink);
@@ -150,7 +153,7 @@ contract DeployV2 is Script {
         _govern(o, n, mainnet);
         vm.stopBroadcast();
 
-        string memory w = "v2";
+        string memory w = vm.envOr("RELEASE", string("v2"));
         vm.serializeUint(w, "deployBlock", block.number); // parent-chain block on Arbitrum chains; merge-v2.mjs replaces it
         vm.serializeUint(w, "deployedAt", block.timestamp);
         vm.serializeAddress(w, "assetGate", address(n.gate));
@@ -161,6 +164,6 @@ contract DeployV2 is Script {
         vm.serializeAddress(w, "ledger", address(n.ledger));
         vm.serializeAddress(w, "mandates", address(n.mandates));
         string memory out = vm.serializeAddress(w, "pool", address(n.pool));
-        vm.writeJson(out, string.concat(path, ".v2.json"));
+        vm.writeJson(out, string.concat(path, ".", w, ".json"));
     }
 }
