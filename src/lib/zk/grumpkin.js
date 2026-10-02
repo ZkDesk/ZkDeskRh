@@ -14,10 +14,14 @@ function inv(a) {
   return r;
 }
 
-/** Affine point addition; null is the point at infinity. */
+// The point at infinity: null inside the arithmetic, (0, 0) outside, as Noir's embedded curve ops
+// return it. A position proven with operator_r = 0 has eph = (0, 0) and a (0, 0) shared point.
+const isInf = (A) => !A || (A[0] === 0n && A[1] === 0n);
+
+/** Affine point addition. */
 function add(A, B) {
-  if (!A) return B;
-  if (!B) return A;
+  if (isInf(A)) return B;
+  if (isInf(B)) return A;
   const [x1, y1] = A;
   const [x2, y2] = B;
   if (x1 === x2 && mod(y1 + y2) === 0n) return null;
@@ -29,7 +33,7 @@ function add(A, B) {
 export function mul(k, A = G) {
   let R = null;
   for (let Q = A; k > 0n; k >>= 1n, Q = add(Q, Q)) if (k & 1n) R = add(R, Q);
-  return R;
+  return isInf(R) ? [0n, 0n] : R;
 }
 
 export const operatorPublicKey = (sk) => mul(sk, G);

@@ -26,8 +26,8 @@ const relay = (body) => call(relayHandler, body ? { method: 'POST', body } : { m
 const tick = () => call(tickHandler, { method: 'GET', query: {}, headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } });
 
 const account = privateKeyToAccount(process.env.DEPLOYER_PRIVATE_KEY);
-const publicClient = createPublicClient({ chain, transport: http() });
-const walletClient = createWalletClient({ account, chain, transport: http() });
+const publicClient = createPublicClient({ chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
+const walletClient = createWalletClient({ account, chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
 const provers = Object.fromEntries(await Promise.all(['transact', 'ledger', 'role_auth', 'treasury_attest'].map(async (k) => [k, await createProver(JSON.parse(readFileSync(`src/lib/zk/artifacts/${k}.json`, 'utf8')))])));
 const prove = (kind, witness) => provers[kind].prove(witness);
 const member = (name, keys, wallet = {}) => ({ name, keys, client: createClient({ publicClient, keys, prove, relay, onStatus: (m) => console.log(`    · ${name}: ${m}`), ...wallet }) });
@@ -48,6 +48,12 @@ const show = async (m, id) => {
   console.log(`  ${m.name} sees "${l.name}" as ${l.roles.join(', ')}: ${usd(m.client.ledgerBalance(l, deployment.usdg))} liquid, ${formatUnits(m.client.ledgerBalance(l, deployment.vault), 12)} vault shares`);
   return l;
 };
+
+// Treasury steps pay their relay voucher from the acting member's personal private balance.
+for (const m of [treasurer, payer, auditor]) {
+  await m.client.sync();
+  if (m.client.balance(deployment.usdg) < 300_000000n) await step(`Owner sends ${m.name} 500 tUSDG privately for relay fees`, () => owner.client.send({ amount: 500_000000n, to: addr(m) }));
+}
 
 const id = await step('Owner creates the treasury (cap 800, dual control above 100)', () => owner.client.createLedger({
   name: 'E2E treasury', treasurer: addr(treasurer), payer: addr(payer), auditor: addr(auditor), allocCap: 800_000000n, dualThreshold: 100_000000n,

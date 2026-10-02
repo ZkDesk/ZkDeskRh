@@ -39,6 +39,12 @@ const values = [10n ** 19n, 5n * 10n ** 8n, a.owner, FIELD - 7n];
 const enc = operatorEncrypt(values, operatorPublicKey(opSk));
 assert.deepEqual(operatorDecrypt(opSk, enc.eph, enc.cipher), values, 'operator opens the position');
 assert.notDeepEqual(operatorDecrypt(opSk + 1n, enc.eph, enc.cipher), values, 'other key cannot');
+// operator_r = 0 is provable: Noir returns infinity as (0, 0) for eph and the shared point (checked
+// against circuits/position with noir_js). The operator must still open it, or every epoch halts.
+const enc0 = operatorEncrypt(values, operatorPublicKey(opSk), 0n);
+assert.deepEqual(enc0.eph, [0n, 0n]);
+assert.deepEqual(operatorDecrypt(opSk, enc0.eph, enc0.cipher), values, 'operator opens an r = 0 position');
+assert.deepEqual(mul(0n), [0n, 0n]);
 
 // Owner follows a liquidation from the masked amounts.
 const pos = { asset: 0xb5n, collateral: 10n * 10n ** 18n, debtScaled: 900_000000n * 10n ** 18n / 10n ** 18n, owner: a.owner, blinding: 99n };

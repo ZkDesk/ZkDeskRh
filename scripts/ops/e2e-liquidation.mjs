@@ -25,8 +25,8 @@ const relay = (body) => call(relayHandler, body ? { method: 'POST', body } : { m
 const tick = () => call(tickHandler, { method: 'GET', query: {}, headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } });
 
 const account = privateKeyToAccount(process.env.DEPLOYER_PRIVATE_KEY);
-const publicClient = createPublicClient({ chain, transport: http() });
-const walletClient = createWalletClient({ account, chain, transport: http() });
+const publicClient = createPublicClient({ chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
+const walletClient = createWalletClient({ account, chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
 const keys = deriveKeys(await account.signTypedData(keyRequest(chain.id)));
 const circuit = (name) => JSON.parse(readFileSync(`src/lib/zk/artifacts/${name}.json`, 'utf8'));
 const provers = Object.fromEntries(await Promise.all(['transact', 'position', 'health_epoch', 'liquidate'].map(async (k) => [k, await createProver(circuit(k))])));

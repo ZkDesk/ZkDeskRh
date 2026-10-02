@@ -22,8 +22,8 @@ const GUARDIAN = parseAbi(['function pause()', 'function execute(bytes data) ret
 
 const key = readFileSync('.env.local', 'utf8').match(/DEPLOYER_PRIVATE_KEY="([^"]+)"/)[1];
 const account = privateKeyToAccount(key);
-const publicClient = createPublicClient({ chain, transport: http() });
-const wallet = createWalletClient({ account, chain, transport: http() });
+const publicClient = createPublicClient({ chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
+const wallet = createWalletClient({ account, chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
 
 /** Parses CLI args for a function signature ("setPaused(bool)" + ["false"]). */
 function encode(signature, args) {

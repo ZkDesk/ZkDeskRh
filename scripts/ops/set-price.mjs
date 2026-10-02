@@ -11,8 +11,8 @@ const stock = deployment.stocks[symbol];
 if (!stock || !arg) throw new Error('Usage: set-price.mjs <tSPY|tQQQ|tNVDA|tTSLA> <-40% | 120>');
 const key = readFileSync('.env.local', 'utf8').match(/DEPLOYER_PRIVATE_KEY="([^"]+)"/)[1];
 const account = privateKeyToAccount(key);
-const publicClient = createPublicClient({ chain, transport: http() });
-const wallet = createWalletClient({ account, chain, transport: http() });
+const publicClient = createPublicClient({ chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
+const wallet = createWalletClient({ account, chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
 const FEED = parseAbi(['function latestRoundData() view returns (uint80, int256, uint256, uint256, uint80)', 'function setAnswer(int256)']);
 
 const [, current] = await publicClient.readContract({ address: stock.feed, abi: FEED, functionName: 'latestRoundData' });

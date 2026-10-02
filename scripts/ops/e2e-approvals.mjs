@@ -22,10 +22,11 @@ const call = (handler, req) => new Promise((resolve) => handler(req, { statusCod
 const relay = (body) => call(relayHandler, body ? { method: 'POST', body } : { method: 'GET' });
 const mailbox = {
   list: (ledger) => call(requestsHandler, { method: 'GET', query: { ledger } }).then((r) => r.requests),
-  post: (ledgerId, ciphertext) => call(requestsHandler, { method: 'POST', body: { ledgerId, ciphertext } }),
+  post: (ledgerId, ciphertext, signature) => call(requestsHandler, { method: 'POST', body: { ledgerId, ciphertext, signature } }),
+  register: (ledgerId, signer, signature) => call(requestsHandler, { method: 'POST', body: { ledgerId, signer, signature, register: true } }),
 };
-const publicClient = createPublicClient({ chain, transport: http() });
-const provers = Object.fromEntries(await Promise.all(['ledger', 'role_auth'].map(async (k) => [k, await createProver(JSON.parse(readFileSync(`src/lib/zk/artifacts/${k}.json`, 'utf8')))])));
+const publicClient = createPublicClient({ chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
+const provers = Object.fromEntries(await Promise.all(['transact', 'ledger', 'role_auth'].map(async (k) => [k, await createProver(JSON.parse(readFileSync(`src/lib/zk/artifacts/${k}.json`, 'utf8')))])));
 const prove = (kind, witness) => provers[kind].prove(witness);
 const member = (name, keys) => ({ name, keys, client: createClient({ publicClient, keys, prove, relay, requests: mailbox, onStatus: (m) => console.log(`    · ${name}: ${m}`) }) });
 const owner = member('Owner', deriveKeys(await privateKeyToAccount(process.env.DEPLOYER_PRIVATE_KEY).signTypedData(keyRequest(chain.id))));
@@ -41,7 +42,10 @@ const L = async (m) => {
 const lt = await L(treasurer);
 if (!lt) throw new Error('No "E2E treasury" where the test Treasurer holds a role (run e2e-treasury.mjs first).');
 console.log(`treasury ${'0x' + lt.owner.toString(16).slice(0, 10)}…: ${usd(treasurer.client.ledgerBalance(lt, deployment.usdg))} liquid, dual control above ${usd(lt.config.dualThreshold)}`);
-await mailbox.post('0x' + lt.owner.toString(16).padStart(64, '0'), '0x' + 'ab'.repeat(80)); // an outsider's garbage
+// An outsider without the treasury's mailbox key cannot post.
+const outsider = await mailbox.post('0x' + lt.owner.toString(16).padStart(64, '0'), '0x' + 'ab'.repeat(80), '0x' + 'cd'.repeat(65));
+if (!outsider.error) throw new Error('an unsigned mailbox post was accepted');
+console.log(`  outsider post rejected: ${outsider.error}`);
 
 const r = await step('Treasurer asks to pay 150 tUSDG to itself (above the threshold)', async () => treasurer.client.ledgerAct(lt, 'Treasurer', { action: 'transfer', amount: 150_000000n, to: { owner: treasurer.keys.owner, encPub: treasurer.keys.encPub } }));
 if (!r.requested) throw new Error('expected a request');

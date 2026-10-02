@@ -1,11 +1,12 @@
 // One private-account client for the dashboard and ops scripts. It reads chain state, picks notes,
 // builds witnesses and ciphertexts, then hands proofs to injected `prove(kind, witness)` and
 // `relay(body)` (browser: worker + fetch; Node: bb.js + in-process handler).
-import { maxUint256, zeroAddress } from 'viem';
-import { abis, deployment, explorerTx, MAINNET, minRelayFee, NETWORK_NAME, stocks } from '../chain/config.js';
+import { maxUint256, toHex, zeroAddress } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
+import { abis, deployment, explorerTx, MAINNET, minRelayFee, NETWORK_NAME, payableFee, stocks, USD_SYMBOL } from '../chain/config.js';
 import { encryptConfig, encryptKeyShare, encryptMandate, encryptNote, encryptPosition, openRequest, sealRequest, textToField } from './crypto.js';
 import { buildMandateAuth, buildPull, buildReceipt, currentPeriod, KINDS, MANDATE_ACTIONS, PERIODS, rawForUsdg } from './mandate.js';
-import { ACTIONS, AUTH, authExtHash, buildAttest, buildLedger, buildRoleAuth, ledgerKeys, rolesOf } from './ledger.js';
+import { ACTIONS, AUTH, authExtHash, buildAttest, buildLedger, buildRoleAuth, ledgerKeys, mailboxMessages, rolesOf } from './ledger.js';
 import { policyHash, randomField } from './notes.js';
 import { buildTransact } from './transact.js';
 import { buildPosition, debtOf, maxDebt, valueOf } from './position.js';
@@ -16,9 +17,13 @@ const hexId = (id) => '0x' + id.toString(16).padStart(64, '0');
 const LENDING = BigInt(deployment.lending);
 const big = (a) => BigInt(a);
 const s = (x) => x.toString();
+const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 
-/** requests: optional mailbox {list(ledgerIdHex), post(ledgerIdHex, ciphertext)} for approval requests (api/requests.js). */
-export function createClient({ publicClient, walletClient = null, address = null, keys, prove, relay, requests = null, onStatus = () => {} }) {
+/**
+ * requests: optional mailbox {list(ledgerIdHex), post(ledgerIdHex, ciphertext, signature), register(ledgerIdHex, signer, signature)} (api/requests.js).
+ * vouchers: false only for the in-process scheduler, which relays without paying itself.
+ */
+export function createClient({ publicClient, walletClient = null, address = null, keys, prove, relay, requests = null, onStatus = () => {}, vouchers = true }) {
   let state = null;
   let lastBlock = 0n;
   const status = (m) => onStatus(m);
@@ -41,11 +46,46 @@ export function createClient({ publicClient, walletClient = null, address = null
       : 'Not enough available private balance.');
   }
 
-  /** The relay fee is paid in the spent asset. */
-  async function relayFee(asset) {
+  async function relayInfo() {
     const info = await relay(null);
     if (!info.available) throw new Error('The relayer is unavailable right now. Please try again shortly.');
-    return { fee: minRelayFee(asset), relayer: info.relayer };
+    return info;
+  }
+  const quote = (info, asset) => payableFee(info.fees?.[String(asset).toLowerCase()] ?? minRelayFee(asset));
+
+  /** The relay fee is paid in the spent asset and covers the relay's gas (api/_lib/fees.js). */
+  async function relayFee(asset) {
+    const info = await relayInfo();
+    return { fee: quote(info, asset), relayer: info.relayer };
+  }
+
+  /**
+   * Steps whose proofs have no fee field (credit, treasury, payments) redeem a one-use voucher. It is
+   * bought first by a private self-transfer that pays twice the fee: its own gas and the step's.
+   */
+  async function voucher() {
+    if (!vouchers) return undefined;
+    const info = await relayInfo();
+    await sync();
+    const hexAddr = (x) => '0x' + x.toString(16).padStart(40, '0');
+    const held = [...new Set(notes().filter((n) => n.status === 'unspent').map((n) => hexAddr(n.asset)))];
+    for (const asset of [deployment.usdg, ...held.filter((a) => !same(a, deployment.usdg))]) {
+      const fee = quote(info, asset) * BigInt(info.voucherPrice ?? 2);
+      let inputs;
+      try {
+        inputs = pickInputs(asset, fee);
+      } catch {
+        continue;
+      }
+      const change = inputs.reduce((t, n) => t + n.amount, 0n) - fee;
+      status('Paying the relay fee (a private self-transfer)…');
+      const body = await transactBody({ asset, inputs, outputs: [{ amount: change, owner: keys.owner }], ext: { relayer: info.relayer, fee } });
+      const r = await submitRelay({ ...body, voucher: true });
+      if (!r.voucher) throw new Error('The relayer did not return a fee voucher. Please try again.');
+      return r.voucher;
+    }
+    const usd = Number(quote(info, deployment.usdg) * BigInt(info.voucherPrice ?? 2)) / 1e6;
+    throw new Error(`This step needs a relay fee of about ${usd.toFixed(2)} ${USD_SYMBOL} from your private balance. Add funds first.`);
   }
 
   async function submitRelay(body) {
@@ -148,6 +188,7 @@ export function createClient({ publicClient, walletClient = null, address = null
 
   /** One credit step. position: from positions() or null to open. */
   async function credit({ symbol, position = null, collIn = 0n, collOut = 0n, draw = 0n, repay = 0n }) {
+    const paid = await voucher(); // first, so the step's inputs are picked from what is left
     await sync();
     const m = await market(symbol);
     const payAsset = repay ? deployment.usdg : m.token;
@@ -170,6 +211,7 @@ export function createClient({ publicClient, walletClient = null, address = null
       kind: 'position',
       proof: { proof, slot, root: s(p.root), extDataHash: s(p.extDataHash), collAsset: hexAddr(p.collAsset), inAsset: hexAddr(p.inAsset), mark: s(p.mark), rateIndex: s(p.rateIndex), oldLeaf: s(p.oldLeaf), newLeaf: s(p.newLeaf), collIn: s(p.collIn), collOut: s(p.collOut), draw: s(p.draw), repay: s(p.repay), drawScaled: s(p.drawScaled), repayScaled: s(p.repayScaled), inputNullifiers: p.inputNullifiers.map(s), outputCommitments: p.outputCommitments.map(s), operatorEph: p.operatorEph.map(s), operatorCipher: p.operatorCipher.map(s) },
       ext: { ...ext, fee: '0' },
+      voucher: paid,
     });
   }
 
@@ -180,11 +222,32 @@ export function createClient({ publicClient, walletClient = null, address = null
   const ledgerUnspent = (ledger, asset) => ledgerNotes(ledger).filter((n) => n.asset === big(asset) && n.status === 'unspent').sort((a, b) => (b.amount > a.amount ? 1 : -1));
 
   async function relayAuth({ ledger, config, action, newValue = 0n, shares = [], configCt = '0x' }) {
+    const paid = await voucher();
     const built = buildRoleAuth({ ledger, sk: keys.sk, config, action, newValue, extHash: authExtHash(shares, configCt) });
     status('Generating proof…');
     const { proof } = await prove('role_auth', built.witness);
     const p = built.public;
-    return submitRelay({ kind: 'ledger_auth', proof: { proof, ledgerId: s(p.ledgerId), rolesCommit: s(p.rolesCommit), policyHash: s(p.policyHash), action, newValue: s(newValue) }, ext: { shares, config: configCt } });
+    return submitRelay({ kind: 'ledger_auth', proof: { proof, ledgerId: s(p.ledgerId), rolesCommit: s(p.rolesCommit), policyHash: s(p.policyHash), action, newValue: s(newValue) }, ext: { shares, config: configCt }, voucher: paid });
+  }
+
+  // Approval mailbox (api/requests.js): posts are signed with the treasury's mailbox key.
+  const mailboxSigner = (ledger) => privateKeyToAccount(toHex(ledger.mailboxKey));
+  async function registerMailbox(ledger) {
+    if (!requests) return;
+    const id = hexId(ledger.owner);
+    const signer = mailboxSigner(ledger);
+    const r = await requests.register(id, signer.address, await signer.signMessage({ message: mailboxMessages.register(id) }));
+    if (!r.registered) throw new Error(friendly(r.error));
+  }
+  async function postRequest(ledger, ciphertext) {
+    const id = hexId(ledger.owner);
+    const signature = await mailboxSigner(ledger).signMessage({ message: mailboxMessages.post(id, ciphertext) });
+    let r = await requests.post(id, ciphertext, signature);
+    if (r.error === 'mailbox_unregistered') {
+      await registerMailbox(ledger); // a treasury created before mailbox keys existed
+      r = await requests.post(id, ciphertext, signature);
+    }
+    if (r.error) throw new Error(friendly(r.error));
   }
 
   const shareTo = (lsk, members) => [...new Map(members.map((m) => [m.owner, m])).values()].map((m) => encryptKeyShare(lsk, m.encPub));
@@ -200,6 +263,8 @@ export function createClient({ publicClient, walletClient = null, address = null
     const lsk = randomField();
     const ledger = ledgerKeys(lsk);
     const config = { name, owner: self.owner, treasurer: members[1].owner, payer: members[2].owner, auditor: members[3].owner, rolesSalt: randomField(), allocCap, dualThreshold, policySalt: randomField() };
+    // Mailbox key first: until the treasury is on-chain nobody else knows its id, so nobody can claim it.
+    await registerMailbox(ledger);
     await relayAuth({ ledger, config, action: AUTH.create, shares: shareTo(lsk, members), configCt: encryptConfig(config, ledger.encPub) });
     return ledger.owner;
   }
@@ -253,7 +318,7 @@ export function createClient({ publicClient, walletClient = null, address = null
           v: 1, from: keys.owner, role, asset: big(asset), amount, to, recipient, at: Date.now(), intent: built.intent,
           inputs: args.inputs.map((n) => n.commitment), outputs: built.outputs.map((o) => o.blinding), dummies: built.dummies, ext,
         };
-        await requests.post(hexId(ledger.owner), sealRequest(request, ledger.requestKey));
+        await postRequest(ledger, sealRequest(request, ledger.requestKey));
         return { requested: true, intent: built.intent };
       }
       status('Approving as Owner (dual control)…');
@@ -263,6 +328,7 @@ export function createClient({ publicClient, walletClient = null, address = null
   }
 
   async function submitLedger(built, ext) {
+    const paid = await voucher(); // personal notes only; the proof spends treasury notes
     status('Generating proof…');
     const { proof } = await prove('ledger', built.witness);
     const p = built.public;
@@ -271,6 +337,7 @@ export function createClient({ publicClient, walletClient = null, address = null
       kind: 'ledger',
       proof: { proof, root: s(p.root), ledgerId: s(p.ledgerId), action: Number(p.action), asset: hexAddr(p.asset), outAsset: hexAddr(p.outAsset), publicAmount: s(p.publicAmount), publicAmountOut: s(p.publicAmountOut), extDataHash: s(p.extDataHash), inputNullifiers: p.inputNullifiers.map(s), outputCommitments: p.outputCommitments.map(s), cosignIntent: s(p.cosignIntent) },
       ext: { ...ext, extAmount: s(ext.extAmount) },
+      voucher: paid,
     });
   }
 
@@ -323,13 +390,14 @@ export function createClient({ publicClient, walletClient = null, address = null
 
   /** Treasury statement: the ledger's assets cover `liabilities` (USDG base units). Publishes only that. */
   async function ledgerAttest(ledger, liabilities) {
+    const paid = await voucher();
     await sync();
     const [assets, prices] = await read(deployment.ledger, abis.ledger, 'attestPrices');
     const built = buildAttest({ tree: state.tree, ledger, notes: ledgerNotes(ledger), assets: [...assets], prices: [...prices], liabilities });
     status('Generating proof…');
     const { proof } = await prove('treasury_attest', built.witness);
     const p = built.public;
-    return submitRelay({ kind: 'ledger_attest', proof: { proof, root: s(p.root), ledgerId: s(p.ledgerId), liabilities: s(liabilities), nullifiers: p.nullifiers.map(s) } });
+    return submitRelay({ kind: 'ledger_attest', proof: { proof, root: s(p.root), ledgerId: s(p.ledgerId), liabilities: s(liabilities), nullifiers: p.nullifiers.map(s) }, voucher: paid });
   }
 
   // ---- Payment mandates and receipts ----
@@ -338,10 +406,11 @@ export function createClient({ publicClient, walletClient = null, address = null
   const chainTime = async () => (await publicClient.getBlock({ blockTag: 'latest' })).timestamp;
 
   async function relayMandateAuth(ledger, role, action, mandate, ciphertext = '0x') {
+    const paid = await voucher();
     const built = buildMandateAuth({ ledger, sk: keys.sk, role, action, mandate, ciphertext });
     status('Generating proof…');
     const { proof } = await prove('mandate_auth', built.witness);
-    return submitRelay({ kind: 'mandate_auth', proof: { proof, ledgerId: s(ledger.owner), action, mandateCommit: s(built.commit) }, ext: { ciphertext } });
+    return submitRelay({ kind: 'mandate_auth', proof: { proof, ledgerId: s(ledger.owner), action, mandateCommit: s(built.commit) }, ext: { ciphertext }, voucher: paid });
   }
 
   /**
@@ -364,6 +433,7 @@ export function createClient({ publicClient, walletClient = null, address = null
 
   /** Pays the current period of a mandate (usdgAmount ≤ cap). Stock mandates convert at the pinned mark. */
   async function payMandate(ledger, role, mandate, usdgAmount) {
+    const paid = await voucher();
     await sync();
     const t = await chainTime();
     const k = currentPeriod(mandate, t);
@@ -385,6 +455,7 @@ export function createClient({ publicClient, walletClient = null, address = null
       kind: 'mandate_pull',
       proof: { proof, root: s(p.root), ledgerId: s(p.ledgerId), mandateCommit: s(p.mandateCommit), asset: hexAddr(p.asset), mark: s(p.mark), k: s(p.k), t: s(p.t), pullNullifier: s(p.pullNullifier), receiptLeaf: s(p.receiptLeaf), extDataHash: s(p.extDataHash), inputNullifiers: p.inputNullifiers.map(s), outputCommitments: p.outputCommitments.map(s) },
       ext,
+      voucher: paid,
     });
   }
 
@@ -446,6 +517,12 @@ const FRIENDLY = {
   NoteSpent: 'Treasury funds moved while the statement was being proven. Please try again.',
   HealthStale: 'The desk health attestation is overdue, so new borrowing is paused. Repaying and closing still work.',
   InsufficientLiquidity: 'The lending pool does not have enough USDG right now.',
+  mailbox_key_mismatch: 'This treasury\'s request mailbox is registered to another key, so requests cannot be posted. Approve as Owner instead.',
+  mailbox_full: 'This treasury received too many approval requests today. Please try again tomorrow.',
+  bad_signature: 'The approval request could not be signed for this treasury.',
+  voucher_required: 'The relay fee voucher was missing or already used. Please try again.',
+  fee_too_low: 'Network fees rose while your proof was being made. Please try again.',
+  fee_asset_unavailable: 'That asset cannot pay the relay fee right now (its price is unavailable). Use USDG.',
   relayer_unavailable: 'The relayer is unavailable right now. Please try again shortly.',
   pending_long: 'Submitted, but not confirmed yet. It is checked automatically; refresh in a minute before retrying.',
   replaced: 'The relayed transaction was replaced before it confirmed, so nothing moved. Please try again.',

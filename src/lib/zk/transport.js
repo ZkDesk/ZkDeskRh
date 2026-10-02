@@ -5,15 +5,17 @@ import { apiBase } from '../chain/config.js';
 export async function relay(body) {
   if (!body) return (await fetch(`${apiBase}/relay`)).json();
   let r = await (await fetch(`${apiBase}/relay`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).json();
+  const { voucher } = r; // only in the first answer; usable once the transfer confirms
   for (let i = 0; i < 30 && (r.status === 'submitted' || r.status === 'queued'); i++) {
     await new Promise((res) => setTimeout(res, 2000));
     r = await (await fetch(`${apiBase}/ops/${r.opId}`)).json();
   }
-  return r;
+  return { ...r, voucher };
 }
 
 /** Approval requests mailbox (api/requests.js): sealed ciphertexts only treasury members can open. */
 export const mailbox = {
   list: async (ledger) => (await (await fetch(`${apiBase}/requests?ledger=${ledger}`)).json()).requests ?? [],
-  post: async (ledgerId, ciphertext) => (await fetch(`${apiBase}/requests`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ledgerId, ciphertext }) })).json(),
+  post: async (ledgerId, ciphertext, signature) => (await fetch(`${apiBase}/requests`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ledgerId, ciphertext, signature }) })).json(),
+  register: async (ledgerId, signer, signature) => (await fetch(`${apiBase}/requests`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ledgerId, signer, signature, register: true }) })).json(),
 };

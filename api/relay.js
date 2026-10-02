@@ -2,6 +2,12 @@
 // never appears on-chain. No login: the proof itself authorizes the step, and the ext data
 // (recipient, fee, converter, ciphertexts) is bound into it, so the relayer cannot alter it.
 // Stores no user identity; idempotent per transaction (its nullifiers).
+//
+// Every relay pays for its gas. A transact pays its fee in a shielded note (at least the live
+// minimum from api/_lib/fees.js). The other kinds have no fee field in their proofs, so they redeem a
+// voucher: a self-transfer sent with { voucher: true } pays twice the minimum and returns a one-use
+// token, valid for a day once that transfer confirms. User relays stop at a balance floor, and the
+// services run from their own keeper key, so spam cannot halt epochs or liquidations.
 //   { kind: 'transact', proof, ext }  -> ZKDeskPool.transact (transfer, withdraw, private convert)
 //   { kind: 'position', proof, ext }  -> CreditDesk.act (open, draw, repay, add, withdraw, close)
 //   { kind: 'ledger', proof, ext }    -> TreasuryLedger.act (allocate, deallocate, transfer out)
@@ -9,13 +15,17 @@
 //   { kind: 'ledger_attest', proof }  -> TreasuryLedger.attest (treasury solvency statement)
 //   { kind: 'mandate_auth', proof, ext: {ciphertext} } -> MandateRegistry.manage (commit, revoke, pause, resume)
 //   { kind: 'mandate_pull', proof, ext } -> MandateRegistry.pull (one payment under a mandate)
+import { randomBytes } from 'node:crypto';
 import { concatHex, isAddress, isHex, keccak256, toHex, zeroAddress } from 'viem';
 import { abis, db, deployment, publicClient, relayer, sendFromRelayer, revertName, json } from './_lib/server.js';
-import { minRelayFee } from '../src/lib/chain/config.js';
+import { relayFees } from './_lib/fees.js';
 import { CONFIG_BYTES, KEY_SHARE_BYTES, MANDATE_BYTES, NOTE_CIPHERTEXT_BYTES, POSITION_CIPHERTEXT_BYTES } from '../src/lib/zk/crypto.js';
 
-// A shielded fee makes every relayed transfer cost the sender something; all-dummy spam cannot pay it.
-export const MIN_RELAY_FEE = minRelayFee(deployment.usdg); // 0.01 USDG; other assets: minRelayFee(asset)
+/** User relays stop below this, leaving gas for transactions in flight. */
+export const RELAYER_FLOOR_WEI = 2n * 10n ** 15n; // 0.002 ETH
+/** Kinds whose proofs carry no fee: they redeem a voucher. */
+const VOUCHER_KINDS = new Set(['position', 'ledger', 'ledger_auth', 'ledger_attest', 'mandate_auth', 'mandate_pull']);
+const VOUCHER_PRICE = 2n; // a voucher self-transfer pays its own gas and one later relay
 const MAX_PROOF_BYTES = 16_384;
 const ASSETS = new Set([deployment.usdg, deployment.lending, deployment.vault, ...Object.values(deployment.stocks).map((s) => s.token)].map((a) => a.toLowerCase()));
 const uint = (v) => { const b = BigInt(v); if (b < 0n || b >= 2n ** 256n) throw new Error('range'); return b; };
@@ -37,11 +47,11 @@ function parseTransact(p, e) {
   const extAmount = BigInt(e.extAmount);
   const fee = uint(e.fee);
   if (extAmount > 0n) throw new Error('Deposits are sent from your own wallet, not the relayer.');
-  if (fee < minRelayFee(p.asset)) throw new Error(`Relay fee must be at least ${minRelayFee(p.asset)} base units of the spent asset.`);
   if (!same(e.relayer, relayer.address)) throw new Error('Fee must be paid to this relayer.');
   if (!same(e.converter, zeroAddress) && !same(e.converter, deployment.lending)) throw new Error('Unsupported converter.');
   return {
     kind: same(p.outAsset, p.asset) ? (extAmount < 0n ? 'withdraw' : 'transfer') : 'convert',
+    fee: { asset: p.asset.toLowerCase(), amount: fee },
     target: { address: deployment.pool, abi: abis.pool, functionName: 'transact' },
     nullifiers: p.inputNullifiers.slice(0, 2).map(uint),
     args: [{
@@ -134,19 +144,38 @@ function parseMandatePull(p, e) {
 
 const PARSERS = { position: parsePosition, ledger: parseLedger, ledger_auth: parseLedgerAuth, ledger_attest: parseLedgerAttest, mandate_auth: parseMandateAuth, mandate_pull: parseMandatePull };
 
+const hashToken = (t) => keccak256(t);
+
 export default async function handler(req, res) {
-  if (req.method === 'GET') return json(res, 200, { relayer: relayer?.address ?? null, minFee: MIN_RELAY_FEE, available: Boolean(relayer) });
+  if (req.method === 'GET') {
+    if (!relayer) return json(res, 200, { relayer: null, available: false });
+    const [fees, balance] = await Promise.all([relayFees(), publicClient.getBalance({ address: relayer.address })]).catch(() => [null, 0n]);
+    if (!fees) return json(res, 200, { relayer: relayer.address, available: false });
+    return json(res, 200, { relayer: relayer.address, minFee: fees[deployment.usdg.toLowerCase()], fees, voucherPrice: VOUCHER_PRICE, available: balance >= RELAYER_FLOOR_WEI });
+  }
   if (req.method !== 'POST') return json(res, 405, { error: 'method_not_allowed' });
   if (!relayer) return json(res, 503, { error: 'relayer_unavailable' });
 
   let tx;
+  let body;
   try {
-    const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+    body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
     if (!body?.proof || (!body?.ext && body.kind !== 'ledger_attest')) throw new Error('Missing proof or ext.');
     tx = (PARSERS[body.kind] ?? parseTransact)(body.proof, body.ext);
+    if (body.voucher === true && tx.kind !== 'transfer') throw new Error('A voucher is bought with a private transfer.');
   } catch (error) {
     return json(res, 400, { error: 'invalid_request', message: error.message });
   }
+  // The in-process scheduler (api/cron/pulls.js) is the service itself: it redeems no voucher.
+  const needsVoucher = VOUCHER_KINDS.has(body.kind) && !req.internal;
+  if (needsVoucher && !(typeof body.voucher === 'string' && /^0x[0-9a-f]{64}$/.test(body.voucher))) return json(res, 402, { error: 'voucher_required' });
+  if (tx.fee) {
+    const base = (await relayFees())[tx.fee.asset];
+    if (!base) return json(res, 402, { error: 'fee_asset_unavailable' }); // e.g. a stock without a live mark
+    const min = base * (body.voucher === true ? VOUCHER_PRICE : 1n);
+    if (tx.fee.amount < min) return json(res, 402, { error: 'fee_too_low', minFee: min });
+  }
+  if ((await publicClient.getBalance({ address: relayer.address })) < RELAYER_FLOOR_WEI) return json(res, 503, { error: 'relayer_unavailable' });
 
   // One operation per spend. A failed attempt may be retried; anything in flight or done is returned.
   const intentHash = keccak256(concatHex(tx.nullifiers.map((n) => toHex(n, { size: 32 }))));
@@ -160,15 +189,32 @@ export default async function handler(req, res) {
     return json(res, 200, { opId: op.op_id, status: op.status, txHash: op.tx_hash, errorCode: op.error_code, duplicate: true });
   }
   const opId = rows[0].op_id;
+  const fail = async (status, code) => {
+    await db.query(`update public.operations set status = 'failed', error_code = $2, updated_at = now() where op_id = $1`, [opId, code]);
+    return json(res, status, { opId, status: 'failed', errorCode: code });
+  };
 
   let gas;
   try {
     const sim = await publicClient.simulateContract({ account: relayer, ...tx.target, args: tx.args });
     gas = sim.request.gas;
   } catch (error) {
-    const code = revertName(error);
-    await db.query(`update public.operations set status = 'failed', error_code = $2, updated_at = now() where op_id = $1`, [opId, code]);
-    return json(res, 422, { opId, status: 'failed', errorCode: code });
+    return fail(422, revertName(error));
+  }
+  // Spent only once the step is known to succeed; bought by a confirmed transfer within the last day.
+  if (needsVoucher) {
+    const { rowCount } = await db.query(
+      `update public.relay_vouchers set used_at = now()
+       where token_hash = $1 and used_at is null and created_at > now() - interval '1 day'
+         and op_id in (select op_id from public.operations where status = 'confirmed')`, [hashToken(body.voucher)]);
+    if (!rowCount) return fail(402, 'voucher_required');
+  }
+  let voucher;
+  if (body.voucher === true) {
+    voucher = toHex(randomBytes(32));
+    // A retried purchase replaces the earlier attempt's token: one confirmed transfer, one voucher.
+    await db.query('delete from public.relay_vouchers where op_id = $1', [opId]);
+    await db.query('insert into public.relay_vouchers (token_hash, op_id) values ($1, $2)', [hashToken(voucher), opId]);
   }
 
   try {
@@ -176,13 +222,13 @@ export default async function handler(req, res) {
     await db.query(`update public.operations set status = 'submitted', tx_hash = $2, nonce = $3, attempts = attempts + 1, updated_at = now() where op_id = $1`, [opId, hash, nonce]);
     // Blocks are fast; wait briefly so most clients get a final answer in one round trip.
     const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 15_000 }).catch(() => null);
-    if (!receipt) return json(res, 202, { opId, status: 'submitted', txHash: hash });
+    if (!receipt) return json(res, 202, { opId, status: 'submitted', txHash: hash, voucher });
     const status = receipt.status === 'success' ? 'confirmed' : 'failed';
     await db.query(`update public.operations set status = $2, error_code = $3, updated_at = now() where op_id = $1`, [opId, status, status === 'failed' ? 'reverted' : null]);
-    return json(res, 200, { opId, status, txHash: hash, block: receipt.blockNumber });
+    return json(res, 200, { opId, status, txHash: hash, block: receipt.blockNumber, voucher });
   } catch (error) {
     // Unknown whether it reached the chain: leave it queued for the reconciler, never resend blindly.
     await db.query(`update public.operations set error_code = $2, updated_at = now() where op_id = $1`, [opId, revertName(error)]);
-    return json(res, 502, { opId, status: 'queued', errorCode: 'send_uncertain' });
+    return json(res, 502, { opId, status: 'queued', errorCode: 'send_uncertain', voucher });
   }
 }

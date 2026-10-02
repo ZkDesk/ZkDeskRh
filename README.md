@@ -77,7 +77,7 @@ ZKdesk is a **client-proved** system:
 | **Deposits and withdrawals** | Address, token and amount | — | Which later spends they fund |
 | **Transfers** | That a transfer happened, its asset, fee and time | The relayer sees the request and its timing | Amount, sender and recipient |
 | **Credit** | Each step's collateral, borrow and repay amounts and slot; desk and batch totals | The desk operator reads each position's collateral, debt and owner key | Which wallet owns a position |
-| **Treasury** | Treasury identifier, action type, allocated or withdrawn amounts, solvency results | The opt-in scheduler, if made Payer, can read that treasury | Balances, members, roles and policy values |
+| **Treasury** | Treasury identifier, action type, allocated or withdrawn amounts, solvency results | The opt-in scheduler, if made Payer, can read that treasury and act as its Payer (pay mandates; transfer below the dual-control threshold) | Balances, members, roles and policy values |
 | **Payments** | Mandate commitments, status changes, each payment's period and timing | The opt-in scheduler, for treasuries that use it | Recipient, terms and amounts |
 
 Slot numbers, treasury identifiers and timing can be correlated. The full model is in the [developer docs](https://zkdesk.tech/docs#privacy).
@@ -193,12 +193,13 @@ The frontend runs without any secrets. Server functions read their configuration
 | `VITE_ZKDESK_CA` | Build | Token contract address shown on the site |
 | `SUPABASE_DB_URL` | Server | Postgres connection for the event mirror |
 | `RPC_URL_SERVER` | Server | Server-side RPC endpoint |
-| `RELAYER_PRIVATE_KEY` | Server | Relayer account that submits private actions |
+| `RELAYER_PRIVATE_KEY` | Server | Relayer account that submits private actions (user relays only) |
+| `KEEPER_PRIVATE_KEY` | Server | Service account for desk epochs, liquidations, price pins and deposit clearing (falls back to the relayer if unset) |
 | `DESK_OPERATOR_SK` | Server | Desk operator key used to prove health epochs and liquidation batches |
 | `SCHEDULER_SEED` | Server | Key seed for the opt-in mandate scheduler |
 | `CRON_SECRET` | Server | Authenticates scheduled invocations |
 
-Mainnet functions read `RPC_URL_SERVER`, `RELAYER_PRIVATE_KEY`, `DESK_OPERATOR_SK` and `SCHEDULER_SEED` with a `MAINNET_` prefix. `SUPABASE_DB_URL` and `CRON_SECRET` are shared, and mainnet data lives in a separate `mainnet` database schema. Contract deployment scripts also read `DEPLOYER_PRIVATE_KEY`, `RELAYER_ADDRESS`, `DESK_OPERATOR_PK_X` and `DESK_OPERATOR_PK_Y` (with `MAINNET_` variants). All names are listed in `.env.example`.
+Mainnet functions read `RPC_URL_SERVER`, `RELAYER_PRIVATE_KEY`, `KEEPER_PRIVATE_KEY`, `DESK_OPERATOR_SK` and `SCHEDULER_SEED` with a `MAINNET_` prefix. `SUPABASE_DB_URL` and `CRON_SECRET` are shared (Vercel Cron sends one secret to every scheduled path; it is compared in constant time), and mainnet data lives in a separate `mainnet` database schema. Contract deployment scripts also read `DEPLOYER_PRIVATE_KEY`, `RELAYER_ADDRESS`, `DESK_OPERATOR_PK_X` and `DESK_OPERATOR_PK_Y` (with `MAINNET_` variants). All names are listed in `.env.example`.
 
 ## Smart contracts
 
@@ -222,7 +223,7 @@ Deployed contract sources are kept byte-identical so they match on-chain verific
 | `CreditDesk.sol` header and `healthy()` | Draws halt after "two missed" epochs | Draws halt once 3 epoch lengths pass without an attestation: 45 minutes in market hours, 3 hours outside them. |
 | `CreditDesk.sol` and `LendingPoolUSDG.sol` reserves | 10% of interest goes to `ZKDStaking`, "held in cash until swept (M6)" | Reserves stay in the lending pool and have no withdrawal path. `ZKDStaking` is deployed on testnet only. |
 | `CreditDesk.sol` `bonusSink` | "sequencer bond pool" | Liquidation bonus and surplus go to the governance Safe on mainnet. |
-| `CreditDesk.sol` fee check | "relayer pays gas for credit steps on testnet" | Credit steps carry no relay fee on either network; the relayer pays their gas. |
+| `CreditDesk.sol` fee check | "relayer pays gas for credit steps on testnet" | Credit steps carry no fee in the proof. Off-chain, the relayer only accepts them with a prepaid voucher (a private self-transfer that pays the fee). |
 | `CreditDesk.sol` `ISaleVenue` | "testnet: MockAMM" | Mainnet sells through `UniswapV3Venue`. |
 | `CreditDesk.sol` header, `circuits/position` | Owner, size, debt and LTV are private | Position contents are encrypted, but the desk operator can read them, and each step's collateral and borrow amounts are public. See [Who sees what](#who-sees-what). |
 | `Marker.sol` `marketOpen` | "Informational market-hours flag" | The flag selects the liquidation price band, the epoch interval and the off-hours liquidation floor. The relayer key sets it. |
@@ -246,7 +247,7 @@ All endpoints are served from the site origin. Mainnet equivalents live under `/
 | Method | Endpoint | Description |
 | --- | --- | --- |
 | `GET` | `/api/transparency` | Public protocol aggregates (CDN-cached for 30 s, then served stale for up to 60 s while revalidating) |
-| `GET` | `/api/relay` | Relayer address, availability and minimum relay fee (USDG base units) |
+| `GET` | `/api/relay` | Relayer address, availability and the live minimum relay fees per asset (base units) |
 | `POST` | `/api/relay` | Submit a proven private action |
 | `GET` | `/api/ops/:id` | Status of a relayed operation |
 | `GET` / `POST` | `/api/requests` | Sealed treasury approval requests. No authentication: anyone can read or post ciphertexts, which only treasury members can open |

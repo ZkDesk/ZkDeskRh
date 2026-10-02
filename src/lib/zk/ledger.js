@@ -19,11 +19,19 @@ export const ATTEST_ASSETS = 6; // circuits/treasury_attest A
 
 const str = (x) => x.toString();
 
+/** Messages a treasury's mailbox key signs; api/requests.js verifies them. ledger: 0x + 64 hex. */
+export const mailboxMessages = {
+  register: (ledger) => `ZKDesk mailbox v1 register ${ledger}`,
+  post: (ledger, ciphertext) => `ZKDesk mailbox v1 post ${ledger} ${keccak256(ciphertext)}`,
+};
+
 /** Ledger keys, shaped like personal keys so wallet.myNotes can open ledger notes. */
 export function ledgerKeys(lsk) {
   const encSecret = hkdf(sha256, hexToBytes(toHex(lsk).slice(2)), new TextEncoder().encode('ZKDesk ledger v1'), new TextEncoder().encode('encrypt'), 32);
   const requestKey = hkdf(sha256, hexToBytes(toHex(lsk).slice(2)), new TextEncoder().encode('ZKDesk ledger v1'), new TextEncoder().encode('request'), 32);
-  return { lsk, owner: ledgerId(lsk), nk: nullifierKey(lsk), encSecret, encPub: encPublicKey(encSecret), requestKey };
+  // secp256k1 key that signs approval-mailbox posts (api/requests.js); members only, like the rest.
+  const mailboxKey = hkdf(sha256, hexToBytes(toHex(lsk).slice(2)), new TextEncoder().encode('ZKDesk ledger v1'), new TextEncoder().encode('mailbox'), 32);
+  return { lsk, owner: ledgerId(lsk), nk: nullifierKey(lsk), encSecret, encPub: encPublicKey(encSecret), requestKey, mailboxKey };
 }
 
 /** config: {owner, treasurer, payer, auditor (owner pks), rolesSalt, allocCap, dualThreshold, policySalt}. */

@@ -38,7 +38,7 @@ function handlerIn(env, file, req) {
   check('relayer down: GET reports unavailable', get.body.available === false);
   check('relayer down: POST answers 503', post.status === 503 && post.body.error === 'relayer_unavailable');
   const keys = deriveKeys(await privateKeyToAccount(process.env.DEPLOYER_PRIVATE_KEY).signTypedData(keyRequest(chain.id)));
-  const client = createClient({ publicClient: createPublicClient({ chain, transport: http() }), keys, prove: null, relay: async () => get.body });
+  const client = createClient({ publicClient: createPublicClient({ chain, transport: http(process.env.RPC_URL_SERVER || undefined) }), keys, prove: null, relay: async () => get.body });
   const err = await client.send({ amount: 1n, recipient: '0x000000000000000000000000000000000000dEaD' }).then(() => null, (e) => e.message);
   check('relayer down: the client refuses clearly', /relayer is unavailable/.test(err ?? ''), err);
 }

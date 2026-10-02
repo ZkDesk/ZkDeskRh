@@ -13,14 +13,25 @@ const { chromium } = await import(process.env.PLAYWRIGHT);
 const [base = 'https://zkdesk.tech', shots = '.'] = process.argv.slice(2);
 const key = readFileSync('.env.local', 'utf8').match(/DEPLOYER_PRIVATE_KEY="([^"]+)"/)[1];
 const account = privateKeyToAccount(key);
-const wallet = createWalletClient({ account, chain, transport: http() });
+const wallet = createWalletClient({ account, chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
 const rpc = (method, params) => wallet.request({ method, params });
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+// RPC_URL_SERVER (a local fork): the page's and its workers' chain reads go there too.
+if (process.env.RPC_URL_SERVER) {
+  await page.context().route(`${chain.rpcUrls.default.http[0]}**`, async (route) => {
+    if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'POST' } });
+    const r = await fetch(process.env.RPC_URL_SERVER, { method: 'POST', headers: { 'content-type': 'application/json' }, body: route.request().postData() });
+    await route.fulfill({ status: r.status, headers: { 'content-type': 'application/json', 'access-control-allow-origin': '*' }, body: await r.text() });
+  });
+}
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
 page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+page.on('requestfailed', (r) => errors.push(`request failed: ${r.url().slice(0, 120)} ${r.failure()?.errorText}`));
+page.on('worker', (w) => w.on('console', (m) => { if (m.type() === 'error') errors.push(`worker: ${m.text()}`); }));
+page.context().on('response', (r) => { if (r.status() >= 400) errors.push(`HTTP ${r.status()} ${r.request().method()} ${r.url().slice(0, 100)}`); });
 await page.exposeFunction('__wallet', async (method, params) => {
   if (method === 'eth_requestAccounts' || method === 'eth_accounts') return [account.address];
   if (method === 'eth_chainId') return '0x' + chain.id.toString(16);
@@ -104,7 +115,7 @@ async function action(button, fill, scope = page) {
 }
 
 await step('open testnet dashboard', async () => {
-  await page.goto(`${base}/dashboard?mode=testnet&view=treasury`, { waitUntil: 'networkidle' });
+  await page.goto(`${base}/dashboard?mode=testnet&network=testnet&view=treasury`, { waitUntil: 'networkidle' });
   await page.getByText('Connect MetaMask on Robinhood Chain testnet').waitFor();
   await page.screenshot({ path: `${shots}/testnet-1-connect.png` });
 });
@@ -204,7 +215,7 @@ await step('receipt: export a proof from the personal workspace and verify it', 
   await page.fill('.desk-modal input[type="text"]', '0x000000000000000000000000000000000000ba4b');
   const [download] = await Promise.all([page.waitForEvent('download', { timeout: 120_000 }), page.getByRole('button', { name: 'Export receipt proof' }).click()]);
   const record = JSON.parse(readFileSync(await download.path(), 'utf8'));
-  const ok = await verifyReceipt(createPublicClient({ chain, transport: http() }), record);
+  const ok = await verifyReceipt(createPublicClient({ chain, transport: http(process.env.RPC_URL_SERVER || undefined) }), record);
   console.log(`    receipt: amount ${record.proof.amount} disclosed, owner ${record.proof.owner}; on-chain verifyReceipt ${ok}`);
   if (!ok) throw new Error('receipt did not verify');
   await page.screenshot({ path: `${shots}/testnet-8-receipt.png`, fullPage: true });

@@ -5,7 +5,7 @@
 // Keys never reach this page: the account worker (lib/zk/account.worker.js) derives them from the
 // wallet signature and holds them with the client and prover; it is terminated on wallet change.
 import { isAddress, parseUnits } from 'viem';
-import { abis, apiBase, deployment, MAINNET, mainnetReady, minRelayFee, network, NETWORK_NAME, stocks, USD_SYMBOL } from '../../lib/chain/config.js';
+import { abis, apiBase, deployment, MAINNET, mainnetReady, minRelayFee, network, NETWORK_NAME, payableFee, stocks, USD_SYMBOL } from '../../lib/chain/config.js';
 import { connectWallet, onWalletChange, publicClient } from '../../lib/chain/wallet.js';
 import { keyRequest } from '../../lib/zk/keys.js';
 import { debtOf, friendly, valueOf } from '../../lib/zk/client.js';
@@ -55,7 +55,7 @@ async function readMarket() {
     Promise.all(SYMBOLS.map((s) => read(deployment.marker, abis.marker, 'current', [stocks[s].token]))),
     read(deployment.desk, abis.desk, 'index'),
     read(deployment.lending, abis.lending, 'cash'),
-    relay(null).catch(() => ({ available: false, minFee: '10000' })),
+    relay(null).catch(() => ({ available: false })),
     read(deployment.desk, abis.desk, 'lastAttestedAt'),
     read(deployment.desk, abis.desk, 'healthy'),
     read(deployment.desk, abis.desk, 'epoch'),
@@ -63,7 +63,9 @@ async function readMarket() {
   return {
     desk: { epoch: Number(epoch), attestedAt: Number(lastAttestedAt) * 1000, healthy },
     marks: Object.fromEntries(SYMBOLS.map((s, i) => [plain(s), prices[i][0]])),
-    index, liquidity, fee: BigInt(relayInfo.minFee ?? 10000), relayAvailable: relayInfo.available,
+    index, liquidity, relayAvailable: relayInfo.available,
+    // What the client pays: the live gas-covering minimum plus headroom (api/_lib/fees.js).
+    fee: payableFee(relayInfo.minFee ?? minRelayFee(deployment.usdg)), shareFee: payableFee(relayInfo.fees?.[deployment.lending.toLowerCase()] ?? minRelayFee(deployment.lending)),
     shareValue: (shares) => (shares ? read(deployment.lending, abis.lending, 'previewRedeem', [shares]) : 0n),
   };
 }
@@ -194,7 +196,7 @@ async function refresh() {
       ledger: L && { scheduled: parseZkAddress(deployment.scheduler ?? '')?.owner === L.config.payer, name: L.name, allocCap: usd(L.config.allocCap), dualThreshold: usd(L.config.dualThreshold), attested: L.attested && { epoch: L.attested.epoch, liabilities: usd(L.attested.liabilities) } },
       pending: usd(balance(deployment.usdg, 'pending')), stockBalances, shares: shares.toString(),
       marks: Object.fromEntries(Object.entries(m.marks).map(([k, v]) => [k, Number(v) / 1e8])),
-      liquidity: usd(m.liquidity), fee: usd(m.fee), syncedAt: Date.now(), desk: m.desk,
+      liquidity: usd(m.liquidity), fee: usd(m.fee), shareFee: m.shareFee.toString(), syncedAt: Date.now(), desk: m.desk,
     },
   }));
 }
@@ -220,7 +222,7 @@ function validate(state, type, values) {
   if (needAmount && !(Number.isFinite(amount) && amount > 0 && amount <= 1e9)) errors.amount = 'Enter an amount greater than zero.';
   const position = state.positions.find((p) => p.id === values.id);
   const ledger = m.ledger;
-  const fee = ledger ? 0 : m.fee; // treasury actions are relayed without a fee
+  const fee = ledger ? 0 : m.fee; // treasury steps take their relay fee from the member's personal balance
   const zkOrBlank = (key) => { if (values[key]?.trim() && !parseZkAddress(values[key])) errors[key] = 'Enter a ZKdesk address (zkd:…) or leave blank for yourself.'; };
   if (ledger && ['allocate', 'deallocate', 'deposit'].includes(type) && !['Owner', 'Treasurer'].includes(state.role)) return { general: `${state.role} cannot ${type === 'deposit' ? 'add funds' : type} in this treasury.` };
   if (ledger && ['send', 'withdraw'].includes(type) && !['Owner', 'Treasurer', 'Payer'].includes(state.role)) return { general: 'The Auditor role can view the treasury but cannot move funds.' };
@@ -358,7 +360,7 @@ async function submit(state, type, values) {
     case 'allocate': await client.lend(usdg(values.amount)); break;
     case 'deallocate': {
       const all = BigInt(state.meta.shares);
-      const shares = Number(values.amount) >= state.vault - 1e-6 ? all - minRelayFee(deployment.lending) : (all * usdg(values.amount)) / usdg(state.vault);
+      const shares = Number(values.amount) >= state.vault - 1e-6 ? all - BigInt(state.meta.shareFee) : (all * usdg(values.amount)) / usdg(state.vault);
       await client.redeem(shares);
       break;
     }

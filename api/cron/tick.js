@@ -9,7 +9,7 @@
 //   rates        — hourly CreditDesk.accrue() (the public-curve rate publisher)
 //   snapshots    — solvency per asset and lending pool state, hourly and after new events
 import { parseAbi } from 'viem';
-import { abis, db, deployment, publicClient, relayer, sendFromRelayer, revertName, json } from '../_lib/server.js';
+import { abis, cronAuthorized, db, deployment, keeper, publicClient, relayer, sendFrom, revertName, json } from '../_lib/server.js';
 
 const EVENTS = parseAbi([
   'event NewCommitment(uint256 indexed commitment, uint256 index)',
@@ -95,10 +95,11 @@ async function index() {
   }
 }
 
-async function send(label, target, functionName, args = []) {
+/** Service transactions come from the keeper (the relayer until KEEPER_PRIVATE_KEY is set). */
+async function send(label, target, functionName, args = [], from = keeper) {
   try {
-    const sim = await publicClient.simulateContract({ account: relayer, ...target, functionName, args });
-    return { [label]: (await sendFromRelayer(functionName, args, sim.request.gas, target)).hash };
+    const sim = await publicClient.simulateContract({ account: from, ...target, functionName, args });
+    return { [label]: (await sendFrom(from, functionName, args, sim.request.gas, target)).hash };
   } catch (error) {
     return { [label]: `skipped: ${revertName(error)}` };
   }
@@ -139,6 +140,15 @@ async function reconcile() {
   return { checked: rows.length, updated };
 }
 
+/** Drops spent or expired relay vouchers and approval requests past their 14-day window. */
+async function prune() {
+  const [v, r] = await Promise.all([
+    db.query(`delete from public.relay_vouchers where used_at is not null or created_at < now() - interval '1 day'`),
+    db.query(`delete from public.approval_requests where created_at < now() - interval '14 days'`),
+  ]);
+  return { vouchers: v.rowCount, requests: r.rowCount };
+}
+
 /** NYSE regular session, weekdays 09:30-16:00 America/New_York (holidays not modelled). */
 export function marketOpenAt(date = new Date()) {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date).map((p) => [p.type, p.value]));
@@ -149,7 +159,12 @@ export function marketOpenAt(date = new Date()) {
 async function marker() {
   const out = {};
   const open = marketOpenAt();
-  if ((await read(deployment.marker, abis.marker, 'marketOpen')) !== open) Object.assign(out, await send('marketOpen', { address: deployment.marker, abi: abis.marker }, 'setMarketOpen', [open]));
+  if ((await read(deployment.marker, abis.marker, 'marketOpen')) !== open) {
+    // Only Marker.pinner may set the flag: the keeper once governance moves it there, else the relayer.
+    const pinner = await read(deployment.marker, abis.marker, 'pinner');
+    const from = pinner.toLowerCase() === keeper.address.toLowerCase() ? keeper : relayer;
+    Object.assign(out, await send('marketOpen', { address: deployment.marker, abi: abis.marker }, 'setMarketOpen', [open], from));
+  }
   if (!deployment.feedKeeper) {
     // Mainnet: real Chainlink feeds; pin a stock only when its feed has a new round.
     const stale = [];
@@ -173,6 +188,9 @@ async function marker() {
 async function rates() {
   const last = Number(await read(deployment.desk, abis.desk, 'lastAccrual'));
   if (now() - last < 3600) return 'fresh';
+  // Testnet: the mock yield vault quotes without its unminted yield; accruing hourly keeps a quote
+  // within the treasury's 0.01% slippage slack.
+  if (deployment.feedKeeper) await send('vault', { address: deployment.vault, abi: abis.vault }, 'accrue');
   return send('accrue', { address: deployment.desk, abi: abis.desk }, 'accrue');
 }
 
@@ -197,14 +215,15 @@ async function snapshots() {
 }
 
 export default async function handler(req, res) {
-  if (!process.env.CRON_SECRET || req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) return json(res, 401, { error: 'unauthorized' });
+  if (!cronAuthorized(req)) return json(res, 401, { error: 'unauthorized' });
   const report = { indexed: await index() };
-  if (relayer) {
+  if (keeper) {
     report.cleared = await clearDue();
     report.marker = await marker();
     report.rates = await rates();
   }
   report.reconciled = await reconcile();
+  report.pruned = await prune();
   // Hourly, and on any tick that indexed new events, so a deposit shows within about a minute of clearing.
   if (new Date().getUTCMinutes() === 0 || report.indexed?.logs > 0 || req.query?.snapshot === '1') report.snapshots = await snapshots();
   return json(res, 200, report);

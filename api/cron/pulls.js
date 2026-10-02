@@ -4,7 +4,7 @@
 // period of every active mandate that is due and unpaid, at the mandate cap, through the same
 // mandate_pull proof and relay as a person would (cap, period, expiry and one pull per period are
 // enforced by the circuit and the MandateRegistry). Holds SCHEDULER_SEED (Vercel env only).
-import { cachedProver, deployment, json, publicClient, revertName, secret } from '../_lib/server.js';
+import { cachedProver, cronAuthorized, deployment, json, publicClient, revertName, secret } from '../_lib/server.js';
 import { deriveKeys } from '../../src/lib/zk/keys.js';
 import { createClient } from '../../src/lib/zk/client.js';
 import { createProver } from '../../src/lib/zk/prover.js';
@@ -15,11 +15,11 @@ import pullCircuit from '../../src/lib/zk/artifacts/mandate_pull.json' with { ty
 const MAX_PULLS = 3; // per run: proofs take ~10-50 s in a Function
 
 /** In-process relay (the same handler the browser calls). */
-const relay = (body) => new Promise((resolve) => relayHandler(body ? { method: 'POST', body } : { method: 'GET' }, { statusCode: 200, setHeader() {}, end(b) { resolve(JSON.parse(b)); } }));
+const relay = (body) => new Promise((resolve) => relayHandler(body ? { method: 'POST', body, internal: true } : { method: 'GET' }, { statusCode: 200, setHeader() {}, end(b) { resolve(JSON.parse(b)); } }));
 
 /** One scheduler run. Exported for scripts/ops. */
 export async function runPulls({ keys, prove, log = () => {} }) {
-  const client = createClient({ publicClient, keys, prove, relay, onStatus: log });
+  const client = createClient({ publicClient, keys, prove, relay, onStatus: log, vouchers: false });
   await client.sync();
   const t = (await publicClient.getBlock({ blockTag: 'latest' })).timestamp;
   const report = { treasuries: 0, due: 0, paid: [], failed: [] };
@@ -50,7 +50,7 @@ const prove = async (kind, witness) => {
 };
 
 export default async function handler(req, res) {
-  if (!process.env.CRON_SECRET || req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) return json(res, 401, { error: 'unauthorized' });
+  if (!cronAuthorized(req)) return json(res, 401, { error: 'unauthorized' });
   if (!secret('SCHEDULER_SEED') || !deployment.mandates) return json(res, 503, { error: 'scheduler_unavailable' });
   try {
     return json(res, 200, await runPulls({ keys: deriveKeys(secret('SCHEDULER_SEED')), prove }));

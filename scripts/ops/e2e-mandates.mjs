@@ -25,8 +25,8 @@ const relay = (body) => call(relayHandler, body ? { method: 'POST', body } : { m
 const tick = () => call(tickHandler, { method: 'GET', query: {}, headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } });
 
 const account = privateKeyToAccount(process.env.DEPLOYER_PRIVATE_KEY);
-const publicClient = createPublicClient({ chain, transport: http() });
-const walletClient = createWalletClient({ account, chain, transport: http() });
+const publicClient = createPublicClient({ chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
+const walletClient = createWalletClient({ account, chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
 const provers = Object.fromEntries(await Promise.all(['transact', 'role_auth', 'mandate_auth', 'mandate_pull', 'receipt'].map(async (k) => [k, await createProver(JSON.parse(readFileSync(`src/lib/zk/artifacts/${k}.json`, 'utf8')))])));
 const prove = (kind, witness) => provers[kind].prove(witness);
 const member = (name, keys, wallet = {}) => ({ name, keys, client: createClient({ publicClient, keys, prove, relay, onStatus: (m) => console.log(`    · ${name}: ${m}`), ...wallet }) });
@@ -45,6 +45,9 @@ const L = async (m, id) => { await m.client.sync(); return m.client.ledgers().fi
 const M = async (m, id, commit) => (m.client.mandates(await L(m, id))).find((x) => x.commit === commit);
 const now = Math.floor(Date.now() / 1000);
 
+// Payment steps pay their relay voucher from the acting member's personal private balance.
+await payer.client.sync();
+for (let i = 0; i < 3 && payer.client.balance(deployment.usdg) < 1000_000000n; i++) { await step('Owner sends the Payer 400 tUSDG privately for relay fees', () => owner.client.send({ amount: 400_000000n, to: addr(payer) })); await payer.client.sync(); }
 const id = await step('Owner creates a treasury with a separate Payer (dual control above 100)', () => owner.client.createLedger({ name: 'Payroll e2e', payer: addr(payer), allocCap: 1000_000000n, dualThreshold: 100_000000n }));
 const lo = await L(owner, id);
 await step('Owner funds it: 500 tUSDG and 2 tSPY from the wallet', async () => {

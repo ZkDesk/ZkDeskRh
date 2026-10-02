@@ -181,8 +181,9 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
             <li>It simulates the call. A simulation failure is returned immediately with the contract's error and nothing is sent.</li>
             <li>It submits the transaction and waits briefly for the receipt; longer confirmations continue in the background and are reconciled automatically.</li>
           </ol>
-          <Table head={['Spent asset', 'Minimum relay fee']} rows={[['USDG', '0.01 USDG'], ['Lending shares', '0.01 share (about $0.01)'], ['Stock tokens', '0.00003 share (about one cent)'], ['Credit, treasury and payment steps', 'No fee']]} />
-          <p>The fee is paid privately from the spent asset as part of the proof. Operation status can be polled through the <a href="#api">public API</a>.</p>
+          <p>Every relay pays for its gas. The minimum fee is the gas a relayed step can use (5.5M) at the current gas price, valued at the ETH price and converted into the spent asset, and never below a floor: 0.05 USDG, 0.05 lending share or 0.00015 of a stock token. The app pays 25% above the quoted minimum so that a proof made while gas moves is still accepted.</p>
+          <Table head={['Step', 'How the fee is paid']} rows={[['Transfer, withdrawal, lend, redeem', 'Privately, from the spent asset, as part of the proof'], ['Credit, treasury and payment steps', 'Their proofs have no fee field, so the app first buys a one-use voucher with a private self-transfer that pays twice the fee (its own gas and the step\'s). The voucher is valid for a day once that transfer confirms.']]} />
+          <p>User relays stop while the relayer holds less than 0.002 ETH. Desk epochs, liquidations, price pins and deposit clearing are sent from a separate keeper key, so relay traffic cannot starve them. The relayer reads no IP address; spam is limited by the fee itself. Operation status can be polled through the <a href="#api">public API</a>.</p>
         </Section>
 
         <Section id="balance" eyebrow="Product guides" title="Private balance">
@@ -250,7 +251,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
             ['Expiry', 'After this date no payment is possible'],
             ['Invoice reference', 'Optional; bound into the mandate'],
           ]} />
-          <p>Payments run from a member's browser with <em>Pay now</em>, at most once per period. To automate them, make the ZKdesk scheduler the treasury's Payer; due periods are then paid hourly at the cap. Mandates can be paused, resumed and revoked.</p>
+          <p>Payments run from a member's browser with <em>Pay now</em>, at most once per period. To automate them, make the ZKdesk scheduler the treasury's Payer; due periods are then paid hourly at the cap. Making the scheduler Payer gives whoever holds its key (the ZKdesk service) the Payer role: it can pay committed mandates and make transfers below the dual-control threshold. The service only ever proves mandate payments, but that is a policy of the code, not a limit of the key. Mandates can be paused, resumed and revoked.</p>
           <h3>Receipts</h3>
           <p>Every payment adds a leaf to the receipt tree. The recipient can prove from Activity that they were paid, addressed to one verifier's address, optionally disclosing the amount and themselves. The proof is bound to that verifier and can be checked independently against the chain.</p>
         </Section>
@@ -274,7 +275,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
             ['Deposits and withdrawals', 'Amount, token and public address at the edge of the pool', '—', 'Which later spends they fund'],
             ['Transfers', 'That a transaction occurred, its asset, fee and time', 'The relayer sees the request and its timing', 'Amount, sender and recipient'],
             ['Credit', 'Each step\'s collateral, borrow and repay amounts and slot; desk totals per epoch; batch totals', 'The desk operator reads each position\'s collateral, debt and owner key', 'Which wallet owns a position'],
-            ['Treasury', 'The treasury identifier, action type and allocated or withdrawn amounts; solvency statement results', 'The opt-in scheduler, if made Payer, can read that treasury', 'Balances, members, roles and policy values'],
+            ['Treasury', 'The treasury identifier, action type and allocated or withdrawn amounts; solvency statement results', 'The opt-in scheduler, if made Payer, can read that treasury and act as its Payer', 'Balances, members, roles and policy values'],
             ['Payments', 'Mandate commitments, status changes, each payment\'s period and timing', 'The opt-in scheduler, for treasuries that use it', 'Recipient, terms and amounts'],
           ]} />
           <Callout title="Known correlations">Slot numbers, treasury identifiers, mandate commitments and transaction timing are public and can be correlated. Deposits and withdrawals of unusual amounts are easier to link. Waiting between deposit and use, and using round amounts, improves privacy.</Callout>
@@ -350,7 +351,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
   "operations": { "relayerStatus": "ok", "timelockDelay": 86400, ... }
 }`}</Code>
           <h3><span className="zd-method get">GET</span> /api/mainnet/relay</h3>
-          <p>Relayer address, availability and the minimum relay fee in USDG base units: <C>{'{ relayer, minFee, available }'}</C>.</p>
+          <p>Relayer address, availability and the live minimum relay fees in base units, per asset: <C>{'{ relayer, minFee, fees, voucherPrice, available }'}</C>. <C>minFee</C> is the USDG minimum.</p>
           <h3><span className="zd-method post">POST</span> /api/mainnet/relay</h3>
           <p>Submits a private action. The body is produced by the ZKdesk client library and contains a <C>kind</C>, the <C>proof</C> with its public inputs, and <C>ext</C> data (encrypted outputs, recipient, fee). The proof is the only authorization.</p>
           <Table head={['Status', 'Meaning']} rows={[

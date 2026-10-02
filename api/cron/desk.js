@@ -7,7 +7,8 @@
 // Nothing is stored off-chain; the indexer mirrors Attested / Liquidated events.
 // Fallback when Functions are too slow or down: node scripts/ops/desk.mjs
 import { parseAbi, parseAbiItem } from 'viem';
-import { abis, cachedProver, deployment, publicClient, relayer, secret, sendFromRelayer, revertName, json } from '../_lib/server.js';
+import { abis, cachedProver, cronAuthorized, deployment, keeper, publicClient, secret, sendFromKeeper, revertName, json } from '../_lib/server.js';
+import { QUOTER } from '../_lib/fees.js';
 import { createProver } from '../../src/lib/zk/prover.js';
 import { buildHealth, planLiquidations, replaySlots, CLASSES } from '../../src/lib/zk/desk.js';
 import healthCircuit from '../../src/lib/zk/artifacts/health_epoch.json' with { type: 'json' };
@@ -19,13 +20,8 @@ const EVENTS = {
 };
 const AMM = parseAbi(['function quote(address) view returns (uint256)']);
 const VENUE = parseAbi(['function feeOf(address) view returns (uint24)']);
-// Uniswap v3 QuoterV2 on Robinhood Chain mainnet (developers.uniswap.org, v3 deployments).
-const QUOTER = {
-  address: '0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7',
-  abi: parseAbi(['function quoteExactInputSingle((address tokenIn, address tokenOut, uint256 amountIn, uint24 fee, uint160 sqrtPriceLimitX96)) returns (uint256 amountOut, uint160, uint32, uint256)']),
-};
 const RANGE = 50_000n;
-const MIN_RELAYER_WEI = 5n * 10n ** 14n; // 0.0005 ETH ≈ 10 epochs
+const MIN_KEEPER_WEI = 5n * 10n ** 14n; // 0.0005 ETH ≈ 10 epochs
 const desk = { address: deployment.desk, abi: abis.desk };
 const read = (address, abi, functionName, args = []) => publicClient.readContract({ address, abi, functionName, args });
 
@@ -52,8 +48,8 @@ async function classes() {
 }
 
 async function submit(functionName, args) {
-  const sim = await publicClient.simulateContract({ account: relayer, ...desk, functionName, args });
-  const { hash } = await sendFromRelayer(functionName, args, sim.request.gas, desk);
+  const sim = await publicClient.simulateContract({ account: keeper, ...desk, functionName, args });
+  const { hash } = await sendFromKeeper(functionName, args, sim.request.gas, desk);
   const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 60_000 });
   if (receipt.status !== 'success') throw new Error(`${functionName} reverted: ${hash}`);
   return { hash, block: receipt.blockNumber, gas: receipt.gasUsed };
@@ -76,8 +72,8 @@ export async function salePrice(asset, amount) {
 
 /** One desk run. prove(kind, witness) -> {proof}. Exported for scripts/ops/desk.mjs. */
 export async function runDesk({ operatorSk, prove, log = () => {} }) {
-  // Epochs share the relayer with user relays; leave it gas for those (draws halt if epochs stop).
-  if ((await publicClient.getBalance({ address: relayer.address })) < MIN_RELAYER_WEI) throw Object.assign(new Error('relayer_low_balance'), { shortMessage: 'relayer_low_balance' });
+  // The keeper falls back to the relayer key until KEEPER_PRIVATE_KEY is set; keep a margin either way.
+  if ((await publicClient.getBalance({ address: keeper.address })) < MIN_KEEPER_WEI) throw Object.assign(new Error('keeper_low_balance'), { shortMessage: 'keeper_low_balance' });
   const head = await publicClient.getBlockNumber({ cacheTime: 0 });
   const [events, cls, index, marketOpen] = await Promise.all([
     deskEvents(head), classes(), read(deployment.desk, abis.desk, 'index'), read(deployment.marker, abis.marker, 'marketOpen'),
@@ -126,8 +122,8 @@ export async function runDesk({ operatorSk, prove, log = () => {} }) {
 const prove = cachedProver(createProver, { health_epoch: healthCircuit, liquidate: liquidateCircuit });
 
 export default async function handler(req, res) {
-  if (!process.env.CRON_SECRET || req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) return json(res, 401, { error: 'unauthorized' });
-  if (!relayer || !secret('DESK_OPERATOR_SK')) return json(res, 503, { error: 'desk_operator_unavailable' });
+  if (!cronAuthorized(req)) return json(res, 401, { error: 'unauthorized' });
+  if (!keeper || !secret('DESK_OPERATOR_SK')) return json(res, 503, { error: 'desk_operator_unavailable' });
   // Epochs are 15 minutes in market hours and hourly off-hours.
   const open = await read(deployment.marker, abis.marker, 'marketOpen');
   if (!open && new Date().getUTCMinutes() >= 15 && req.query?.force !== '1') return json(res, 200, { skipped: 'off-hours epoch is hourly' });

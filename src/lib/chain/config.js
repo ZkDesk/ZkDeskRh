@@ -41,15 +41,19 @@ export const abis = { pool: poolAbi, usdg: usdgAbi, desk: deskAbi, lending: lend
 export const explorerTx = (hash) => `${chain.blockExplorers.default.url}/tx/${hash}`;
 
 /**
- * Minimum relay fee, in base units of the spent asset (≈1 cent): 0.01 USDG; 0.01 lending share
- * (12 decimals, ≈1 USDG each); 0.00003 of a stock token (18 decimals, ≈$0.01 at $350).
+ * Floor of the relay fee, in base units of the spent asset (≈5 cents): 0.05 USDG; 0.05 lending share
+ * (12 decimals, ≈1 USDG each); 0.00015 of a stock token (18 decimals, ≈5 cents at $350). The live
+ * minimum covers the relay's gas and is quoted by GET /api/relay (api/_lib/fees.js).
  */
 export const minRelayFee = (asset) => {
   const a = String(asset).toLowerCase();
-  if (a === deployment.lending.toLowerCase()) return 10n ** 10n;
-  if (Object.values(deployment.stocks).some((s) => s.token.toLowerCase() === a)) return 3n * 10n ** 13n;
-  return 10_000n;
+  if (a === deployment.lending.toLowerCase()) return 5n * 10n ** 10n;
+  if (Object.values(deployment.stocks).some((s) => s.token.toLowerCase() === a)) return 15n * 10n ** 13n;
+  return 50_000n;
 };
+
+/** What a client pays against the live minimum: 25% above it, so a proof survives a gas-price move. */
+export const payableFee = (min) => (BigInt(min) * 5n + 3n) / 4n;
 
 /** Collateral classes: symbol -> {token, feed, ltvBps, liqBps}, plus a reverse lookup. */
 export const stocks = deployment.stocks;

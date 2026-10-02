@@ -9,7 +9,7 @@ for (const line of readFileSync('.env.local', 'utf8').split(/\r?\n/)) {
   const m = line.match(/^([A-Z_]+)="?(.*?)"?$/);
   if (m && !(m[1] in process.env)) process.env[m[1]] = m[2];
 }
-const { chain, deployment, abis } = await import('../../src/lib/chain/config.js');
+const { chain, deployment, abis, payableFee } = await import('../../src/lib/chain/config.js');
 const { deriveKeys, keyRequest } = await import('../../src/lib/zk/keys.js');
 const { createClient, debtOf } = await import('../../src/lib/zk/client.js');
 const { createProver } = await import('../../src/lib/zk/prover.js');
@@ -21,8 +21,8 @@ const relay = (body) => call(relayHandler, body ? { method: 'POST', body } : { m
 const tick = () => call(tickHandler, { method: 'GET', query: {}, headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } });
 
 const account = privateKeyToAccount(process.env.DEPLOYER_PRIVATE_KEY);
-const publicClient = createPublicClient({ chain, transport: http() });
-const walletClient = createWalletClient({ account, chain, transport: http() });
+const publicClient = createPublicClient({ chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
+const walletClient = createWalletClient({ account, chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
 const keys = deriveKeys(await account.signTypedData(keyRequest(chain.id)));
 const provers = { transact: await createProver(JSON.parse(readFileSync('src/lib/zk/artifacts/transact.json', 'utf8'))), position: await createProver(JSON.parse(readFileSync('src/lib/zk/artifacts/position.json', 'utf8'))) };
 const prove = (kind, witness) => provers[kind].prove(witness);
@@ -60,7 +60,7 @@ await step('withdraw 3 tSPY collateral', () => client.credit({ symbol: 'tSPY', p
 const index = await publicClient.readContract({ address: deployment.desk, abi: abis.desk, functionName: 'index' });
 await step(`close: repay ${usd(debtOf(pos.debtScaled, index))}, all collateral back`, () => client.credit({ symbol: 'tSPY', position: pos, repay: debtOf(pos.debtScaled, index), collOut: pos.collateral }));
 await show();
-await step('redeem all lender shares privately (minus the relay fee)', () => client.redeem(client.balance(deployment.lending) - 10_000n));
+await step('redeem all lender shares privately (minus the relay fee)', async () => client.redeem(client.balance(deployment.lending) - payableFee((await relay(null)).fees[deployment.lending.toLowerCase()])));
 await show();
 const t = await tick();
 console.log(`cron after: indexed ${JSON.stringify(t.indexed)}`);

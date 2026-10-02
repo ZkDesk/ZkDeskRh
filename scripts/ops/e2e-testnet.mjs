@@ -15,8 +15,8 @@ import circuit from '../../src/lib/zk/artifacts/transact.json' with { type: 'jso
 
 const env = Object.fromEntries(readFileSync('.env.local', 'utf8').split(/\r?\n/).filter((l) => /^[A-Z_]+=/.test(l)).map((l) => { const i = l.indexOf('='); return [l.slice(0, i), l.slice(i + 1).replace(/^"|"$/g, '')]; }));
 const account = privateKeyToAccount(env.DEPLOYER_PRIVATE_KEY);
-const client = createPublicClient({ chain, transport: http() });
-const wallet = createWalletClient({ account, chain, transport: http() });
+const client = createPublicClient({ chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
+const wallet = createWalletClient({ account, chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
 const USDG = BigInt(deployment.usdg);
 const u = (x) => `${Number(x) / 1e6} tUSDG`;
 

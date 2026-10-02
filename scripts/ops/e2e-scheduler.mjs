@@ -20,8 +20,8 @@ const { runPulls } = await import('../../api/cron/pulls.js');
 
 const call = (handler, req) => new Promise((resolve) => handler(req, { statusCode: 200, setHeader() {}, end(b) { resolve(JSON.parse(b)); } }));
 const relay = (body) => call(relayHandler, body ? { method: 'POST', body } : { method: 'GET' });
-const publicClient = createPublicClient({ chain, transport: http() });
-const provers = Object.fromEntries(await Promise.all(['role_auth', 'mandate_auth', 'mandate_pull'].map(async (k) => [k, await createProver(JSON.parse(readFileSync(`src/lib/zk/artifacts/${k}.json`, 'utf8')))])));
+const publicClient = createPublicClient({ chain, transport: http(process.env.RPC_URL_SERVER || undefined) });
+const provers = Object.fromEntries(await Promise.all(['transact', 'role_auth', 'mandate_auth', 'mandate_pull'].map(async (k) => [k, await createProver(JSON.parse(readFileSync(`src/lib/zk/artifacts/${k}.json`, 'utf8')))])));
 const prove = (kind, witness) => provers[kind].prove(witness);
 const ownerKeys = deriveKeys(await privateKeyToAccount(process.env.DEPLOYER_PRIVATE_KEY).signTypedData(keyRequest(chain.id)));
 const owner = createClient({ publicClient, keys: ownerKeys, prove, relay, onStatus: (m) => console.log(`    · Owner: ${m}`) });

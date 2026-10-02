@@ -10,8 +10,9 @@ if (!url) throw new Error('SUPABASE_DB_URL is not set.');
 // TLS is verified against the pinned Supabase Root 2021 CA (not in Node's default store).
 const db = new pg.Client({ connectionString: url, ssl: { ca } });
 await db.connect();
-const schema = process.argv[2] === 'mainnet' ? 'mainnet' : 'public';
-const sql = (text) => (schema === 'public' ? text : text.replace(/\bpublic\./g, 'mainnet.').replace(/table_schema = 'public'/g, "table_schema = 'mainnet'"));
+// Any other lowercase name is a throwaway schema for fork tests (api/_lib/server.js DB_SCHEMA).
+const schema = /^[a-z_]+$/.test(process.argv[2] ?? '') ? process.argv[2] : 'public';
+const sql = (text) => (schema === 'public' ? text : text.replace(/\bpublic\./g, `${schema}.`).replace(/table_schema = 'public'/g, `table_schema = '${schema}'`));
 await db.query(`create schema if not exists ${schema}`);
 await db.query(sql('create table if not exists public._migrations (name text primary key, applied_at timestamptz not null default now())'));
 await db.query(sql('alter table public._migrations enable row level security'));

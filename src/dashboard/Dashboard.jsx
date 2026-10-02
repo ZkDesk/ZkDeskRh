@@ -182,7 +182,9 @@ function TransparencyView({ data }) {
   if (data.error) return <Empty title="Public data is unavailable" detail={data.error} />;
   const { desk, lending, solvency, treasuries, payments, operations: ops } = data;
   const backed = solvency.filter((a) => a.ok).length;
-  const gas = { ok: ['blue', 'Gas healthy'], low: ['', 'Gas low: top up soon'], critical: ['', 'Gas critical: desk epochs paused'] }[ops.relayerStatus];
+  // The relayer floor stops user relays; the keeper floor stops desk epochs (the same key until a keeper is set).
+  const gas = ops.keeperStatus === 'critical' ? ['', 'Gas critical: desk epochs paused'] : ops.relayerStatus === 'critical' ? ['', 'Gas critical: relays paused']
+    : [ops.relayerStatus, ops.keeperStatus].includes('low') ? ['', 'Gas low: top up soon'] : ['blue', 'Gas healthy'];
   return <>
     <div className="desk-credit-summary"><div><span>Credit desk health</span><strong>#{desk.epoch}</strong></div><div><span>Lender pool</span><strong>{lending ? pub.usd(lending.totalAssets) : '—'}</strong></div><div><span>Pool solvency</span><strong>{backed}<small>/ {solvency.length} backed</small></strong></div></div>
     <section className="desk-panel"><div className="desk-panel-heading"><div><h2>Credit desk health</h2><p>Each epoch proves totals over every position at pinned marks. No position is revealed.</p></div><Badge tone={desk.healthy && !desk.paused ? 'blue' : ''}>{desk.paused ? 'New credit paused' : desk.healthy ? 'Epochs on time' : 'Epoch overdue'}</Badge></div>
@@ -196,6 +198,7 @@ function TransparencyView({ data }) {
     <section className="desk-panel"><div className="desk-panel-heading"><div><h2>Operations and governance</h2><p>Who can change the protocol, and whether its services are running.</p></div><Badge tone={gas[0]}>{gas[1]}</Badge></div>
       <PublicTable headers={['Item', 'Current state']} empty="" rows={[
         ['Relayer gas', `${Number(ops.relayerEth).toFixed(5)} ETH`],
+        ...(ops.separateKeeper ? [['Keeper gas (desk epochs, liquidations)', `${Number(ops.keeperEth).toFixed(5)} ETH`]] : []),
         ['Governance', ops.timelockDelay === null ? 'Deployer key' : `Safe ${ops.safeThreshold}-of-${ops.safeSigners} → ${ops.timelockDelay / 60}-minute timelock`],
         ['Emergency guardian', desk.paused ? 'New credit paused' : 'Can pause new credit at once; unpause via the timelock'],
         ['Underwriters', ops.staked === null ? '—' : `${pub.tokens(ops.staked)} tZKD staked · ${pub.usd(ops.insurance)} insurance`],
