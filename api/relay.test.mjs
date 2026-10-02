@@ -10,7 +10,7 @@ const { default: requests } = await import('./requests.js');
 const { rotate } = await import('./cron/pulls.js');
 const { RELAY_GAS } = await import('./_lib/fees.js');
 const { deployment } = await import('../src/lib/chain/config.js');
-const { relayer } = await import('./_lib/server.js');
+const { relayer, publicClient } = await import('./_lib/server.js');
 const { CONFIG_BYTES, KEY_SHARE_BYTES, MANDATE_BYTES, NOTE_CIPHERTEXT_BYTES, POSITION_CIPHERTEXT_BYTES } = await import('../src/lib/zk/crypto.js');
 
 const call = (fn, req) => new Promise((resolve) => {
@@ -86,6 +86,13 @@ assert.equal(parseRelayRequest(auth).kind, 'ledger_set_limit', 'the M-4 transfer
 assert.equal(parseRelayRequest({ ...auth, proof: { ...auth.proof, action: 3 } }).kind, 'ledger_approve');
 rejects({ ...auth, proof: { ...auth.proof, action: 5 } }, /governance action/, 'unknown governance action');
 rejects({ ...auth, proof: { ...auth.proof, action: 0 }, ext: { shares: [bytes(3)], config: '0x' } }, /key shares/);
+// Mailbox keys ride only on a create (audit M-6/N-4); a create without one still works.
+const create = { ...auth, proof: { ...auth.proof, action: 0 } };
+assert.equal(parseRelayRequest(create).mailbox, null, 'a create needs no mailbox');
+const withBox = parseRelayRequest({ ...create, ext: { ...create.ext, mailboxSigner: relayer.address, mailboxSignature: '0x' + '22'.repeat(65) } });
+assert.deepEqual(withBox.mailbox, { ledger: '0x' + (7).toString(16).padStart(64, '0'), signer: relayer.address, signature: '0x' + '22'.repeat(65) });
+rejects({ ...create, ext: { ...create.ext, mailboxSigner: 'nope', mailboxSignature: '0x' } }, /mailbox key/, 'malformed mailbox key');
+assert.equal(parseRelayRequest({ ...auth, proof: { ...auth.proof, action: 3 }, ext: { ...auth.ext, mailboxSigner: relayer.address } }).mailbox, null, 'only a create registers a mailbox');
 assert.equal(parseRelayRequest({ kind: 'ledger_attest', proof: { proof, root: '1', ledgerId: '7', liabilities: '1', nullifiers: Array(8).fill('1') } }).kind, 'ledger_attest');
 rejects({ kind: 'ledger_attest', proof: { proof, root: '1', ledgerId: '7', liabilities: '1', nullifiers: ['1'] } }, /nullifiers/);
 
@@ -116,8 +123,13 @@ assert.equal((await call(requests, { method: 'GET', query: { ledger: 'nope' } })
 assert.equal((await call(requests, { method: 'POST', body: { ledgerId: 'x', ciphertext: '0x00', signature: '0x' + '00'.repeat(65) } })).status, 400);
 assert.equal((await call(requests, { method: 'POST', body: { ledgerId: id, ciphertext: '0x00', signature: '0x12' } })).status, 400, 'signature must be 65 bytes');
 assert.equal((await call(requests, { method: 'POST', body: '{not json' })).status, 400);
-assert.equal((await call(requests, { method: 'POST', body: { ledgerId: id, register: true, signer: 'nope', signature: '0x' + '00'.repeat(65) } })).status, 401, 'registration needs a valid signer');
+assert.equal((await call(requests, { method: 'POST', body: { ledgerId: id, register: true, signer: relayer.address, signature: '0x' + '00'.repeat(65) } })).status, 410, 'no public registration: it rides on the create relay');
 assert.equal((await call(requests, { method: 'PUT' })).status, 405);
+// A post to a treasury that does not exist on-chain is refused before the database (stubbed chain read).
+const realRead = publicClient.readContract;
+publicClient.readContract = async () => [0n, 0n, 0n];
+assert.equal((await call(requests, { method: 'POST', body: { ledgerId: id, ciphertext: '0x00', signature: '0x' + '00'.repeat(65) } })).status, 404, 'unknown treasury');
+publicClient.readContract = realRead;
 
 console.log('relay checks passed: kinds and inherited names, every relay kind, allow-list, note claims, fee scaling, scheduler rotation, mailbox validation');
 process.exit(0);

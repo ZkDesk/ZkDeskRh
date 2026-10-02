@@ -28,7 +28,6 @@ const relay = (body) => call(relayHandler, body ? { method: 'POST', body } : { m
 const mailbox = {
   list: (ledger) => call(requestsHandler, { method: 'GET', query: { ledger } }).then((r) => r.requests),
   post: (ledgerId, ciphertext, signature) => call(requestsHandler, { method: 'POST', body: { ledgerId, ciphertext, signature } }),
-  register: (ledgerId, signer, signature) => call(requestsHandler, { method: 'POST', body: { ledgerId, signer, signature, register: true } }),
 };
 const tick = () => call(tickHandler, { method: 'GET', query: {}, headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } });
 

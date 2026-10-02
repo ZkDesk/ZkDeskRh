@@ -17,5 +17,4 @@ export async function relay(body) {
 export const mailbox = {
   list: async (ledger) => (await (await fetch(`${apiBase}/requests?ledger=${ledger}`)).json()).requests ?? [],
   post: async (ledgerId, ciphertext, signature) => (await fetch(`${apiBase}/requests`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ledgerId, ciphertext, signature }) })).json(),
-  register: async (ledgerId, signer, signature) => (await fetch(`${apiBase}/requests`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ledgerId, signer, signature, register: true }) })).json(),
 };

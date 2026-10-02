@@ -41,7 +41,7 @@
     }
   },
   "timelock": "0xe89b6689d8C1C30fD9FF47b4dbcFe5c4b790c0fF",
-  "timelockDelay": 86400,
+  "timelockDelay": 172800,
   "usdg": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
   "vault": "0xBeEff033F34C046626B8D0A041844C5d1A5409dd",
   "venue": "0x028FD6D8fD04e3fD8D6A558a8cf3C82C2293eEFe",

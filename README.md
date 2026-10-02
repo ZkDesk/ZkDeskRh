@@ -248,7 +248,7 @@ All endpoints are served from the site origin. Mainnet equivalents live under `/
 | `GET` | `/api/relay` | Relayer address, availability and the live minimum relay fees per asset (base units) |
 | `POST` | `/api/relay` | Submit a proven private action |
 | `GET` | `/api/ops/:id` | Status of a relayed operation |
-| `GET` / `POST` | `/api/requests` | Sealed treasury approval requests. Anyone can read the ciphertexts, which only treasury members can open; posting needs a signature from the treasury's mailbox key |
+| `GET` / `POST` | `/api/requests` | Sealed treasury approval requests. Anyone can read the ciphertexts, which only treasury members can open; posting needs a signature from the treasury's mailbox key, registered by its create request, and the treasury must exist on-chain |
 
 ## Testing and CI
 
@@ -275,7 +275,7 @@ Invariants (`contracts/test/Invariants.t.sol`, 256 runs of 64 random calls):
 
 ## Deployed contracts
 
-Robinhood Chain mainnet (chain 4663), v2, deployed in block 77886136. Every contract and library source is verified on [Sourcify](https://repo.sourcify.dev/4663/0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F), which the explorer imports. Check the governance, wiring and verification yourself with `node scripts/check-deployment.mjs mainnet`.
+Robinhood Chain mainnet (chain 4663), v2, deployed in block 77886136. Build of record: deploy commit `ed24551`, runtime-bytecode hash `c80c29d57c98cbd4dcf610278f2d78b1e875835b6107e8f6aa242242ffa8f92f` over the 42 contracts and libraries (reproduce with `forge build` and `node scripts/build-hash.mjs`). Every contract and library source is verified on [Sourcify](https://repo.sourcify.dev/4663/0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F), which the explorer imports. Check the governance, wiring and verification yourself with `node scripts/check-deployment.mjs mainnet`.
 
 | Contract | Address |
 | --- | --- |
@@ -326,7 +326,7 @@ Findings of the re-audit after v2 (October 2026):
 | N-2: requests spending the same note made the relayer pay for reverts | Fixed. One pending operation per note, and each call is simulated again inside the nonce lock | `scripts/ops/relay-race.mjs` |
 | N-3: the payment scheduler could be starved | Fixed. Only successful payments count, one per treasury per run, and the starting treasury rotates | `api/relay.test.mjs` |
 | M-1 (residual): the operator's fallback sent liquidations separately | Fixed. A batch that would revert is dropped from the atomic call, never sent on its own | `scripts/ops/e2e-liquidation.mjs` |
-| M-6 (residual), N-4: mailbox flooding and squatting | Fixed. A mailbox key can only be registered before its treasury exists on-chain, with global hourly caps | `api/relay.test.mjs`, `scripts/ops/e2e-approvals.mjs` |
+| M-6 (residual), N-4: mailbox flooding and squatting | Fixed. A mailbox key is registered only by the treasury's own create request (no public registration), and posts are accepted only for treasuries that exist on-chain | `api/relay.test.mjs`, `scripts/ops/e2e-approvals.mjs` |
 | N-1: a no-op position step can block an epoch | Open: fixed in the next contract version | — |
 | H-1 (residual): a position with dust debt cannot be evicted | Open: next contract version | — |
 | M-3 (residual): treasury transfers and mandate payments check the asset listing | Open: next contract version | — |

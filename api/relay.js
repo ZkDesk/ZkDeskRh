@@ -16,7 +16,8 @@
 //   { kind: 'mandate_auth', proof, ext: {ciphertext} } -> MandateRegistry.manage (commit, revoke, pause, resume)
 //   { kind: 'mandate_pull', proof, ext } -> MandateRegistry.pull (one payment under a mandate)
 import { randomBytes } from 'node:crypto';
-import { concatHex, isAddress, isHex, keccak256, toHex, zeroAddress } from 'viem';
+import { concatHex, isAddress, isHex, keccak256, toHex, verifyMessage, zeroAddress } from 'viem';
+import { mailboxMessages } from '../src/lib/zk/ledger.js';
 import { abis, db, deployment, deploymentReady, publicClient, relayer, sendFromRelayer, revertName, json } from './_lib/server.js';
 import { RELAY_GAS, relayFees } from './_lib/fees.js';
 import { CONFIG_BYTES, KEY_SHARE_BYTES, MANDATE_BYTES, NOTE_CIPHERTEXT_BYTES, POSITION_CIPHERTEXT_BYTES } from '../src/lib/zk/crypto.js';
@@ -111,8 +112,16 @@ function parseLedgerAuth(p, e) {
   if (bytesLen(e.config) !== CONFIG_BYTES && bytesLen(e.config) !== 0) throw new Error('Bad config ciphertext.');
   const proof = { proof: p.proof, action };
   for (const k of ['ledgerId', 'rolesCommit', 'policyHash', 'newValue']) proof[k] = uint(p[k]);
+  // A create may carry the treasury's approval-mailbox key (audit M-6/N-4): the address of a key
+  // derived from the ledger secret, plus its signature over the register message. Only the creator
+  // can make this create proof, so nobody else can register a mailbox for the treasury.
+  let mailbox = null;
+  if (action === 0 && e.mailboxSigner !== undefined) {
+    if (!isAddress(e.mailboxSigner) || !/^0x[0-9a-fA-F]{130}$/.test(e.mailboxSignature ?? '')) throw new Error('Bad mailbox key.');
+    mailbox = { ledger: toHex(proof.ledgerId, { size: 32 }), signer: e.mailboxSigner, signature: e.mailboxSignature };
+  }
   // One operation per (ledger, action, value, current roles).
-  return { kind: `ledger_${AUTH_KINDS[action]}`, nullifiers: [proof.ledgerId, BigInt(action), proof.newValue, proof.rolesCommit], target: ledgerTarget('authorize'), args: [proof, e.shares, e.config] };
+  return { kind: `ledger_${AUTH_KINDS[action]}`, nullifiers: [proof.ledgerId, BigInt(action), proof.newValue, proof.rolesCommit], target: ledgerTarget('authorize'), args: [proof, e.shares, e.config], mailbox };
 }
 
 function parseLedgerAttest(p) {
@@ -251,6 +260,12 @@ export default async function handler(req, res) {
     if (tx.fee.amount < feeForGas(base, gas)) return fail(402, 'fee_too_low');
   }
   if (needsVoucher && gas > (RELAY_GAS * 5n) / 4n) return fail(402, 'gas_above_voucher');
+  // The mailbox key of a treasury being created (checked signature; the create proof simulated fine).
+  // Posts need the treasury on-chain, so a create that never lands leaves an unusable row, pruned daily.
+  if (tx.mailbox) {
+    if (!(await verifyMessage({ address: tx.mailbox.signer, message: mailboxMessages.register(tx.mailbox.ledger), signature: tx.mailbox.signature }).catch(() => false))) return fail(400, 'bad_mailbox_signature');
+    await db.query('insert into public.mailbox_keys (ledger_id, signer) values ($1, $2) on conflict (ledger_id) do nothing', [tx.mailbox.ledger, tx.mailbox.signer.toLowerCase()]);
+  }
   // Spent only once the step is known to succeed; bought by a confirmed transfer within the last day.
   if (needsVoucher) {
     const { rowCount } = await db.query(

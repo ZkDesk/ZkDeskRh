@@ -20,7 +20,7 @@ const s = (x) => x.toString();
 const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 
 /**
- * requests: optional mailbox {list(ledgerIdHex), post(ledgerIdHex, ciphertext, signature), register(ledgerIdHex, signer, signature)} (api/requests.js).
+ * requests: optional mailbox {list(ledgerIdHex), post(ledgerIdHex, ciphertext, signature)} (api/requests.js).
  * vouchers: false only for the in-process scheduler, which relays without paying itself.
  */
 export function createClient({ publicClient, walletClient = null, address = null, keys, prove, relay, requests = null, onStatus = () => {}, vouchers = true }) {
@@ -224,23 +224,26 @@ export function createClient({ publicClient, walletClient = null, address = null
   const ledgerNotes = (ledger) => myNotes(state, ledger);
   const ledgerUnspent = (ledger, asset) => ledgerNotes(ledger).filter((n) => n.asset === big(asset) && n.status === 'unspent').sort((a, b) => (b.amount > a.amount ? 1 : -1));
 
-  async function relayAuth({ ledger, config, action, newValue = 0n, shares = [], configCt = '0x' }) {
+  async function relayAuth({ ledger, config, action, newValue = 0n, shares = [], configCt = '0x', mailbox = {} }) {
     const paid = await voucher();
     const built = buildRoleAuth({ ledger, sk: keys.sk, config, action, newValue, extHash: authExtHash(shares, configCt) });
     status('Generating proof…');
     const { proof } = await prove('role_auth', built.witness);
     const p = built.public;
-    return submitRelay({ kind: 'ledger_auth', proof: { proof, ledgerId: s(p.ledgerId), rolesCommit: s(p.rolesCommit), policyHash: s(p.policyHash), action, newValue: s(newValue) }, ext: { shares, config: configCt }, voucher: paid });
+    return submitRelay({ kind: 'ledger_auth', proof: { proof, ledgerId: s(p.ledgerId), rolesCommit: s(p.rolesCommit), policyHash: s(p.policyHash), action, newValue: s(newValue) }, ext: { shares, config: configCt, ...mailbox }, voucher: paid });
   }
 
   // Approval mailbox (api/requests.js): posts are signed with the treasury's mailbox key.
   const mailboxSigner = (ledger) => privateKeyToAccount(toHex(ledger.mailboxKey));
-  async function registerMailbox(ledger) {
-    if (!requests) return;
-    const id = hexId(ledger.owner);
-    const signer = mailboxSigner(ledger);
-    const r = await requests.register(id, signer.address, await signer.signMessage({ message: mailboxMessages.register(id) }));
-    if (!r.registered) throw new Error(friendly(r.error));
+  /** The mailbox key, signed, for the create request (api/relay.js registers it). Never blocks a create. */
+  async function mailboxFields(ledger) {
+    try {
+      const id = hexId(ledger.owner);
+      const signer = mailboxSigner(ledger);
+      return { mailboxSigner: signer.address, mailboxSignature: await signer.signMessage({ message: mailboxMessages.register(id) }) };
+    } catch {
+      return {};
+    }
   }
   async function postRequest(ledger, ciphertext) {
     const id = hexId(ledger.owner);
@@ -263,9 +266,8 @@ export function createClient({ publicClient, walletClient = null, address = null
     const lsk = randomField();
     const ledger = ledgerKeys(lsk);
     const config = { name, owner: self.owner, treasurer: members[1].owner, payer: members[2].owner, auditor: members[3].owner, rolesSalt: randomField(), allocCap, dualThreshold, policySalt: randomField() };
-    // Mailbox key first: until the treasury is on-chain nobody else knows its id, so nobody can claim it.
-    await registerMailbox(ledger);
-    await relayAuth({ ledger, config, action: AUTH.create, shares: shareTo(lsk, members), configCt: encryptConfig(config, ledger.encPub) });
+    // The approval-mailbox key rides on the create request; only this proof can register it.
+    await relayAuth({ ledger, config, action: AUTH.create, shares: shareTo(lsk, members), configCt: encryptConfig(config, ledger.encPub), mailbox: await mailboxFields(ledger) });
     return ledger.owner;
   }
 
@@ -529,6 +531,7 @@ const FRIENDLY = {
   mailbox_full: 'This treasury received too many approval requests today. Please try again tomorrow.',
   mailbox_busy: 'The request mailbox is busy right now. Please try again in an hour.',
   mailbox_closed: 'A request mailbox can only be set up while creating a treasury.',
+  unknown_ledger: 'This treasury does not exist on this network.',
   bad_signature: 'The approval request could not be signed for this treasury.',
   voucher_required: 'The relay fee voucher was missing or already used. Please try again.',
   fee_too_low: 'Network fees rose while your proof was being made. Please try again.',

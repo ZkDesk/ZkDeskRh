@@ -40,6 +40,7 @@ const ABI = parseAbi([
   'function receiptVerifier() view returns (address)',
   'function feeds(address) view returns (address)',
   'function hasRole(bytes32, address) view returns (bool)',
+  'function maxAge() view returns (uint64)',
 ]);
 const ROLE_GRANTED = parseAbiItem('event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender)');
 const ROLE_REVOKED = parseAbiItem('event RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender)');
@@ -98,9 +99,10 @@ await check('Safe has at least 2-of-N signers', async () => {
   const [owners, threshold] = await Promise.all([read(d.safe, 'getOwners'), read(d.safe, 'getThreshold')]);
   return { ok: Number(threshold) >= 2 && !owners.some((o) => eq(o, d.deployer)), detail: `${threshold}-of-${owners.length}; deployer ${owners.some((o) => eq(o, d.deployer)) ? 'IS' : 'is not'} an owner` };
 });
-await check(`timelock delay >= ${MIN_DELAY / 3600} h`, async () => {
+await check(`timelock delay >= ${MIN_DELAY / 3600} h, as the deployment file records`, async () => {
   const delay = Number(await read(d.timelock, 'getMinDelay'));
-  return { ok: delay >= MIN_DELAY, detail: `${delay / 3600} h` };
+  const recorded = d.timelockDelay === undefined || Number(d.timelockDelay) === delay;
+  return { ok: delay >= MIN_DELAY && recorded, detail: `${delay / 3600} h on-chain; file says ${d.timelockDelay === undefined ? '—' : `${Number(d.timelockDelay) / 3600} h`}` };
 });
 await check('timelock owns the gate, lending pool, marker and venue', async () => {
   const targets = ['assetGate', 'lending', 'marker', ...(d.venue ? ['venue'] : [])];
@@ -123,6 +125,20 @@ await check('price pinner is the relayer or keeper; every class reads its docume
   for (const [symbol, s] of Object.entries(d.stocks)) if (!eq(await read(d.marker, 'feeds', [s.token]), s.feed)) wrong.push(symbol);
   const ok = (eq(pinner, d.relayer) || (d.keeper && eq(pinner, d.keeper))) && wrong.length === 0;
   return { ok, detail: `pinner ${pinner}${wrong.length ? `; wrong feeds: ${wrong.join(', ')}` : '; feeds match'}` };
+});
+await check('Marker mark validity matches the documented maxAge', async () => {
+  const maxAge = Number(await read(d.marker, 'maxAge'));
+  return { ok: maxAge === Number(d.markMaxAge), detail: `${maxAge / 3600} h (documented ${Number(d.markMaxAge) / 3600} h)` };
+});
+await check('service addresses: relayer and keeper are funded EOAs; the scheduler address is well formed', async () => {
+  const keeper = d.keeper ?? d.relayer; // the keeper is the relayer until a keeper key is configured
+  const problems = [];
+  for (const [name, a] of [['relayer', d.relayer], ['keeper', keeper]]) {
+    if ((await client.getCode({ address: a })) !== undefined) problems.push(`${name} is a contract`);
+    if ((await client.getBalance({ address: a })) === 0n) problems.push(`${name} has no gas`);
+  }
+  if (!/^zkd:[0-9a-f]{128}$/.test(d.scheduler ?? '')) problems.push('scheduler address malformed');
+  return { ok: problems.length === 0, detail: problems.length ? problems.join('; ') : `relayer ${d.relayer}; keeper ${keeper}; scheduler ${d.scheduler.slice(0, 14)}…` };
 });
 await check('every verifier is deployed and source-verified', async () => {
   const getters = [[d.pool, ['verifier']], [d.desk, ['verifier', 'healthVerifier', 'liquidationVerifier', 'evictVerifier']], [d.ledger, ['ledgerVerifier', 'authVerifier', 'attestVerifier']], [d.mandates, ['authVerifier', 'pullVerifier', 'receiptVerifier']]];
