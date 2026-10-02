@@ -7,8 +7,8 @@ import { bytesToHex } from '@noble/hashes/utils.js';
 const PRF_INPUT = new TextEncoder().encode('ZKDesk passkey v1'); // fixed; keys.js separates the chains
 const random = (n) => crypto.getRandomValues(new Uint8Array(n));
 const prf = { eval: { first: PRF_INPUT } };
-// One passkey for www. and the bare domain (a passkey is otherwise bound to the exact host name).
-const rpId = () => location.hostname.replace(/^www\./, '');
+// Bound to this exact host name, so no other subdomain can ask for the same seed.
+const rpId = () => location.hostname;
 export const UNSUPPORTED = 'This browser or passkey provider cannot unlock ZKdesk (it has no WebAuthn PRF support). Use a current Chrome, Edge or Safari with a synced passkey, or connect MetaMask.';
 
 /** false when the browser says it has no PRF support; true when it says yes or cannot tell. */

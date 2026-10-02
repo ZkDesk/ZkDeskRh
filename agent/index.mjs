@@ -2,9 +2,14 @@
 // strings ("12.5"). Every step is proven here (bb.js) and relayed by ZKdesk, so the agent needs no
 // wallet and no gas; fund it with a private send to its zkd: address. Limits that bind even a
 // compromised agent come from a treasury where it is Payer: mandate caps, the Owner's approval
-// threshold and the transfer-count limit. maxPerTx is only a guard on the agent's own machine.
-// One network per process (the shared config reads it once).
+// threshold and the transfer-count limit. The guards here (per payment, per day, allowed recipients
+// and treasuries, relay fee) protect against a confused or prompt-injected model on the agent's own
+// machine, not against someone who has the seed. One network per process (the shared config reads
+// it once).
 import { readFile } from 'node:fs/promises';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { createPublicClient, formatUnits, http, isAddress, parseUnits } from 'viem';
 
 const AMOUNT = /^\d{1,9}(\.\d{1,6})?$/;
@@ -16,23 +21,62 @@ const usdg = (x) => {
 const fmt = (raw) => formatUnits(raw, 6);
 const hexId = (id) => '0x' + id.toString(16).padStart(64, '0');
 const POLL_MS = 5_000;
+const DAY_MS = 86_400_000;
+const off = (v) => v === null || v === undefined || v === '' || v === 'off';
 
 /**
- * Notes of `asset` paid to this account by others, newest first: a note made by a transaction that
- * also spent one of our notes is our own change or self-transfer, not a payment received.
+ * Notes of `asset` paid to this account by others, newest first. Only notes in the tree count: a
+ * deposit in screening can still be taken back by its sender, and a refunded one never arrived. A
+ * note made by a transaction that also spent one of our notes is our own change, not a payment.
+ * pending: return the deposits still in screening instead.
  */
-export function receivedNotes(notes, asset, since = 0) {
+export function receivedNotes(notes, asset, since = 0, { pending = false } = {}) {
   const own = new Set(notes.map((n) => n.spentIn).filter(Boolean));
+  const wanted = pending ? ['pending'] : ['unspent', 'spent'];
   return notes
-    .filter((n) => BigInt(n.asset) === BigInt(asset) && n.tx && !own.has(n.tx) && Number(n.block) > Number(since))
+    .filter((n) => BigInt(n.asset) === BigInt(asset) && n.tx && !own.has(n.tx) && Number(n.block) > Number(since) && wanted.includes(n.status))
     .sort((a, b) => Number(BigInt(b.block) - BigInt(a.block)));
+}
+
+/**
+ * Rolling 24-hour spend record in a file only this user can read (0600). check() refuses an
+ * outflow (amount plus fee) that would pass the cap; add() records it before it is sent, so a
+ * crash mid-payment still counts.
+ */
+export function spendLog(file, cap, now = () => Date.now()) {
+  const read = () => {
+    try {
+      return JSON.parse(readFileSync(file, 'utf8')).filter((e) => now() - e.t < DAY_MS);
+    } catch {
+      return [];
+    }
+  };
+  const total = () => read().reduce((t, e) => t + BigInt(e.raw), 0n);
+  return {
+    total,
+    check(raw) {
+      if (cap !== null && total() + raw > cap) throw new Error(`This payment (${fmt(raw)} USDG with the relay fee) would pass this agent's limit of ${fmt(cap)} USDG per 24 hours (ZKDESK_MAX_PER_DAY); ${fmt(total())} already used.`);
+    },
+    add(raw) {
+      writeFileSync(file, JSON.stringify([...read(), { t: now(), raw: raw.toString() }]), { mode: 0o600 });
+    },
+  };
 }
 
 /** A new agent seed (32 random bytes, hex). Whoever holds it can spend what the agent can. */
 export const newSeed = () => '0x' + Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('hex');
 
-/** Opens the agent's account. api: the ZKdesk site whose relayer is used; rpc: optional chain RPC. */
-export async function createAgent({ seed, network = 'mainnet', api = 'https://zkdesk.tech', rpc, maxPerTx = null, onStatus = () => {} }) {
+/**
+ * Opens the agent's account. api: the ZKdesk site whose relayer is used; rpc: optional chain RPC.
+ * Guards (USDG strings; null or 'off' disables): maxPerTx, maxPerDay (rolling 24 h, fees included,
+ * kept in stateDir), maxFee (per relay step). allowTo: if set, the only zkd:/0x recipients the agent
+ * may pay (mandates excepted: their recipients are fixed by the treasury Owner). treasuries: if set,
+ * the only treasury ids the agent acts in.
+ */
+export async function createAgent({
+  seed, network = 'mainnet', api = 'https://zkdesk.tech', rpc, onStatus = () => {},
+  maxPerTx = null, maxPerDay = null, maxFee = null, allowTo = null, treasuries: allowTreasuries = null, stateDir = join(homedir(), '.zkdesk'),
+}) {
   if (!SEED.test(seed ?? '')) throw new Error('The agent seed must be 32 bytes of hex (0x + 64 characters). Make one with: node agent/cli.mjs keygen');
   if (!['mainnet', 'testnet'].includes(network)) throw new Error('network must be "mainnet" or "testnet".');
   if (globalThis.ZKDESK_NETWORK && globalThis.ZKDESK_NETWORK !== network) throw new Error(`This process already uses ${globalThis.ZKDESK_NETWORK}; one network per process.`);
@@ -52,37 +96,61 @@ export async function createAgent({ seed, network = 'mainnet', api = 'https://zk
     provers[kind] ??= readFile(new URL(`../src/lib/zk/artifacts/${kind}.json`, import.meta.url), 'utf8').then((t) => createProver(JSON.parse(t)));
     return (await provers[kind]).prove(witness);
   };
-  const client = zk.createClient({ publicClient, keys, prove, relay, requests: mailbox, onStatus });
+  const client = zk.createClient({ publicClient, keys, prove, relay, requests: mailbox, onStatus, maxFee: off(maxFee) ? null : usdg(maxFee) });
   const USDG = deployment.usdg;
 
-  const limit = maxPerTx === null || maxPerTx === undefined || maxPerTx === '' ? null : usdg(maxPerTx);
-  const amountOf = (x) => {
-    const raw = usdg(x);
-    if (limit !== null && raw > limit) throw new Error(`${fmt(raw)} USDG is above this agent's limit of ${fmt(limit)} USDG per transaction (ZKDESK_MAX_PER_TX).`);
-    return raw;
-  };
   const zkTo = (to) => {
     const parsed = parseZkAddress(to);
     if (!parsed) throw new Error(`Not a ZKdesk private address (zkd: followed by 128 hex characters): "${to}".`);
     return parsed;
   };
-  const done = (r) => ({ confirmed: r?.status === 'confirmed', tx: r?.txHash ? config.explorerTx(r.txHash) : null });
+  // Recipients compare in canonical form: zkd: lower-case, 0x lower-case.
+  const canon = (to) => (isAddress(to ?? '') ? to.toLowerCase() : zkAddress(zkTo(to)));
+  const allowed = off(allowTo) ? null : new Set((Array.isArray(allowTo) ? allowTo : String(allowTo).split(',')).map((x) => x.trim()).filter(Boolean).map(canon));
+  const onlyTreasuries = off(allowTreasuries) ? null : new Set((Array.isArray(allowTreasuries) ? allowTreasuries : String(allowTreasuries).split(',')).map((x) => x.trim().toLowerCase()).filter(Boolean));
+  const perTx = off(maxPerTx) ? null : usdg(maxPerTx);
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  const day = spendLog(join(stateDir, `agent-${network}-${keys.owner.toString(16).slice(0, 16)}.json`), off(maxPerDay) ? null : usdg(maxPerDay));
+
+  /**
+   * Every outflow passes here before anything is proven: the amount, the recipient, then the day's
+   * total with the relay fee (a voucher step pays voucherPrice fees). It is recorded before sending.
+   */
+  async function guard(amount, to, { voucher = false } = {}) {
+    const raw = usdg(amount);
+    if (perTx !== null && raw > perTx) throw new Error(`${fmt(raw)} USDG is above this agent's limit of ${fmt(perTx)} USDG per transaction (ZKDESK_MAX_PER_TX).`);
+    if (to !== null && allowed && !allowed.has(canon(to))) throw new Error(`${to.slice(0, 18)}… is not on this agent's list of allowed recipients (ZKDESK_ALLOW_TO).`);
+    const { fee, voucherPrice } = await client.quoteFee(USDG);
+    const total = raw + (voucher ? fee * voucherPrice : fee);
+    day.check(total);
+    day.add(total);
+    return raw;
+  }
+  // The relay's word is checked against the chain before reporting a payment as made.
+  async function done(r) {
+    if (r?.status !== 'confirmed' || !r.txHash) return { confirmed: false, status: r?.status ?? 'unknown' };
+    const receipt = await publicClient.getTransactionReceipt({ hash: r.txHash });
+    if (receipt.status !== 'success') throw new Error(`The relay reported success but the transaction failed on-chain: ${config.explorerTx(r.txHash)}`);
+    return { confirmed: true, tx: config.explorerTx(r.txHash) };
+  }
+  // Only treasuries where the agent can act (and, if set, on its list); names come from their Owners.
+  const mine = () => client.ledgers().filter((l) => ['Owner', 'Treasurer', 'Payer'].some((r) => l.roles.includes(r)) && (!onlyTreasuries || onlyTreasuries.has(hexId(l.owner))));
   async function treasury(id) {
     await client.sync();
-    const L = client.ledgers().find((l) => hexId(l.owner) === String(id).toLowerCase());
-    if (!L) throw new Error(`This agent holds no role in treasury ${id}. List them with treasuries().`);
+    const L = mine().find((l) => hexId(l.owner) === String(id).toLowerCase());
+    if (!L) throw new Error(`This agent cannot act in treasury ${id}. List the ones it can with treasuries().`);
     return L;
   }
-  const mover = (L) => {
-    const role = ['Owner', 'Treasurer', 'Payer'].find((r) => L.roles.includes(r));
-    if (!role) throw new Error(`This agent is ${L.roles.join(', ')} in "${L.name}" and cannot move its funds.`);
-    return role;
-  };
-  const send = async ({ to, amount }) => done(await client.send({ amount: amountOf(amount), to: zkTo(to) }));
+  const mover = (L) => ['Owner', 'Treasurer', 'Payer'].find((r) => L.roles.includes(r));
+  async function send({ to, amount }) {
+    const dest = zkTo(to);
+    const raw = await guard(amount, to);
+    return done(await client.send({ amount: raw, to: dest }));
+  }
   async function pay(treasuryId, { to, amount }) {
     const L = await treasury(treasuryId);
-    const raw = amountOf(amount);
     const dest = isAddress(to ?? '') ? { recipient: to } : { to: zkTo(to) };
+    const raw = await guard(amount, to, { voucher: true });
     const r = await client.ledgerAct(L, mover(L), { action: 'transfer', amount: raw, ...dest });
     if (r?.requested) return { requested: true, message: `Above ${fmt(L.config.dualThreshold)} USDG: sent to the treasury Owner for approval. Complete it once approved.` };
     return done(r);
@@ -92,13 +160,13 @@ export async function createAgent({ seed, network = 'mainnet', api = 'https://zk
     if (!blockTimes.has(block)) blockTimes.set(block, new Date(Number((await publicClient.getBlock({ blockNumber: block })).timestamp) * 1000).toISOString());
     return blockTimes.get(block);
   };
-  async function incoming({ since = 0, limit = 20 } = {}) {
+  async function incoming({ since = 0, limit = 20, pending = false } = {}) {
     await client.sync();
     const receipts = new Set(client.receipts().map((r) => r.note.commitment));
-    const paid = receivedNotes(client.notes(), USDG, since).slice(0, Math.min(Math.max(Number(limit) || 20, 1), 100));
+    const paid = receivedNotes(client.notes(), USDG, since, { pending }).slice(0, Math.min(Math.max(Number(limit) || 20, 1), 100));
     return Promise.all(paid.map(async (n) => ({
-      id: n.commitment.toString(16), amount: fmt(n.amount), status: n.status, block: Number(n.block), at: await timeOf(n.block),
-      kind: receipts.has(n.commitment) ? 'mandate payment (has a receipt)' : n.status === 'pending' ? 'deposit (in screening)' : 'private payment',
+      id: n.commitment.toString(16), amount: fmt(n.amount), block: Number(n.block), at: await timeOf(n.block),
+      kind: pending ? 'deposit in screening: not received yet, the sender can still take it back' : receipts.has(n.commitment) ? 'mandate payment (has a receipt)' : 'private payment',
       tx: config.explorerTx(n.tx),
     })));
   }
@@ -121,20 +189,21 @@ export async function createAgent({ seed, network = 'mainnet', api = 'https://zk
     address: zkAddress(keys),
     async balance() {
       await client.sync();
-      return { usdg: fmt(client.balance(USDG)), pending: fmt(client.balance(USDG, 'pending')), network };
+      return { usdg: fmt(client.balance(USDG)), inScreening: fmt(client.balance(USDG, 'pending')), spentLast24h: fmt(day.total()), network };
     },
     /** Private USDG transfer to a zkd: address (relay fee paid from the agent's balance). */
     send,
     /** USDG out of the private pool to a public 0x address. */
     async withdraw({ to, amount }) {
       if (!isAddress(to ?? '')) throw new Error(`Not a 0x address: "${to}".`);
-      return done(await client.send({ amount: amountOf(amount), recipient: to }));
+      const raw = await guard(amount, to);
+      return done(await client.send({ amount: raw, recipient: to }));
     },
-    /** Treasuries where the agent holds a role. */
+    /** Treasuries where the agent can act. name is set by the treasury's Owner (untrusted text). */
     async treasuries() {
       await client.sync();
-      return client.ledgers().map((l) => ({
-        id: hexId(l.owner), name: l.name, roles: l.roles, address: zkAddress(l),
+      return mine().map((l) => ({
+        id: hexId(l.owner), name: l.name, roles: l.roles, ownerKey: hexId(l.config.owner), address: zkAddress(l),
         usdg: fmt(client.ledgerBalance(l, USDG)), ownerApprovalAbove: fmt(l.config.dualThreshold),
       }));
     },
@@ -145,6 +214,7 @@ export async function createAgent({ seed, network = 'mainnet', api = 'https://zk
     /**
      * Pays a payment request link from the agent's own balance, or from a treasury where it can move
      * funds. amount is needed only when the link leaves it to the payer; otherwise it must match.
+     * The link's memo is returned as untrustedMemo: text from whoever made the link.
      */
     async payLink(link, { amount, treasury: treasuryId } = {}) {
       const r = readLink(link);
@@ -152,28 +222,37 @@ export async function createAgent({ seed, network = 'mainnet', api = 'https://zk
       const want = r.amount || amount;
       if (!want) throw new Error('This link leaves the amount to the payer: give an amount.');
       const result = treasuryId ? await pay(treasuryId, { to: r.to, amount: want }) : await send({ to: r.to, amount: want });
-      return { ...result, amount: want, to: r.to, memo: r.memo || null };
+      return { ...result, amount: want, to: r.to, untrustedMemo: r.memo || null };
     },
-    /** A payment request link to the agent, or to a treasury it holds a role in. Nothing is posted. */
-    async requestLink({ amount = '', memo = '', treasury: treasuryId } = {}) {
-      if (amount) usdg(amount);
+    /**
+     * A payment request link to the agent, or to a treasury it can act in. Nothing is posted. With an
+     * amount, a few millionths of a USDG are added (unless exact) so each link's payment is told apart
+     * by its amount; wait for it with waitForPayment({ amount: readLink(link).amount }).
+     */
+    async requestLink({ amount = '', memo = '', treasury: treasuryId, exact = false } = {}) {
+      let asked = amount;
+      if (amount) {
+        const raw = usdg(amount) + (exact ? 0n : BigInt(1 + Math.floor(Math.random() * 999)));
+        asked = fmt(raw);
+      }
       const to = treasuryId ? zkAddress(await treasury(treasuryId)) : zkAddress(keys);
-      return paymentLink(api, { to, amount, memo, network }).toString();
+      return paymentLink(api, { to, amount: asked, memo, network }).toString();
     },
     /** Approval requests of a treasury (amounts in USDG). */
     async requests(treasuryId) {
       const L = await treasury(treasuryId);
       return (await client.ledgerRequests(L)).map((r) => ({ id: r.id, status: r.status, mine: r.mine, amount: fmt(r.amount), to: r.to ? zkAddress(r.to) : r.recipient }));
     },
-    /** Sends a transfer this agent requested, once the Owner approved it. */
+    /** Sends a transfer this agent requested, once the Owner approved it (the Owner chose its recipient). */
     async complete(treasuryId, requestId) {
       const L = await treasury(treasuryId);
       const r = (await client.ledgerRequests(L)).find((x) => String(x.id) === String(requestId));
       if (!r) throw new Error(`No request ${requestId} in this treasury.`);
       if (r.status !== 'Approved') throw new Error(`Request ${requestId} is ${r.status}, not Approved.`);
+      day.check((await client.quoteFee(USDG)).fee * 2n);
       return done(await client.completeRequest(L, r));
     },
-    /** Payment mandates of a treasury: recipient, cap per period, expiry, status. */
+    /** Payment mandates of a treasury: recipient, cap per period, expiry, status. label is set by the Owner. */
     async mandates(treasuryId) {
       const L = await treasury(treasuryId);
       const now = Math.floor(Date.now() / 1000);
@@ -183,32 +262,40 @@ export async function createAgent({ seed, network = 'mainnet', api = 'https://zk
         status: m.status, paidThisPeriod: m.paid.has(currentPeriod(m, now)), asset: BigInt(m.asset) === BigInt(USDG) ? 'USDG' : 'stock',
       }));
     },
-    /** Pays the current period of a mandate (amount up to its cap). */
+    /** Pays the current period of a mandate (amount up to its cap; the recipient is the mandate's). */
     async payMandate(treasuryId, mandateId, amount) {
       const L = await treasury(treasuryId);
       const m = client.mandates(L).find((x) => hexId(x.commit) === String(mandateId).toLowerCase());
       if (!m) throw new Error(`No mandate ${mandateId} in this treasury.`);
-      return done(await client.payMandate(L, mover(L), m, amountOf(amount)));
+      const raw = await guard(amount, null, { voucher: true });
+      return done(await client.payMandate(L, mover(L), m, raw));
     },
     /**
-     * USDG paid to the agent by others, newest first: private sends, link payments, deposits to its
-     * address and mandate payments (not its own change or self-transfers). since: only after this block.
+     * USDG paid to the agent by others, newest first: private sends, link payments, cleared deposits
+     * to its address and mandate payments (not its own change). since: only after this block.
+     * pending: true lists deposits still in screening instead (not received yet).
      */
     incoming,
     /**
      * Waits until a new payment arrives (of exactly `amount` USDG if given) and returns it, or
-     * { received: false } after `timeoutSeconds`. Only payments after the call count.
+     * { received: false } after `timeoutSeconds`. Only payments after the call count, and only once
+     * they can no longer be taken back: a matching deposit still in screening is reported as pending.
      */
     async waitForPayment({ amount, timeoutSeconds = 120 } = {}) {
       const want = amount === undefined || amount === '' ? null : usdg(amount);
       const seconds = Math.min(Math.max(Number(timeoutSeconds) || 0, 1), 900);
+      const matches = (p) => want === null || usdg(p.amount) === want;
       await client.sync();
       const since = Number(client.state.toBlock);
       const until = Date.now() + seconds * 1000;
       for (;;) {
-        const hit = (await incoming({ since, limit: 50 })).find((p) => want === null || usdg(p.amount) === want);
+        const hit = (await incoming({ since, limit: 50 })).find(matches);
         if (hit) return { received: true, ...hit };
-        if (Date.now() >= until) return { received: false, message: `No ${want === null ? '' : `${fmt(want)} USDG `}payment arrived within ${seconds} s.` };
+        if (Date.now() >= until) {
+          const held = (await incoming({ since, limit: 50, pending: true })).find(matches);
+          if (held) return { received: false, pending: true, ...held, message: `A ${held.amount} USDG deposit is in screening. It is not received until it clears (about a minute); its sender can still take it back.` };
+          return { received: false, message: `No ${want === null ? '' : `${fmt(want)} USDG `}payment arrived within ${seconds} s.` };
+        }
         await new Promise((r) => setTimeout(r, Math.min(POLL_MS, until - Date.now())));
       }
     },

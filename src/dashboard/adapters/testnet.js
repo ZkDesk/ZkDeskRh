@@ -137,7 +137,7 @@ async function refresh() {
   const known = new Set([deployment.usdg, deployment.lending, deployment.vault, ...SYMBOLS.map((s) => stocks[s].token)].map((a) => BigInt(a)));
   // Payments received under mandates carry a receipt the recipient can prove (personal account).
   const received = new Map(snap.receipts.map((r) => [r.note.commitment, r]));
-  const activity = await Promise.all(notes.filter((n) => n.amount > 0n && known.has(n.asset)).map(async (n) => {
+  const activity = await Promise.all(notes.filter((n) => n.amount > 0n && known.has(n.asset) && n.status !== 'refunded').map(async (n) => {
     const { sym, kind } = label(n);
     const isStock = SYMBOLS.includes(sym);
     const amount = sym === USD_SYMBOL ? usd(n.amount) : sym === 'lending shares' ? usd(await m.shareValue(n.amount)) : sym === 'vault shares' ? usd(await vaultValue(n.amount)) : usd(valueOf(n.amount, m.marks[plain(sym)]));

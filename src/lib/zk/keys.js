@@ -53,7 +53,9 @@ export const zkAddress = (keys) => `zkd:${keys.owner.toString(16).padStart(64, '
 export function parseZkAddress(value) {
   const m = /^zkd:([0-9a-f]{64})([0-9a-f]{64})$/i.exec((value || '').trim());
   if (!m) return null;
-  return { owner: BigInt('0x' + m[1]), encPub: Uint8Array.from(m[2].match(/../g).map((b) => parseInt(b, 16))) };
+  const owner = BigInt('0x' + m[1]);
+  if (owner >= FIELD) return null; // one account, one address: no aliases above the field
+  return { owner, encPub: Uint8Array.from(m[2].match(/../g).map((b) => parseInt(b, 16))) };
 }
 
 /** Keys from raw seed bytes as given: a service seed that is not a wallet signature (the scheduler's). */

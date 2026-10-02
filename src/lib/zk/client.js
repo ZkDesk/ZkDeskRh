@@ -23,7 +23,7 @@ const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
  * requests: optional mailbox {list(ledgerIdHex), post(ledgerIdHex, ciphertext, signature)} (api/requests.js).
  * vouchers: false only for the in-process scheduler, which relays without paying itself.
  */
-export function createClient({ publicClient, walletClient = null, address = null, keys, prove, relay, requests = null, onStatus = () => {}, vouchers = true }) {
+export function createClient({ publicClient, walletClient = null, address = null, keys, prove, relay, requests = null, onStatus = () => {}, vouchers = true, maxFee = null }) {
   let state = null;
   let lastBlock = 0n;
   const status = (m) => onStatus(m);
@@ -51,7 +51,14 @@ export function createClient({ publicClient, walletClient = null, address = null
     if (!info.available) throw new Error('The relayer is unavailable right now. Please try again shortly.');
     return info;
   }
-  const quote = (info, asset) => payableFee(info.fees?.[String(asset).toLowerCase()] ?? minRelayFee(asset));
+  // maxFee (agents): refuse a relay that quotes more than this per step in USDG, or a voucher price above 2.
+  function quote(info, asset) {
+    const fee = payableFee(info.fees?.[String(asset).toLowerCase()] ?? minRelayFee(asset));
+    if (maxFee !== null && big(asset) === USDG && (fee > maxFee || Number(info.voucherPrice ?? 2) > 2)) {
+      throw new Error(`The relay quotes ${Number(fee) / 1e6} USDG per step (voucher ×${info.voucherPrice ?? 2}), above this agent's fee limit of ${Number(maxFee) / 1e6} USDG.`);
+    }
+    return fee;
+  }
 
   /** The relay fee is paid in the spent asset and covers the relay's gas (api/_lib/fees.js). */
   async function relayFee(asset) {
@@ -523,6 +530,8 @@ export function createClient({ publicClient, walletClient = null, address = null
     balance: (asset, st = 'unspent') => balanceOf(notes(), big(asset), st),
     market, get state() { return state; },
     owner: keys.owner,
+    /** The relay fee a step paid in `asset` costs now (a voucher step costs voucherPrice times this). */
+    quoteFee: async (asset = deployment.usdg) => { const info = await relayInfo(); return { fee: quote(info, asset), voucherPrice: BigInt(info.voucherPrice ?? 2) }; },
     /** The wallet that funds deposits; a passkey account links one only when it adds funds. */
     setAddress: (a) => { address = a; },
   };

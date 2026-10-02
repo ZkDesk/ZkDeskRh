@@ -273,8 +273,10 @@ ZKDESK_SEED=0x… node agent/mcp.mjs             # MCP server (stdio) for Claude
   - `zkdesk_pay_link`, `zkdesk_request_link` (the dashboard's payment request links, paid or created)
   - `zkdesk_receipts`, `zkdesk_prove_receipt`, `zkdesk_verify_receipt`
 - **SDK:** `createAgent({ seed, network, maxPerTx })` from `agent/index.mjs`.
-- **Environment:** `ZKDESK_NETWORK` (default `mainnet`), `ZKDESK_MAX_PER_TX` (default `50` USDG; `off` removes it), `ZKDESK_API`, `ZKDESK_RPC`.
-- **Binding limits** come from making the agent a treasury's **Payer**: mandate caps, the Owner's approval threshold and the transfer-count limit are enforced on-chain. `ZKDESK_MAX_PER_TX` is only a local guard. Anyone with the seed controls the agent's account.
+- **Environment:** `ZKDESK_NETWORK` (default `mainnet`), `ZKDESK_API`, `ZKDESK_RPC`.
+- **Local guards** (`off` removes one): `ZKDESK_MAX_PER_TX` (default 50 USDG), `ZKDESK_MAX_PER_DAY` (rolling 24 h with fees, default 100, kept in a 0600 file), `ZKDESK_ALLOW_TO` (allowed recipients), `ZKDESK_TREASURIES` (allowed treasuries), `ZKDESK_MAX_FEE` (per relay step, default 2).
+- **Getting paid:** only payments in the pool count as received. A deposit in screening can still be taken back by its sender, so it is reported as pending.
+- **Binding limits** come from making the agent a treasury's **Payer**: mandate caps, the Owner's approval threshold and the transfer-count limit are enforced on-chain. The local guards protect against a confused or prompt-injected model; anyone with the seed controls the agent's account.
 
 ## Testing and CI
 

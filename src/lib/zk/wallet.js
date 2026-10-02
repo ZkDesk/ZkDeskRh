@@ -12,6 +12,10 @@ const EVENTS = {
   note: parseAbiItem('event EncryptedNote(uint256 indexed commitment, bytes ciphertext)'),
   nullifier: parseAbiItem('event NewNullifier(uint256 indexed nullifier)'),
 };
+const DEPOSIT_EVENTS = parseAbi([
+  'event DepositPending(uint256 indexed id, address indexed depositor, address indexed asset, uint256 amount, uint64 clearAfter)',
+  'event DepositRefunded(uint256 indexed id)',
+]);
 const POSITION_EVENT = parseAbiItem('event PositionUpdated(uint8 indexed slot, uint256 leaf, bytes ciphertext)');
 const LEDGER_EVENTS = parseAbi([
   'event LedgerCreated(uint256 indexed id, uint256 rolesCommit, uint256 policyHash)',
@@ -62,12 +66,16 @@ async function syncOnce(client, deployment, minBlock) {
   const toBlock = await client.getBlockNumber({ cacheTime: 0 });
   if (toBlock < BigInt(minBlock)) return null;
   const fromBlock = BigInt(deployment.deployBlock);
-  const [c, n, x, p, g, mm] = await Promise.all([
+  const [c, n, x, p, g, mm, dd] = await Promise.all([
     ...Object.values(EVENTS).map((e) => logs(client, deployment.pool, e, fromBlock, toBlock)),
     deployment.desk ? logs(client, deployment.desk, POSITION_EVENT, BigInt(deployment.deskBlock ?? deployment.deployBlock), toBlock) : [],
     deployment.ledger ? logs(client, deployment.ledger, LEDGER_EVENTS, BigInt(deployment.ledgerBlock), toBlock) : [],
     deployment.mandates ? logs(client, deployment.mandates, MANDATE_EVENTS, BigInt(deployment.mandatesBlock), toBlock) : [],
+    logs(client, deployment.pool, DEPOSIT_EVENTS, fromBlock, toBlock),
   ]);
+  // A deposit refunded during standby never becomes a note: its notes are marked 'refunded' by the tx.
+  const refundedIds = new Set(dd.filter((l) => l.eventName === 'DepositRefunded').map((l) => l.args.id));
+  const refundedTx = new Set(dd.filter((l) => l.eventName === 'DepositPending' && refundedIds.has(l.args.id)).map((l) => l.transactionHash));
   const mandateEvents = mm.map((l) => ({ name: l.eventName, ...l.args, block: l.blockNumber, tx: l.transactionHash }));
   const pulls = mandateEvents.filter((e) => e.name === 'Pulled').sort((a, b) => Number(a.receiptIndex - b.receiptIndex));
   if (pulls.some((e, i) => Number(e.receiptIndex) !== i)) return null;
@@ -91,6 +99,7 @@ async function syncOnce(client, deployment, minBlock) {
     ciphertexts: n.map((l) => ({ commitment: l.args.commitment, ciphertext: l.args.ciphertext, block: l.blockNumber, tx: l.transactionHash })),
     spent: new Set(x.map((l) => l.args.nullifier)),
     spentIn: new Map(x.map((l) => [l.args.nullifier, l.transactionHash])),
+    refundedTx,
     slots,
     slotHistory,
     ledgerEvents: g.map((l) => ({ name: l.eventName, ...l.args, block: l.blockNumber, tx: l.transactionHash })),
@@ -102,7 +111,8 @@ async function syncOnce(client, deployment, minBlock) {
 }
 
 /**
- * Notes this key set can open. status: 'pending' (in standby), 'unspent' or 'spent'. tx: the
+ * Notes this key set can open. status: 'pending' (in standby; the depositor can still take it back),
+ * 'refunded' (taken back, never a note), 'unspent' or 'spent'. tx: the
  * transaction that created the note; spentIn: the one that spent it (so a note created by a
  * transaction that spent our own notes is change or a self-transfer, not a payment received).
  */
@@ -116,7 +126,8 @@ export function myNotes(state, keys) {
     const leafIndex = state.indexOf.get(commitment);
     const nf = nullifier(commitment, keys.nk);
     const spent = state.spent.has(nf);
-    notes.push({ ...opened, commitment, leafIndex, block, tx, spentIn: state.spentIn?.get(nf), status: spent ? 'spent' : leafIndex === undefined ? 'pending' : 'unspent' });
+    const status = spent ? 'spent' : leafIndex !== undefined ? 'unspent' : state.refundedTx?.has(tx) ? 'refunded' : 'pending';
+    notes.push({ ...opened, commitment, leafIndex, block, tx, spentIn: state.spentIn?.get(nf), status });
   }
   // An evicted position's collateral (CreditDesk.evict) comes back without a ciphertext: the owner
   // derives the note from the position it replaces.

@@ -1,5 +1,26 @@
 # Changelog
 
+## 3.10.1 (October 2026)
+
+Fixes from the "V39 RESCORE" report (agent findings; the contract Medium N-A needs v3.3 and is planned separately).
+
+- **A-1 (High):** an agent no longer counts a deposit still in screening as received; its sender could take it back with `refundToOrigin`.
+  - `incoming` and `waitForPayment` count only notes in the pool.
+  - A matching deposit in screening is returned as `{ received: false, pending: true }`.
+  - The client indexes `DepositRefunded`, so a refunded deposit is marked `refunded` and is never shown as a payment (also in the dashboard's Activity).
+- **A-2 (Medium):** new local guards:
+  - `ZKDESK_MAX_PER_DAY` (rolling 24 h, relay fees included, kept in a 0600 file, default 100 USDG)
+  - `ZKDESK_ALLOW_TO` (allowed recipients, compared canonically)
+  - Link memos come back as `untrustedMemo`, and the server tells the model that names, labels and memos are untrusted text.
+- **A-3:** `ZKDESK_MAX_FEE` (default 2 USDG per relay step, voucher price at most 2), fees counted in the daily cap, and every "confirmed" payment checked against its on-chain receipt.
+- **A-4:** `ZKDESK_TREASURIES` allow-list. Treasuries where the agent cannot move funds are not listed, and each listed one shows its owner key.
+- **A-5:** request links add a few millionths of a USDG to the amount (unless `exact`), so each payment is matched to its own link.
+- **Leads:**
+  - the passkey is bound to the exact host name
+  - URLs in MCP tool errors keep only their origin (no RPC keys)
+  - `zkd:` addresses with an owner key above the field are rejected (no aliases)
+  - the agent e2e uses a random seed
+
 ## 3.10.0 (October 2026)
 
 - **Add an AI agent from the dashboard:** a treasury's Treasury view has an "AI agent" panel showing the Payer (you, the ZKdesk scheduler, or an agent), the Owner approval threshold, and the payments made without approval in the current window.

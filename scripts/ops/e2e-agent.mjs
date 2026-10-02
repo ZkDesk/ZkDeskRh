@@ -6,7 +6,8 @@
 // pays it once (a second pay is refused) -> agent proves the receipt and it verifies -> payment links:
 // the agent pays the Owner's link (own balance, then from the treasury) and the Owner pays the agent's
 // link while the agent waits for it -> incoming payments list (no change) -> the agent's
-// per-transaction limit refuses 600.
+// per-transaction limit refuses 600 -> a deposit to the agent that its sender refunds during screening
+// is reported as pending, never as received.
 // Usage (testnet or a local fork with the site served by serve.mjs-style server and DB_SCHEMA set):
 //   RPC_URL_SERVER=<rpc> node scripts/ops/e2e-agent.mjs <siteUrl>
 import { readFileSync } from 'node:fs';
@@ -19,8 +20,8 @@ for (const line of readFileSync('.env.local', 'utf8').split(/\r?\n/)) {
 }
 const site = process.argv[2] ?? 'http://localhost:5199';
 const RPC = process.env.RPC_URL_SERVER || undefined;
-const { createAgent } = await import('../../agent/index.mjs');
-const agent = await createAgent({ seed: '0x' + 'a9'.repeat(32), network: 'testnet', api: site, rpc: RPC, maxPerTx: '500', onStatus: (m) => console.log(`    · agent: ${m}`) });
+const { createAgent, newSeed } = await import('../../agent/index.mjs');
+const agent = await createAgent({ seed: newSeed(), network: 'testnet', api: site, rpc: RPC, maxPerTx: '500', onStatus: (m) => console.log(`    · agent: ${m}`) });
 const { chain, deployment, apiBase } = await import('../../src/lib/chain/config.js');
 const { deriveKeys, keyRequest, zkAddress, parseZkAddress } = await import('../../src/lib/zk/keys.js');
 const { createClient } = await import('../../src/lib/zk/client.js');
@@ -109,15 +110,30 @@ check((await step("Agent pays the Owner's 3 tUSDG link from its balance", () => 
 check((await step('Agent pays an open-amount link from the treasury (5)', () => agent.payLink(ownerLink(''), { amount: '5', treasury: id }))).confirmed, 'link paid from the treasury');
 const asking = await step('Agent creates a link asking for 4', () => agent.requestLink({ amount: '4', memo: 'agent invoice' }));
 const before = Number((await agent.balance()).usdg);
-const waiting = agent.waitForPayment({ amount: '4', timeoutSeconds: 180 });
+const want = agent.readLink(asking).amount; // 4 plus a few millionths: this link's own amount
+check(Number(want) > 4 && Number(want) < 4.001, `the link asks for a unique amount (${want})`);
+const waiting = agent.waitForPayment({ amount: want, timeoutSeconds: 180 });
 await step("Owner pays the agent's link", () => { const r = readPaymentLink(new URL(asking).searchParams); return owner.send({ amount: BigInt(Math.round(Number(r.amount) * 1e6)), to: parseZkAddress(r.to) }); });
 const arrived = await step('Agent was waiting for it', () => waiting);
-check(arrived.received && arrived.amount === '4' && arrived.kind === 'private payment', 'the wait returned the 4 tUSDG payment');
-check(Math.abs(Number((await agent.balance()).usdg) - before - 4) < 1e-9, 'the agent received exactly 4');
+check(arrived.received && arrived.amount === want && arrived.kind === 'private payment', "the wait returned this link's payment");
+check(Math.abs(Number((await agent.balance()).usdg) - before - Number(want)) < 1e-9, 'the agent received exactly the link amount');
 const got = await step('Agent lists incoming payments', () => agent.incoming().then((list) => list.map((p) => `${p.amount} ${p.kind}`)));
-check(got.includes('4 private payment') && got.includes('800 private payment') && got.includes('25 mandate payment (has a receipt)'), 'payments from others are listed');
+check(got.includes(`${want} private payment`) && got.includes('800 private payment') && got.includes('25 mandate payment (has a receipt)'), 'payments from others are listed');
 check(got.length === 3, 'its own change and self-transfers are not');
 check((await step('Agent waits 3 s for 999 that never comes', () => agent.waitForPayment({ amount: '999', timeoutSeconds: 3 }))).received === false, 'the wait times out');
 await refused('600 above the agent limit', () => agent.pay(id, { to: ownerZk, amount: '600' }), /above this agent's limit/);
+// A-1: a deposit in screening can be taken back by its sender, so it is never "received".
+const { abis } = await import('../../src/lib/chain/config.js');
+const holding = agent.waitForPayment({ amount: '7', timeoutSeconds: 45 }); // started before the deposit, like a real wait
+await step('Owner deposits 7 to the agent (stays in screening)', () => owner.deposit(deployment.usdg, 7_000000n, parseZkAddress(agent.address)));
+const held = await step('Agent was waiting for 7', () => holding);
+check(held.received === false && held.pending === true, 'the screened deposit is reported as pending, not received');
+await step('Owner takes it back (refundToOrigin)', async () => {
+  const depositId = (await publicClient.readContract({ address: deployment.pool, abi: abis.pool, functionName: 'depositCount' })) - 1n;
+  const hash = await walletClient.writeContract({ address: deployment.pool, abi: abis.pool, functionName: 'refundToOrigin', args: [depositId] });
+  return (await publicClient.waitForTransactionReceipt({ hash })).status;
+});
+check(!(await agent.incoming()).some((p) => p.amount === '7') && !(await agent.incoming({ pending: true })).some((p) => p.amount === '7'), 'the refunded deposit is neither received nor pending');
+check((await agent.waitForPayment({ amount: '7', timeoutSeconds: 3 })).pending !== true, 'and no longer reported at all');
 console.log(`Agent balance now ${(await agent.balance()).usdg} tUSDG. Agent e2e passed. (${record})`);
 process.exit(0);

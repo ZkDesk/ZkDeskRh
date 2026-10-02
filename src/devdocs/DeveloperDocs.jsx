@@ -271,7 +271,7 @@ ZKDESK_SEED=0x… node agent/cli.mjs balance`}</Code>
     "zkdesk": {
       "command": "node",
       "args": ["/path/to/ZkDeskRh/agent/mcp.mjs"],
-      "env": { "ZKDESK_SEED": "0x…", "ZKDESK_NETWORK": "mainnet", "ZKDESK_MAX_PER_TX": "50" }
+      "env": { "ZKDESK_SEED": "0x…", "ZKDESK_NETWORK": "mainnet", "ZKDESK_MAX_PER_TX": "50", "ZKDESK_MAX_PER_DAY": "100", "ZKDESK_ALLOW_TO": "zkd:…" }
     }
   }
 }`}</Code>
@@ -290,7 +290,16 @@ ZKDESK_SEED=0x… node agent/cli.mjs balance`}</Code>
           <h3>Where the limits are enforced</h3>
           <ul>
             <li><strong>By the contracts and circuits</strong>, when the agent is a treasury's Payer: it can pay mandates up to their caps, once per period, and transfer up to the Owner's dual-control threshold. Anything above becomes a request that only the Owner can approve, within the treasury's transfer-count limit. It cannot allocate, change roles or approve. The Owner can revoke it in Manage roles at any time.</li>
-            <li><strong>On the agent's machine only</strong>: <C>ZKDESK_MAX_PER_TX</C> (default 50 USDG) refuses larger payments before they are proven. It protects against a confused model, not against someone who has the seed.</li>
+            <li><strong>On the agent's machine only</strong>, before anything is proven:
+              <ul>
+                <li><C>ZKDESK_MAX_PER_TX</C> (default 50 USDG) caps one payment.</li>
+                <li><C>ZKDESK_MAX_PER_DAY</C> (default 100 USDG) caps a rolling 24 hours, relay fees included. It is kept in a file only you can read, so a restart does not reset it.</li>
+                <li><C>ZKDESK_ALLOW_TO</C> (comma-separated <C>zkd:</C> or 0x addresses) limits who it may pay; mandate recipients are fixed by the Owner.</li>
+                <li><C>ZKDESK_TREASURIES</C> limits which treasuries it acts in.</li>
+                <li><C>ZKDESK_MAX_FEE</C> (default 2 USDG) refuses an unusually high relay fee.</li>
+              </ul>
+              Set any of them to <C>off</C> to remove it. These protect against a confused or prompt-injected model, not against someone who has the seed. Treasury names, mandate labels and payment-link memos are written by other people; the server marks them as untrusted.</li>
+            <li><strong>Getting paid:</strong> a payment counts as received only once it is in the pool. A deposit to the agent's address spends about a minute in screening, during which its sender can take it back, so <C>zkdesk_wait_for_payment</C> reports it as pending, not received. Deliver only on <C>received: true</C>. A requested amount gets a few millionths of a USDG added, so each link's payment can be told apart.</li>
             <li>The seed is the account. Anyone holding it can spend the agent's own balance and act as its role. Keep the agent's own balance small and its treasury role bounded. A recipient allow-list and a cumulative budget enforced in the circuit are planned for the next contract release.</li>
           </ul>
         </Section>

@@ -3,9 +3,13 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { FIELD } from '../src/lib/zk/notes.js';
 import { agentKeys, deriveKeys, passkeyKeys, zkAddress, parseZkAddress } from '../src/lib/zk/keys.js';
 import { createHandler, TOOLS } from './mcp.mjs';
-import { createAgent, newSeed, receivedNotes } from './index.mjs';
+import { createAgent, newSeed, receivedNotes, spendLog } from './index.mjs';
 import { paymentLink, readPaymentLink } from '../src/lib/zk/request-link.js';
 
 // Keys: deterministic, one account per chain, never the passkey or signature account of the same bytes.
@@ -16,13 +20,15 @@ assert.notEqual(agentKeys(seed, 4663).sk, passkeyKeys(seed, 4663).sk);
 assert.notEqual(agentKeys(seed, 4663).sk, deriveKeys(seed).sk);
 const k = agentKeys(seed, 4663);
 assert.deepEqual(parseZkAddress(zkAddress(k)), { owner: k.owner, encPub: k.encPub });
+assert.equal(parseZkAddress(zkAddress({ owner: k.owner + FIELD, encPub: k.encPub })), null, 'no address aliases above the field');
 assert.match(newSeed(), /^0x[0-9a-f]{64}$/);
 assert.notEqual(newSeed(), newSeed());
 
 // SDK: bad seeds, amounts, addresses and the per-transaction limit are refused before any proof.
 await assert.rejects(createAgent({ seed: '0x12' }), /32 bytes of hex/);
 await assert.rejects(createAgent({ seed, network: 'devnet' }), /mainnet" or "testnet/);
-const agent = await createAgent({ seed, network: 'mainnet', maxPerTx: '50' });
+const stateDir = mkdtempSync(join(tmpdir(), 'zkdesk-agent-'));
+const agent = await createAgent({ seed, network: 'mainnet', maxPerTx: '50', stateDir });
 assert.equal(agent.address, zkAddress(k));
 await assert.rejects(createAgent({ seed, network: 'testnet' }), /one network per process/);
 await assert.rejects(agent.send({ to: agent.address, amount: '50.000001' }), /above this agent's limit of 50 USDG/);
@@ -30,19 +36,44 @@ await assert.rejects(agent.send({ to: agent.address, amount: '0' }), /greater th
 await assert.rejects(agent.send({ to: agent.address, amount: '1e3' }), /greater than zero/);
 await assert.rejects(agent.send({ to: 'zkd:1234', amount: '1' }), /Not a ZKdesk private address/);
 await assert.rejects(agent.withdraw({ to: '0x123', amount: '1' }), /Not a 0x address/);
+// Allow-list: only listed recipients, compared canonically (zkd: and 0x case-insensitive).
+{
+  const listed = zkAddress(agentKeys('0x' + '22'.repeat(32), 4663));
+  const fenced = await createAgent({ seed, network: 'mainnet', allowTo: `${listed.toUpperCase().replace('ZKD:', 'zkd:')}, 0x00000000000000000000000000000000000000AA`, stateDir });
+  await assert.rejects(fenced.send({ to: agent.address, amount: '1' }), /not on this agent's list of allowed recipients/);
+  await assert.rejects(fenced.withdraw({ to: '0x00000000000000000000000000000000000000bb', amount: '1' }), /not on this agent's list/);
+  await assert.rejects(fenced.payLink(`https://zkdesk.tech/dashboard?pay=${agent.address}&amount=1&network=mainnet`), /not on this agent's list/);
+}
+
+// Daily cap: a rolling 24 h total kept in a file (amount plus fee), refused before sending.
+{
+  let t = 1_000_000;
+  const log = spendLog(join(stateDir, 'day.json'), 10_000_000n, () => t);
+  log.check(6_000_000n);
+  log.add(6_000_000n);
+  assert.throws(() => log.check(4_000_001n), /pass this agent's limit of 10 USDG per 24 hours/);
+  log.check(4_000_000n);
+  t += 86_400_000;
+  log.check(10_000_000n);
+  assert.equal(log.total(), 0n, 'older than 24 h no longer counts');
+  assert.equal(spendLog(join(stateDir, 'day.json'), 10_000_000n, () => 1_000_001).total(), 6_000_000n, 'kept across restarts');
+}
 
 // Received payments: notes from transactions that spent our own notes are change, not payments.
 {
   const U = 0x1n;
   const notes = [
-    { asset: U, block: 10n, tx: '0xa', spentIn: '0xb', amount: 100n }, // received in 0xa, later spent in 0xb
-    { asset: U, block: 11n, tx: '0xb', amount: 40n }, // change of our own spend in 0xb
-    { asset: U, block: 12n, tx: '0xc', amount: 7n }, // a payment
-    { asset: 0x2n, block: 13n, tx: '0xd', amount: 9n }, // another asset
-    { asset: U, block: 14n, amount: 1n }, // no transaction (an evicted position's collateral)
+    { asset: U, block: 10n, tx: '0xa', spentIn: '0xb', amount: 100n, status: 'spent' }, // received in 0xa, later spent in 0xb
+    { asset: U, block: 11n, tx: '0xb', amount: 40n, status: 'unspent' }, // change of our own spend in 0xb
+    { asset: U, block: 12n, tx: '0xc', amount: 7n, status: 'unspent' }, // a payment
+    { asset: 0x2n, block: 13n, tx: '0xd', amount: 9n, status: 'unspent' }, // another asset
+    { asset: U, block: 14n, amount: 1n, status: 'unspent' }, // no transaction (an evicted position's collateral)
+    { asset: U, block: 15n, tx: '0xe', amount: 50n, status: 'pending' }, // a deposit in screening: its sender can take it back
+    { asset: U, block: 16n, tx: '0xf', amount: 60n, status: 'refunded' }, // a deposit its sender took back
   ];
-  assert.deepEqual(receivedNotes(notes, U).map((n) => n.amount), [7n, 100n]);
+  assert.deepEqual(receivedNotes(notes, U).map((n) => n.amount), [7n, 100n], 'a deposit in screening or refunded is not received');
   assert.deepEqual(receivedNotes(notes, U, 10).map((n) => n.amount), [7n]);
+  assert.deepEqual(receivedNotes(notes, U, 0, { pending: true }).map((n) => n.amount), [50n]);
 }
 
 // Payment request links: the dashboard's format, created and read by the agent, checked before paying.
@@ -50,7 +81,10 @@ const zkTo = zkAddress(agentKeys('0x' + '11'.repeat(32), 4663));
 assert.deepEqual(readPaymentLink(paymentLink('https://zkdesk.tech', { to: zkTo, amount: '7.25', memo: 'Invoice 7', network: 'mainnet' }).searchParams), { to: zkTo, amount: '7.25', memo: 'Invoice 7', network: 'mainnet' });
 assert.equal(readPaymentLink(new URLSearchParams('pay=zkd:12')), null);
 assert.equal(readPaymentLink(new URLSearchParams(`pay=${zkTo}&amount=-1`)).amount, '', 'a bad amount leaves it to the payer');
-const own = await agent.requestLink({ amount: '12.5', memo: 'Invoice 8' });
+const own = await agent.requestLink({ amount: '12.5', memo: 'Invoice 8', exact: true });
+// Without exact, each link asks for a slightly different amount so its payment can be told apart.
+const unique = Number(agent.readLink(await agent.requestLink({ amount: '12.5' })).amount);
+assert.ok(unique > 12.5 && unique < 12.501, `unique amount ${unique}`);
 assert.match(own, /^https:\/\/zkdesk\.tech\/dashboard\?view=treasury&pay=zkd%3A/);
 assert.deepEqual(agent.readLink(own), { to: agent.address, amount: '12.5', memo: 'Invoice 8', network: 'mainnet' });
 const link = (q) => `https://zkdesk.tech/dashboard?view=treasury&pay=${zkTo}&network=mainnet${q}`;
@@ -98,6 +132,9 @@ assert.deepEqual(calls, [['start', '2'], ['end', '2'], ['start', '3'], ['end', '
 assert.equal(JSON.parse(a.result.content[0].text).big, '5');
 assert.equal(b.id, 21);
 // A failing agent (e.g. no seed) is a tool error, not a crash.
+const leaky = createHandler(async () => { throw new Error('HTTP request failed. URL: https://rpc.example.com/v2/SECRETKEY123 Details: 429'); });
+const leaked = (await leaky({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'zkdesk_balance', arguments: {} } })).result.content[0].text;
+assert.ok(leaked.includes('https://rpc.example.com') && !leaked.includes('SECRETKEY123'), 'URLs in errors keep only their origin');
 const broken = createHandler(async () => { throw new Error('no seed'); });
 assert.match((await broken({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'zkdesk_balance', arguments: {} } })).result.content[0].text, /no seed/);
 
