@@ -12,6 +12,7 @@ import { parseAbi } from 'viem';
 import { abis, cronAuthorized, db, deployment, keeper, publicClient, relayer, sendFrom, revertName, json } from '../_lib/server.js';
 import { deploymentReady } from '../_lib/server.js';
 import { checkAlerts } from '../_lib/alerts.js';
+import { marketOpenAt } from '../_lib/nyse.js';
 
 const EVENTS = parseAbi([
   'event NewCommitment(uint256 indexed commitment, uint256 index)',
@@ -153,13 +154,6 @@ async function prune() {
     db.query(`delete from public.pending_spends where op_id in (select op_id from public.operations where status in ('confirmed', 'failed', 'replaced')) or created_at < now() - interval '1 day'`),
   ]);
   return { vouchers: v.rowCount, requests: r.rowCount, mailboxKeys: k.rowCount, spends: s.rowCount };
-}
-
-/** NYSE regular session, weekdays 09:30-16:00 America/New_York (holidays not modelled). */
-export function marketOpenAt(date = new Date()) {
-  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date).map((p) => [p.type, p.value]));
-  const minutes = Number(parts.hour) * 60 + Number(parts.minute);
-  return !['Sat', 'Sun'].includes(parts.weekday) && minutes >= 570 && minutes < 960;
 }
 
 async function marker() {

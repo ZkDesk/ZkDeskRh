@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.1.0 (October 2026)
+
+- **Market hours:** the desk's market-hours flag follows the NYSE calendar: exchange holidays count as off-hours (1-hour epochs, the wider off-hours band and deep liquidations only), and early-close days end at 13:00. Rules-based, so no yearly data file; unscheduled closures can be added by date (`api/_lib/nyse.js`). Checked against the published 2025-2027 calendars (`api/nyse.test.mjs`).
+
 ## 3.0.1 (October 2026)
 
 - **Lending pool:** debt written off in a liquidation is covered by the reserves first (`coverLoss`), so lender assets never underflow. Found by the liquidation invariant handler in public CI right after 3.0.0; the 3.0.0 contract set held no funds and was redeployed with the fix (recorded as `v3-replaced`).

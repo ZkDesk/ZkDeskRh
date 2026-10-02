@@ -207,7 +207,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
           <ul>
             <li><strong>Steps:</strong> open, draw, repay, add collateral, withdraw collateral and close. Each is one proof; closing repays the remaining debt and returns all collateral to your private balance.</li>
             <li><strong>Marks:</strong> prices are pinned on-chain from the feeds and applied once, including any corporate-action multiplier. On mainnet a pinned mark stays usable for 25 hours; on testnet for one hour.</li>
-            <li><strong>Market hours:</strong> 9:30 to 16:00 New York time on weekdays. Holidays are not yet recognized.</li>
+            <li><strong>Market hours:</strong> the NYSE regular session, 9:30 to 16:00 New York time on trading days. Exchange holidays count as off-hours, and early-close days end at 13:00.</li>
             <li><strong>Fail-closed:</strong> drawing USDG requires a usable mark, a recent health attestation and an unpaused desk; withdrawing part of the collateral requires a usable mark and an unpaused desk. Repaying, adding collateral and closing work at any time unless governance disables the collateral class.</li>
           </ul>
         </Section>
@@ -304,9 +304,8 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
             <li>The desk operator can read the contents of credit positions, including each one's owner key, in order to prove health and run liquidations. Moving the operator into a trusted execution environment is planned.</li>
             <li>One relayer submits private actions and one keeper runs protocol upkeep. While they are unavailable, funds stay in the contracts, but private actions, deposit clearing, price pinning and health epochs pause, so new borrowing halts and liquidations wait.</li>
             <li>Credit, treasury and payment steps pay their relay fee with a prepaid voucher, bought by a private self-transfer from the acting member's personal balance, so each such step takes one extra proof.</li>
-            <li>The 10% of interest set aside as reserves has no withdrawal path yet; it stays in the lending pool and does not count toward lender shares.</li>
+            <li>The 10% of interest set aside as reserves has no withdrawal path yet; it stays in the lending pool, does not count toward lender shares, and first covers any debt written off in a liquidation.</li>
             <li>Deposit screening is a fixed standby; no third-party screening provider is connected yet.</li>
-            <li>Market hours do not yet account for exchange holidays.</li>
             <li>Only externally owned accounts are supported, and browser proving can take over a minute on slower devices.</li>
           </ul>
         </Section>
