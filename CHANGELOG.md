@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.11.0 (October 2026)
+
+Contract set v3.3 for the contract findings of the "V39 RESCORE" report. Circuits, verifiers and fixtures are unchanged. Live on mainnet since block 78408404 (pool `0xc1D05420b6EA4128F4D4eeb33152fe671D7326A9`, desk `0xF8eCB1f27F5878Db30ca46c4d299339AF2331bF3`), deployed while the desk held no positions; the v3.2 set is kept under `v3-replaced-3`. Build of record `c2c00380…` (42/42 contracts and libraries match).
+
+- **N-A (Medium):** a position step that leaves the position open must prove at the current rate index. The previous index understated debt, so a breached decoy could keep stepping and get its whole batch skipped every epoch.
+  - Closing may still use the previous index.
+  - The app proves a step again once if a checkpoint lands mid-proof.
+- **N-A, cron half:** when a batch is skipped because one of its positions changed after the snapshot (a cure), the desk cron re-plans the others without that slot and liquidates them in the same epoch.
+- **N-3 (Low):** `attestAndLiquidate` no longer reverts when someone front-runs the operator's epoch proof with `attest`. If the same snapshot and breached set are already attested, its batches go straight through.
+- **H-1r residual (Low):** a draw or repay below the class minimum is no longer activity for eviction.
+- **Tests:**
+  - `test_v33_*` (current index, same-epoch re-plan, front-run attest, dust debt moves)
+  - a new invariant for the idle, eviction and index rules (8 invariants at 102,400 calls)
+  - `scripts/ops/e2e-replan.mjs` (real proofs: one position cures after the snapshot, and its batch-mate is still liquidated in the same epoch)
+
 ## 3.10.1 (October 2026)
 
 Fixes from the "V39 RESCORE" report (agent findings; the contract Medium N-A needs v3.3 and is planned separately).

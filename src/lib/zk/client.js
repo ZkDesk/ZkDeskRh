@@ -212,8 +212,21 @@ export function createClient({ publicClient, walletClient = null, address = null
     return { lastAttestedAt: Number(lastAttestedAt), healthy, epoch: Number(epoch) };
   }
 
-  /** One credit step. position: from positions() or null to open. */
-  async function credit({ symbol, position = null, collIn = 0n, collOut = 0n, draw = 0n, repay = 0n }) {
+  /**
+   * One credit step. position: from positions() or null to open. A step that keeps the position open
+   * must prove at the current rate index (v3.3); if accrue() lands while proving, it is proven again once.
+   */
+  async function credit(step) {
+    try {
+      return await creditOnce(step);
+    } catch (error) {
+      if (!/StaleIndex|Rates were just updated/.test(error?.message ?? '')) throw error;
+      status('Rates were just updated: proving again…');
+      return creditOnce(step);
+    }
+  }
+
+  async function creditOnce({ symbol, position = null, collIn = 0n, collOut = 0n, draw = 0n, repay = 0n }) {
     const m = await market(symbol);
     const left = (position?.collateral ?? 0n) + collIn - collOut;
     if (left > 0n && (!position || collOut) && left < m.minColl) throw new Error(`A position must hold at least ${Number(m.minColl) / 1e18} ${symbol} of collateral.`);

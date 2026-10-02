@@ -118,10 +118,11 @@ function sizeSale(p, { mark, price, liqBps, rateIndex, minDebt = 0n }, override)
  * Sealed batches (≤ BATCH slots each) for one collateral class at a uniform `price`.
  * Only slots in the attested breached set that are still breached at `mark`; off-hours only below 95%.
  */
-export function planLiquidations({ positions, bitmap, salt, asset, mark, price, liqBps, rateIndex, marketOpen, minDebt = 0n }) {
+/** only: optional Set of slots to plan (a re-plan of skipped batches); bitmap stays the epoch's. */
+export function planLiquidations({ positions, bitmap, salt, asset, mark, price, liqBps, rateIndex, marketOpen, minDebt = 0n, only = null }) {
   const eligible = positions
     .map((p, slot) => ({ p, slot }))
-    .filter(({ p, slot }) => p && p.asset === BigInt(asset) && (bitmap >> BigInt(slot)) & 1n && isBreached(p, mark, liqBps, rateIndex) && (marketOpen || isDeep(p, mark, liqBps, rateIndex)));
+    .filter(({ p, slot }) => p && p.asset === BigInt(asset) && (!only || only.has(slot)) && (bitmap >> BigInt(slot)) & 1n && isBreached(p, mark, liqBps, rateIndex) && (marketOpen || isDeep(p, mark, liqBps, rateIndex)));
   const batches = [];
   for (let i = 0; i < eligible.length; i += BATCH) {
     batches.push(buildLiquidation({ entries: eligible.slice(i, i + BATCH), bitmap, salt, asset: BigInt(asset), mark, price, liqBps, rateIndex, marketOpen, minDebt }));

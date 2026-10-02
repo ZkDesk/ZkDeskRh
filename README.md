@@ -305,26 +305,26 @@ Invariants (`contracts/test/Invariants.t.sol`, 1,600 runs of 64 random calls ove
 
 ## Deployed contracts
 
-Robinhood Chain mainnet (chain 4663), v3 (contract set v3.2), deployed in block 78084396. Every contract and library source is verified on [Sourcify](https://repo.sourcify.dev/4663/0xB56Adf443812dD155C91d17d11F36B897e856938), which the explorer imports.
+Robinhood Chain mainnet (chain 4663), v3 (contract set v3.3), deployed in block 78408404. Every contract and library source is verified on [Sourcify](https://repo.sourcify.dev/4663/0xc1D05420b6EA4128F4D4eeb33152fe671D7326A9), which the explorer imports.
 
-**Build of record:** `cf7ed7de7692c85893d9ee2fd85badc30382e234f2520f2d55dd788f94aa860f`, reproducible from a clone. `node scripts/build-hash.mjs mainnet` (after `forge build` in `contracts/`) compares the runtime code of all 42 deployed contracts and libraries with your build, with immutables, library links and metadata masked, and prints this hash of the build. `node scripts/check-deployment.mjs mainnet` runs the same comparison together with the governance and wiring checks, and CI runs it daily.
+**Build of record:** `c2c00380d7578e505ecfc1749eb090d63c16c717869d6b4fd37b7d36d60834a4`, reproducible from a clone. `node scripts/build-hash.mjs mainnet` (after `forge build` in `contracts/`) compares the runtime code of all 42 deployed contracts and libraries with your build, with immutables, library links and metadata masked, and prints this hash of the build. `node scripts/check-deployment.mjs mainnet` runs the same comparison together with the governance and wiring checks, and CI runs it daily.
 
 | Contract | Address |
 | --- | --- |
-| ZKDeskPool (shielded pool) | [0xB56Adf443812dD155C91d17d11F36B897e856938](https://robinhoodchain.blockscout.com/address/0xB56Adf443812dD155C91d17d11F36B897e856938) |
-| AssetGate | [0x3588BaAeC8582F5db525693A9770FdAbc93a2fE0](https://robinhoodchain.blockscout.com/address/0x3588BaAeC8582F5db525693A9770FdAbc93a2fE0) |
-| CreditDesk | [0x47d0D408C62Ec1BEa8C84f8b06C656c19Cf7Ce26](https://robinhoodchain.blockscout.com/address/0x47d0D408C62Ec1BEa8C84f8b06C656c19Cf7Ce26) |
-| DeskGuardian | [0x39CE8811b25B5C2da9216708Cec037966e79cf12](https://robinhoodchain.blockscout.com/address/0x39CE8811b25B5C2da9216708Cec037966e79cf12) |
-| LendingPoolUSDG | [0xa63e501c4A6eAEA4Ae320d784e69197d22711eb3](https://robinhoodchain.blockscout.com/address/0xa63e501c4A6eAEA4Ae320d784e69197d22711eb3) |
-| UniswapV3Venue | [0x5f429536Cb838855a1870743DCE50577201B10f8](https://robinhoodchain.blockscout.com/address/0x5f429536Cb838855a1870743DCE50577201B10f8) |
-| TreasuryLedger | [0x645e0EF90C72Dd7613BD2e8664Db8D42420d0d41](https://robinhoodchain.blockscout.com/address/0x645e0EF90C72Dd7613BD2e8664Db8D42420d0d41) |
-| MandateRegistry | [0xaAe4177997aBAF3270c26A321Ff06723f309F6E1](https://robinhoodchain.blockscout.com/address/0xaAe4177997aBAF3270c26A321Ff06723f309F6E1) |
+| ZKDeskPool (shielded pool) | [0xc1D05420b6EA4128F4D4eeb33152fe671D7326A9](https://robinhoodchain.blockscout.com/address/0xc1D05420b6EA4128F4D4eeb33152fe671D7326A9) |
+| AssetGate | [0xA8E32CC5A6c1bA0Cc7841c50E4Df2a88cc55CaC4](https://robinhoodchain.blockscout.com/address/0xA8E32CC5A6c1bA0Cc7841c50E4Df2a88cc55CaC4) |
+| CreditDesk | [0xF8eCB1f27F5878Db30ca46c4d299339AF2331bF3](https://robinhoodchain.blockscout.com/address/0xF8eCB1f27F5878Db30ca46c4d299339AF2331bF3) |
+| DeskGuardian | [0xaa843bbb5ac69A17116CBAa2939fd09a0896b326](https://robinhoodchain.blockscout.com/address/0xaa843bbb5ac69A17116CBAa2939fd09a0896b326) |
+| LendingPoolUSDG | [0xDB3b9703D7555E03aC7228D3B3bCC5f476cd4Cf1](https://robinhoodchain.blockscout.com/address/0xDB3b9703D7555E03aC7228D3B3bCC5f476cd4Cf1) |
+| UniswapV3Venue | [0xcdd4672C71FFC602A647CBDBBC582A2dE65809E3](https://robinhoodchain.blockscout.com/address/0xcdd4672C71FFC602A647CBDBBC582A2dE65809E3) |
+| TreasuryLedger | [0x388b313fcaeA4831A69B8A9E0FaDF43132FBf429](https://robinhoodchain.blockscout.com/address/0x388b313fcaeA4831A69B8A9E0FaDF43132FBf429) |
+| MandateRegistry | [0xBb25Beeba78dF54BBB8C4b03411d00B01e4e4722](https://robinhoodchain.blockscout.com/address/0xBb25Beeba78dF54BBB8C4b03411d00B01e4e4722) |
 | Marker (shared with earlier releases) | [0xC3061368E66b5a4253E5E98346677c6Ce093A735](https://robinhoodchain.blockscout.com/address/0xC3061368E66b5a4253E5E98346677c6Ce093A735) |
 | Governance Safe (2-of-3) | [0x1abAE714C8A68c73627b021F18FB3A68d9BE4EF8](https://robinhoodchain.blockscout.com/address/0x1abAE714C8A68c73627b021F18FB3A68d9BE4EF8) |
 | TimelockController | [0xe89b6689d8C1C30fD9FF47b4dbcFe5c4b790c0fF](https://robinhoodchain.blockscout.com/address/0xe89b6689d8C1C30fD9FF47b4dbcFe5c4b790c0fF) |
 | $ZKD token (ZkProof) | [0x2c612e2f811f106f1Baa1Dbc5fbaE88F1ac561C7](https://robinhoodchain.blockscout.com/address/0x2c612e2f811f106f1Baa1Dbc5fbaE88F1ac561C7) |
 
-Earlier releases remain on-chain so their notes can always be withdrawn: v2 pool [0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F](https://robinhoodchain.blockscout.com/address/0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F) and v1 pool (tag `v1-final`) [0x804170e2A552EFF5b29710E9378E7c7Df31D607A](https://robinhoodchain.blockscout.com/address/0x804170e2A552EFF5b29710E9378E7c7Df31D607A). Earlier v3 contract sets, replaced while the desk held no positions, are recorded under `v3-replaced` and `v3-replaced-2` in `src/lib/chain/deployments/4663.json`. Testnet (46630) addresses are in `src/lib/chain/deployments/46630.json`.
+Earlier releases remain on-chain so their notes can always be withdrawn: v2 pool [0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F](https://robinhoodchain.blockscout.com/address/0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F) and v1 pool (tag `v1-final`) [0x804170e2A552EFF5b29710E9378E7c7Df31D607A](https://robinhoodchain.blockscout.com/address/0x804170e2A552EFF5b29710E9378E7c7Df31D607A). Earlier v3 contract sets, replaced while the desk held no positions, are recorded under `v3-replaced`, `v3-replaced-2` and `v3-replaced-3` in `src/lib/chain/deployments/4663.json`. Testnet (46630) addresses are in `src/lib/chain/deployments/46630.json`.
 
 ## Operations
 

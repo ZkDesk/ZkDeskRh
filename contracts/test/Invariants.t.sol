@@ -67,6 +67,13 @@ contract Handler is Test {
     bool public snapshotReused; // a snapshot backed two epochs
     uint256 public liquidations;
     uint256 public evictions;
+    // v3.3 (V39): activity for eviction and the rate index of open steps.
+    uint256 constant MIN_COLL = 1e18; // the class minimums set in setUp
+    bool public dustIsActivity; // a dust top-up refreshed activeAt (H-1r)
+    bool public minimumNotActivity; // a top-up of the class minimum did not
+    bool public evictedTooEarly; // an eviction before activeAt + EVICT_AFTER
+    bool public staleIndexStepped; // a step that kept a position open at the previous index (N-A)
+    uint256 public topUps;
 
     // Treasury ledgers.
     uint256[] ledgerIds;
@@ -160,6 +167,10 @@ contract Handler is Test {
     // ---- desk ----
 
     function _act(CreditDesk.PositionProof memory p) internal returns (bool ok) {
+        return _actAt(p, desk.index());
+    }
+
+    function _actAt(CreditDesk.PositionProof memory p, uint256 rateIndex) internal returns (bool ok) {
         CreditDesk.PositionExt memory e = CreditDesk.PositionExt(address(0), 0, hex"01", hex"02", hex"03");
         p.extDataHash = uint256(keccak256(abi.encode(e))) % FIELD;
         p.root = _root();
@@ -167,7 +178,7 @@ contract Handler is Test {
         p.outputCommitments = [_fresh(), _fresh()];
         (uint64 mark,,) = marker.current(address(stock));
         p.mark = mark;
-        p.rateIndex = desk.index();
+        p.rateIndex = rateIndex;
         try desk.act(p, e) {
             ok = true;
         } catch {}
@@ -232,6 +243,38 @@ contract Handler is Test {
         slotColl[slot] -= amount;
         ghostCollateral -= amount;
         if (closes) ghostLive--;
+    }
+
+    /// Adds collateral to a live position: dust is not activity for eviction, the class minimum is.
+    function topUp(uint256 seed, uint256 amount, bool dust) external {
+        (bool found, uint8 slot) = _live(seed);
+        uint256 have = ghostShielded[address(stock)];
+        if (!found || have < (dust ? 1 : MIN_COLL)) return;
+        amount = dust ? 1 : bound(amount, MIN_COLL, have);
+        vm.warp(block.timestamp + 1); // a later timestamp shows whether activeAt moved
+        uint64 before = desk.activeAt(slot);
+        CreditDesk.PositionProof memory p;
+        (p.slot, p.collAsset, p.inAsset, p.oldLeaf, p.newLeaf, p.collIn) = (slot, address(stock), address(stock), desk.slots(slot), _fresh(), amount);
+        if (!_act(p)) return;
+        ghostShielded[address(stock)] -= amount;
+        slotColl[slot] += amount;
+        ghostCollateral += amount;
+        if (dust && desk.activeAt(slot) != before) dustIsActivity = true;
+        if (!dust && desk.activeAt(slot) != block.timestamp) minimumNotActivity = true;
+        topUps++;
+    }
+
+    /// A top-up that keeps the position open, proven at the previous index after a checkpoint: refused.
+    function staleIndexStep(uint256 seed) external {
+        (bool found, uint8 slot) = _live(seed);
+        if (!found || desk.index() == desk.prevIndex() || ghostShielded[address(stock)] == 0) return;
+        CreditDesk.PositionProof memory p;
+        (p.slot, p.collAsset, p.inAsset, p.oldLeaf, p.newLeaf, p.collIn) = (slot, address(stock), address(stock), desk.slots(slot), _fresh(), 1);
+        if (!_actAt(p, desk.prevIndex())) return;
+        staleIndexStepped = true;
+        ghostShielded[address(stock)] -= 1;
+        slotColl[slot] += 1;
+        ghostCollateral += 1;
     }
 
     function accrue(uint256 minutes_) external {
@@ -306,9 +349,21 @@ contract Handler is Test {
     function evict(uint256 seed) external {
         (bool found, uint8 slot) = _live(seed);
         if (!found || slotDebt[slot] != 0) return;
-        uint256 due = desk.touchedAt(slot) + desk.EVICT_AFTER();
-        if (block.timestamp < due) vm.warp(due);
+        uint256 due = desk.activeAt(slot) + desk.EVICT_AFTER(); // activity, not any touch (v3.2)
         uint256 coll = slotColl[slot];
+        if (block.timestamp < due) {
+            // Before it is due, an eviction must fail.
+            try desk.evict(CreditDesk.EvictProof(hex"00", slot, address(stock), coll, _fresh())) {
+                evictedTooEarly = true;
+                evictions++;
+                ghostShielded[address(stock)] += coll;
+                ghostCollateral -= coll;
+                slotColl[slot] = 0;
+                ghostLive--;
+                return;
+            } catch {}
+            vm.warp(due);
+        }
         try desk.evict(CreditDesk.EvictProof(hex"00", slot, address(stock), coll, _fresh())) {} catch {
             return;
         }
@@ -443,7 +498,7 @@ contract InvariantsTest is Test {
         IDeskVerifier dyes = IDeskVerifier(address(yes));
         desk = new CreditDesk([dyes, dyes, dyes, dyes], pool, marker, lending, [uint256(1), 2], address(this));
         lending.setDesk(IDeskDebt(address(desk)));
-        desk.setClass(address(stock), 6000, 7000, type(uint128).max, 0, 0, true);
+        desk.setClass(address(stock), 6000, 7000, type(uint128).max, 1e18, 10e6, true); // minimums only gate activity here
         MockAMM amm = new MockAMM(marker, usdg);
         desk.setVenue(ISaleVenue(address(amm)), address(0xb0b));
         vault = new MockERC4626(usdg);
@@ -522,6 +577,15 @@ contract InvariantsTest is Test {
         assertEq(lending.totalAssets(), lending.cash() + desk.totalDebt() - lending.reserves(), "NAV");
     }
 
+    /// v3.3 (V39): dust is never activity, the class minimum always is, nothing is evicted before
+    /// activeAt + EVICT_AFTER, and no step keeps a position open at the previous rate index.
+    function invariant_idleAndIndexRules() public view {
+        assertFalse(handler.dustIsActivity(), "dust is not activity");
+        assertFalse(handler.minimumNotActivity(), "the minimum is activity");
+        assertFalse(handler.evictedTooEarly(), "eviction only when idle");
+        assertFalse(handler.staleIndexStepped(), "open steps at the current index");
+    }
+
     /// Every handler path the invariants rely on succeeds in a fixed sequence (so a handler that silently
     /// stops working fails here rather than leaving an invariant vacuous).
     function test_handlersReachEveryPath() public {
@@ -534,6 +598,11 @@ contract InvariantsTest is Test {
         handler.open(2e18, 100e6);
         handler.liquidate(1, 5_000, 5_000);
         handler.staleLiquidation(1);
+        handler.topUp(0, 0, true); // dust
+        handler.topUp(0, 1e18, false); // the class minimum
+        assertEq(handler.topUps(), 2, "top-ups");
+        handler.accrue(60);
+        handler.staleIndexStep(0);
         handler.evict(0);
         assertGt(handler.liquidations(), 0, "liquidation");
         assertGt(handler.evictions(), 0, "eviction");
@@ -553,5 +622,6 @@ contract InvariantsTest is Test {
         invariant_liquidationAndEpochs();
         invariant_treasuryLedger();
         invariant_slotsAndLenderNav();
+        invariant_idleAndIndexRules();
     }
 }

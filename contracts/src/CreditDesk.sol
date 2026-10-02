@@ -302,7 +302,10 @@ contract CreditDesk is ReentrancyGuard, Ownable {
         if (slots[p.slot] != p.oldLeaf) revert SlotMismatch();
         bool reducesRisk = p.draw == 0 && p.collOut == 0; // adds collateral or repays
         if (p.oldLeaf != 0 && p.newLeaf != 0 && !reducesRisk && block.timestamp < touchedAt[p.slot] + STEP_INTERVAL) revert TooSoon();
-        if (p.rateIndex != index && p.rateIndex != prevIndex) revert StaleIndex();
+        // A position that remains is proven healthy at the current index: the previous one understates
+        // debt, so a breached position could still step and change its leaf (audit V39 N-A). accrue()
+        // is permissionless, so no grace window for the previous index would hold. Closing may use it.
+        if (p.rateIndex != index && (p.newLeaf != 0 || p.rateIndex != prevIndex)) revert StaleIndex();
         // A position that remains is proven healthy at this mark, so it must be the latest pin (or the
         // previous one just after a new round). New risk also needs it fresh and unpaused. Closing
         // needs no mark: exits never wait on the oracle.
@@ -338,7 +341,9 @@ contract CreditDesk is ReentrancyGuard, Ownable {
         pool.moduleInsert(p.outputCommitments[1], ext.encryptedOutput2);
         slots[p.slot] = p.newLeaf;
         touchedAt[p.slot] = uint64(block.timestamp);
-        if (p.oldLeaf == 0 || p.draw > 0 || p.repay > 0 || p.collIn >= c.minCollateral || p.collOut >= c.minCollateral) activeAt[p.slot] = uint64(block.timestamp);
+        // Activity for eviction: opening, or moving at least a class minimum of debt or collateral (a
+        // draw and repay of dust no longer keeps an idle position, V39 H-1r residual).
+        if (p.oldLeaf == 0 || (p.draw > 0 && p.draw >= c.minDebt) || (p.repay > 0 && p.repay >= c.minDebt) || p.collIn >= c.minCollateral || p.collOut >= c.minCollateral) activeAt[p.slot] = uint64(block.timestamp);
         emit OperatorNote(p.slot, p.collAsset, p.operatorEph, p.operatorCipher);
         emit PositionUpdated(p.slot, p.newLeaf, ext.encryptedPosition);
         emit CreditFlow(p.collAsset, p.collIn, p.collOut, p.draw, p.repay);
@@ -369,7 +374,9 @@ contract CreditDesk is ReentrancyGuard, Ownable {
     /// @notice The operator's epoch: attest, then liquidate the breached set it just committed to, in
     /// one transaction, so nothing can replace the breached set in between (audit M-1).
     function attestAndLiquidate(HealthProof calldata h, LiquidationProof[] calldata batches) external nonReentrant {
-        _attest(h);
+        // attest() is permissionless: if someone sent this same epoch proof first (audit V39 N-3), the
+        // committed breached set is already this proof's, so its batches still go instead of reverting.
+        if (h.snapshotId != attestedSnapshot || h.breachCommit != breachCommit) _attest(h);
         for (uint256 i; i < batches.length; ++i) _liquidate(batches[i]);
     }
 

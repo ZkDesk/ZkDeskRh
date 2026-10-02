@@ -202,7 +202,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
         <Section id="lending" eyebrow="Product guides" title="Lending pool">
           <p>The USDG lending pool funds credit. <em>Allocate</em> converts private USDG into private lending-pool shares in a single proof, and <em>Move to liquid</em> converts shares back, subject to the pool's available cash. Shares appreciate as borrowers pay interest. If a liquidation cannot cover a position's debt, the remainder is written off and share value falls accordingly.</p>
           <Table head={['Utilization', 'Borrow rate (APR)']} rows={[['0%', '2%'], ['80% (kink)', '10%'], ['100%', '60%']]} caption="Rates are linear between points. 10% of interest accrues to reserves." />
-          <p>A single USDG rate index is checkpointed on-chain at most every ten minutes and at least hourly; proofs may use the latest or previous checkpoint.</p>
+          <p>A single USDG rate index is checkpointed on-chain at most every ten minutes and at least hourly; a step that keeps a position open must prove at the latest checkpoint, and closing may also use the previous one. If a checkpoint lands while a step is being proven, the app proves it again once.</p>
         </Section>
 
         <Section id="credit" eyebrow="Product guides" title="Private credit">
@@ -226,6 +226,7 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
             <li>Liquidation bonus: 2%, or 8% below 95%. Outside market hours only positions below 95% can be liquidated.</li>
             <li>Sale proceeds repay lenders first. The bonus and any surplus go to the protocol's bonus address, the governance Safe on mainnet.</li>
             <li>Unsold collateral stays in the owner's position. The owner sees what was sold and repaid; the public sees batch totals only.</li>
+            <li>If one position in a batch changes after the epoch's snapshot (its owner cured it), the batch is skipped on-chain, and the desk re-plans the others and liquidates them in the same epoch.</li>
           </ul>
         </Section>
 

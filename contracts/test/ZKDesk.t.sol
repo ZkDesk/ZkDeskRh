@@ -295,10 +295,9 @@ contract ZKDeskTest is Test {
         assertApproxEqAbs(lending.reserves(), interest / 10, 1, "10% spread to reserves");
         assertApproxEqAbs(lending.totalAssets(), 600e6 + interest - lending.reserves(), 1);
         assertGt(lending.convertToAssets(vm.parseJsonUint(json, ".shares")), 600e6, "lender NAV accrues");
-        _runPos(4); // repay proof made at the previous checkpoint is accepted
-        vm.warp(block.timestamp + 1 hours);
-        desk.accrue();
-        _expectPosRevert(5, CreditDesk.StaleIndex.selector); // two checkpoints later it is not
+        // v3.3 (V39 N-A): a step that keeps the position open must prove at the current index, so this
+        // repay proof made at the previous checkpoint is refused (closing may still use it: V32.t.sol).
+        _expectPosRevert(4, CreditDesk.StaleIndex.selector);
     }
 
     function test_accrueIsRateLimited() public {

@@ -32,6 +32,7 @@ contract SwitchVerifier is IVerifier {
 }
 
 /// v3.2 (rescore of v3): H-1 residual, L-a, L-b, L-c, and the BatchSkipped ordering.
+/// v3.3 (V39 rescore): N-A current index for open steps, the re-planned batch, N-3, dust debt moves.
 contract V32Test is Test {
     uint256 constant FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
     uint128 constant MIN_COLL = 10e18;
@@ -207,5 +208,112 @@ contract V32Test is Test {
         vm.expectRevert(TreasuryLedger.BadAction.selector);
         ledger.authorize(approve, new bytes[](0), "", address(0xbeef));
         ledger.authorize(approve, new bytes[](0), "", address(0));
+    }
+
+    // ---- v3.3 (V39 rescore) ----
+
+    /// A step in `slot` at `rateIndex`, expected to revert with `err` if set. Returns the new leaf.
+    function _act(uint8 slot, uint256 oldLeaf, bool close, uint256 collIn, uint256 repay, uint256 rateIndex, bytes4 err) internal returns (uint256 leaf) {
+        CreditDesk.PositionExt memory e = CreditDesk.PositionExt(address(0), 0, hex"01", hex"02", hex"03");
+        CreditDesk.PositionProof memory p;
+        leaf = close ? 0 : _fresh();
+        (p.slot, p.collAsset, p.inAsset, p.oldLeaf, p.newLeaf) = (slot, address(stock), repay > 0 ? address(usdg) : address(stock), oldLeaf, leaf);
+        (p.collIn, p.repay) = (collIn, repay);
+        (p.mark,,) = marker.current(address(stock));
+        p.rateIndex = rateIndex;
+        p.extDataHash = uint256(keccak256(abi.encode(e))) % FIELD;
+        p.root = _root();
+        p.inputNullifiers = [_fresh(), _fresh()];
+        p.outputCommitments = [_fresh(), _fresh()];
+        if (err != bytes4(0)) vm.expectRevert(err);
+        desk.act(p, e);
+    }
+
+    function _accrue() internal {
+        vm.warp(block.timestamp + 1 hours);
+        _price(100e8); // keep the mark fresh
+        desk.accrue();
+        assertTrue(desk.index() != desk.prevIndex(), "the index moved");
+    }
+
+    function _health(uint256 snapshotId, uint256 breachCommit) internal view returns (CreditDesk.HealthProof memory h) {
+        h.proof = hex"00";
+        h.snapshotId = snapshotId;
+        for (uint256 i; i < 64; ++i) h.leaves[i] = desk.slots(i);
+        (uint64 mark,,) = marker.current(address(stock));
+        h.marks[0] = mark;
+        h.rateIndex = desk.index();
+        h.breachCommit = breachCommit;
+    }
+
+    function _batch(uint8 slot, uint256 oldLeaf) internal view returns (CreditDesk.LiquidationProof memory p) {
+        (uint64 mark,,) = marker.current(address(stock));
+        (p.proof, p.collAsset, p.mark, p.price, p.rateIndex) = (hex"00", address(stock), mark, mark, desk.index());
+        (p.slots[0], p.oldLeaves[0], p.newLeaves[0], p.totalSold) = (slot, oldLeaf, _fresh2(oldLeaf), 1e18);
+    }
+
+    function _fresh2(uint256 x) internal pure returns (uint256) {
+        return uint256(keccak256(abi.encode("v33", x))) % (FIELD - 1) + 1;
+    }
+
+    /// N-A: the previous index understates debt, so a step that keeps a position open needs the current one.
+    function test_v33_openStepNeedsTheCurrentIndex() public {
+        uint256 leaf = _act(0, 0, false, 20e18, 0, desk.index(), bytes4(0));
+        _accrue();
+        uint256 prev = desk.prevIndex();
+        _act(0, leaf, false, 1, 0, prev, CreditDesk.StaleIndex.selector); // the report's tiny add at prevIndex
+        _act(0, leaf, false, 0, 1e6, prev, CreditDesk.StaleIndex.selector); // a repay that leaves it open, too
+        leaf = _act(0, leaf, false, 1, 0, desk.index(), bytes4(0)); // at the current index it lands
+        _accrue();
+        _act(0, leaf, true, 0, 1e6, desk.prevIndex(), bytes4(0)); // closing may still use the previous index
+        assertEq(desk.slots(0), 0);
+    }
+
+    /// N-A, cron half: after a batch is skipped because one position stepped, the others are liquidated
+    /// in the same epoch by a re-planned batch under the same breached set.
+    function test_v33_skippedBatchIsReplannedInTheSameEpoch() public {
+        uint256 a = _act(0, 0, false, 20e18, 0, desk.index(), bytes4(0));
+        uint256 b = _act(1, 0, false, 20e18, 0, desk.index(), bytes4(0));
+        CreditDesk.HealthProof memory h = _health(desk.snapshot(), 7); // proven over the snapshot's leaves
+        CreditDesk.LiquidationProof memory both = _batch(0, a);
+        (both.slots[1], both.oldLeaves[1], both.newLeaves[1]) = (1, b, _fresh2(b));
+        both.totalSold = 2e18;
+        _act(0, a, false, 1e18, 0, desk.index(), bytes4(0)); // slot 0 cures after the snapshot
+        CreditDesk.LiquidationProof[] memory list = new CreditDesk.LiquidationProof[](1);
+        list[0] = both;
+        desk.attestAndLiquidate(h, list); // the batch is skipped: slot 0 changed
+        uint256 epoch = desk.epoch();
+        assertEq(desk.slots(1), b, "slot 1 escaped with the skipped batch");
+        desk.liquidate(_batch(1, b)); // the re-plan without slot 0
+        assertEq(desk.slots(1), _fresh2(b), "slot 1 liquidated");
+        assertEq(desk.epoch(), epoch, "in the same epoch");
+    }
+
+    /// N-3: someone sends the operator's epoch proof first with attest(); attestAndLiquidate still lands.
+    function test_v33_frontRunAttestDoesNotBlockTheEpoch() public {
+        uint256 a = _act(0, 0, false, 20e18, 0, desk.index(), bytes4(0));
+        uint256 id = desk.snapshot();
+        CreditDesk.HealthProof memory h = _health(id, 7);
+        vm.prank(address(0xbad));
+        desk.attest(h);
+        uint256 epoch = desk.epoch();
+        CreditDesk.LiquidationProof[] memory list = new CreditDesk.LiquidationProof[](1);
+        list[0] = _batch(0, a);
+        desk.attestAndLiquidate(h, list); // reverted StaleSnapshot before v3.3
+        assertEq(desk.epoch(), epoch, "not attested twice");
+        assertEq(desk.slots(0), _fresh2(a), "its batch went through");
+        h.breachCommit = 8; // another breached set for the same snapshot is still refused
+        vm.expectRevert(CreditDesk.StaleSnapshot.selector);
+        desk.attestAndLiquidate(h, new CreditDesk.LiquidationProof[](0));
+    }
+
+    /// H-1r residual: moving dust debt is not activity, so it cannot keep an idle position.
+    function test_v33_dustDebtMovesAreNotActivity() public {
+        uint256 leaf = _step(0, false, 20e18, 0, 0, 0);
+        vm.warp(block.timestamp + 12 hours);
+        _step(leaf, false, 0, 0, 1, 0); // a dust repay lands but is not activity
+        vm.warp(block.timestamp + 12 hours);
+        _evict(20e18);
+        assertEq(desk.slots(0), 0);
     }
 }

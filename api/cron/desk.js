@@ -6,8 +6,9 @@
 //      steps cannot invalidate it, and batches over changed slots are skipped on-chain (audit N-1)
 //   3. for each class with breached slots, prices the sale at the venue (salePrice) and proves sealed
 //      batches (circuits/liquidate) at that uniform price
-//   4. attests and liquidates in one transaction (attestAndLiquidate, audit M-1); if a batch would
-//      revert, attests alone and sends the batches one by one so the epoch still lands
+//   4. attests and liquidates in one transaction (attestAndLiquidate, audit M-1); a batch that would
+//      revert is dropped so the epoch still lands. A batch skipped because one of its positions stepped
+//      after the snapshot is re-planned without that slot and liquidated in the same epoch (V39 N-A)
 //   5. evicts idle positions without debt (circuits/evict, audit H-1), a few per run
 // Nothing is stored off-chain; the indexer mirrors Attested / Liquidated events.
 // Fallback when Functions are too slow or down: node scripts/ops/desk.mjs
@@ -105,6 +106,24 @@ export async function runDesk({ operatorSk, prove, log = () => {} }) {
   const report = { live, breached: h.breached, sumValue: h.public.sumValue, sumDebt: h.public.sumDebt, proveMs: Date.now() - t0, batches: [], evicted: [] };
 
   // Sealed batches for the breached set this epoch commits to, proven before anything is sent.
+  const prices = new Map();
+  async function proveBatches(c, price, only = null) {
+    const out = [];
+    for (const b of planLiquidations({ positions, bitmap: h.bitmap, salt: h.salt, asset: c.asset, mark: c.mark, price, liqBps: c.liqBps, minDebt: c.minDebt, rateIndex: index, marketOpen, only })) {
+      const p = b.public;
+      log(`batch ${c.address}: slots ${p.slots.slice(0, b.rows.length)}`);
+      const { proof: bp } = await prove('liquidate', b.witness);
+      out.push({
+        asset: c.address, slots: p.slots.slice(0, b.rows.length),
+        args: {
+          proof: bp, collAsset: c.address, mark: p.mark, price: p.price, rateIndex: p.rateIndex, slots: p.slots,
+          oldLeaves: p.oldLeaves, newLeaves: p.newLeaves, encSold: p.encSold, encRepaid: p.encRepaid,
+          totalSold: p.totalSold, totalValue: p.totalValue, totalRepay: p.totalRepay, totalRepaidScaled: p.totalRepaidScaled, totalWrittenOff: p.totalWrittenOff,
+        },
+      });
+    }
+    return out;
+  }
   const batches = [];
   for (const c of cls) {
     const breached = positions.filter((p, slot) => p && p.asset === c.asset && (h.bitmap >> BigInt(slot)) & 1n);
@@ -117,24 +136,14 @@ export async function runDesk({ operatorSk, prove, log = () => {} }) {
       report.batches.push({ asset: c.address, error: revertName(error) });
       continue;
     }
-    for (const b of planLiquidations({ positions, bitmap: h.bitmap, salt: h.salt, asset: c.asset, mark: c.mark, price, liqBps: c.liqBps, minDebt: c.minDebt, rateIndex: index, marketOpen })) {
-      const p = b.public;
-      log(`batch ${c.address}: slots ${p.slots.slice(0, b.rows.length)}`);
-      const { proof: bp } = await prove('liquidate', b.witness);
-      batches.push({
-        asset: c.address, slots: p.slots.slice(0, b.rows.length),
-        args: {
-          proof: bp, collAsset: c.address, mark: p.mark, price: p.price, rateIndex: p.rateIndex, slots: p.slots,
-          oldLeaves: p.oldLeaves, newLeaves: p.newLeaves, encSold: p.encSold, encRepaid: p.encRepaid,
-          totalSold: p.totalSold, totalValue: p.totalValue, totalRepay: p.totalRepay, totalRepaidScaled: p.totalRepaidScaled, totalWrittenOff: p.totalWrittenOff,
-        },
-      });
-    }
+    prices.set(c.address, price);
+    batches.push(...(await proveBatches(c, price)));
   }
 
   // One transaction: nothing can replace the breached set between the epoch and its liquidations.
-  // A batch that would revert (e.g. the venue moved) is dropped from the call, never sent on its own
-  // after the epoch: a separate liquidate would reopen the window an old epoch proof could use (M-1).
+  // A batch that would revert (e.g. the venue moved) is dropped from the call and retried next epoch.
+  // Liquidations sent after the epoch (the re-plan below) run under this epoch's breached set: since v3
+  // an epoch proof is single-use and needs a newer snapshot, so no old proof can replace it (M-1).
   const atomic = (list) => (list.length ? ['attestAndLiquidate', [health, list.map((b) => b.args)]] : ['attest', [health]]);
   const sim = (list) => publicClient.simulateContract({ account: keeper, ...desk, functionName: atomic(list)[0], args: atomic(list)[1] }).then(() => true, (error) => { report.dropped = [...(report.dropped ?? []), revertName(error)]; return false; });
   let send = batches;
@@ -145,6 +154,28 @@ export async function runDesk({ operatorSk, prove, log = () => {} }) {
   report.attest = await submit(...atomic(send));
   report.batches.push(...send.map((b) => ({ asset: b.asset, slots: b.slots, tx: report.attest.hash })));
   report.batches.push(...batches.filter((b) => !send.includes(b)).map((b) => ({ asset: b.asset, slots: b.slots, error: 'dropped: would revert; retried next epoch' })));
+
+  // Audit V39 N-A: a batch is skipped whole when one of its positions stepped after the snapshot (a
+  // cure). Its other positions still hold their snapshot leaves: re-plan them without the changed slot
+  // and liquidate them now, under this epoch's breached set, instead of a whole epoch later.
+  const again = new Map();
+  for (const b of send) {
+    for (const [i, slot] of b.slots.entries()) {
+      if ((await read(deployment.desk, abis.desk, 'slots', [BigInt(slot)])) !== b.args.oldLeaves[i]) continue; // liquidated, or stepped
+      if (!again.has(b.asset)) again.set(b.asset, new Set());
+      again.get(b.asset).add(slot);
+    }
+  }
+  report.replanned = [];
+  for (const [asset, only] of again) {
+    for (const b of await proveBatches(cls.find((c) => c.address === asset), prices.get(asset), only)) {
+      try {
+        report.replanned.push({ asset, slots: b.slots, ...(await submit('liquidate', [b.args])) });
+      } catch (error) {
+        report.replanned.push({ asset, slots: b.slots, error: revertName(error) });
+      }
+    }
+  }
 
   // Audit H-1: free the slots of positions without debt that nobody touched for EVICT_AFTER.
   const [evictAfter, now] = await Promise.all([read(deployment.desk, abis.desk, 'EVICT_AFTER'), publicClient.getBlock({ blockTag: 'latest' }).then((b) => b.timestamp)]);
