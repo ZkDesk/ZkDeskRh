@@ -107,6 +107,9 @@ const [receipt] = await step('Agent lists its receipts', () => agent.receipts())
 check(receipt?.amount === '25', 'the payment carries a receipt');
 const record = await step('Agent proves the receipt (amount disclosed)', () => agent.proveReceipt(receipt.id, { discloseAmount: true }).then((r) => r.proof.amount));
 check(await agent.verifyReceipt(await agent.proveReceipt(receipt.id, { discloseAmount: true })), 'the receipt verifies on-chain');
+const forOwner = await step('Agent proves the receipt for the Owner (0x address as verifier)', () => agent.proveReceipt(receipt.id, { verifier: account.address }));
+check(await agent.verifyReceipt(forOwner, { expectedVerifier: account.address }), 'it verifies for the Owner');
+await refused('the same receipt checked by someone else', () => agent.verifyReceipt(forOwner, { expectedVerifier: '0x000000000000000000000000000000000000dEaD' }), /made out to verifier/);
 const ownerLink = (amount) => paymentLink(site, { to: ownerZk, amount, memo: 'e2e invoice', network: 'testnet' }).toString();
 check((await step("Agent pays the Owner's 3 tUSDG link from its balance", () => agent.payLink(ownerLink('3')))).confirmed, 'link paid');
 check((await step('Agent pays an open-amount link from the treasury (5)', () => agent.payLink(ownerLink(''), { amount: '5', treasury: id }))).confirmed, 'link paid from the treasury');

@@ -33,6 +33,12 @@ const agent = await createAgent({ seed, network: 'mainnet', maxPerTx: '50', stat
 // names (a forged one could answer true). Refused before any chain read.
 await assert.rejects(agent.verifyReceipt({ registry: '0x' + 'de'.repeat(20), chainId: 4663, proof: {} }), /not ZKDesk's MandateRegistry/);
 await assert.rejects(agent.verifyReceipt({ chainId: 46630, proof: {} }), /another network/);
+// A receipt made out to someone else (or to anyone) is refused for an expected verifier, before any chain read.
+await assert.rejects(agent.verifyReceipt({ chainId: 4663, proof: { verifier: '5' } }, { expectedVerifier: '0x6' }), /made out to verifier 0x5, not 0x6/);
+await assert.rejects(agent.verifyReceipt({ chainId: 4663, proof: { verifier: '0' } }, { expectedVerifier: 6n }), /made out to anyone/);
+await assert.rejects(agent.verifyReceipt({ chainId: 4663, proof: { verifier: '5' } }, { expectedVerifier: 'me' }), /expectedVerifier must be/);
+for (const empty of ['', ' ', '0', '0x0', 0, '5', '0b101']) await assert.rejects(agent.verifyReceipt({ chainId: 4663, proof: { verifier: '0' } }, { expectedVerifier: empty }), /non-zero 0x address/, `"${empty}" does not switch the check off`);
+await assert.rejects(agent.verifyReceipt({ chainId: 4663, proof: { verifier: '5' } }, { expectedVerifier: agent.address }), /not a zkd: address/);
 await assert.rejects((await import('../src/lib/zk/client.js')).verifyReceipt({ chain: { id: 46630 } }, { proof: {} }), /client on chain 4663\./);
 // The TypeScript declarations name every method and export (pnpm test:types checks they compile).
 {
@@ -151,6 +157,8 @@ for (const [args, why] of [[{ to: 'zkd:x' }, /Missing argument "amount"/], [{ to
   assert.match(r.content[0].text, why);
 }
 assert.match((await call('zkdesk_request_link', { memo: 'x'.repeat(61) })).result.content[0].text, /longer than 60/);
+// expected_verifier: only a 0x EVM address gets through (an empty one would accept receipts for anyone).
+for (const v of ['', ' ', 'zkd:' + 'a'.repeat(128), 5, '0x' + 'a'.repeat(40) + '\n']) assert.equal((await call('zkdesk_verify_receipt', { record: {}, expected_verifier: v })).result.content[0].text.match(/expected_verifier" (is not valid|must be a string)/) !== null, true, JSON.stringify(v));
 assert.equal((await call('zkdesk_nope', {})).error.code, -32602);
 assert.equal((await handle({ jsonrpc: '2.0', id: 10, method: 'resources/list' })).error.code, -32601);
 assert.equal((await handle({ id: 11, method: 'ping' })).error.code, -32600);

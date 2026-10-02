@@ -496,7 +496,10 @@ export async function createAgent({
       if (!receipt) throw new Error(`No received payment ${id}. List them with receipts().`);
       return client.proveReceipt(receipt, { verifier, discloseAmount, discloseOwner });
     },
-    /** Checks a receipt record against the MandateRegistry (anyone can; no keys used). */
-    verifyReceipt: (record) => zk.verifyReceipt(publicClient, record),
+    /**
+     * Checks a receipt record against ZKdesk's MandateRegistry (anyone can; no keys used). With
+     * expectedVerifier (your 0x EVM address), a receipt made out to anyone else is refused.
+     */
+    verifyReceipt: (record, options) => zk.verifyReceipt(publicClient, record, { expectedVerifier: options?.expectedVerifier }),
   };
 }

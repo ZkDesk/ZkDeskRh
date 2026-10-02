@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.16.0 (October 2026)
+
+- **Check a receipt is meant for you:** a payment receipt is made out to one verifier (or to anyone, verifier 0), and the proof binds it. `verifyReceipt(record, { expectedVerifier })` and `zkdesk_verify_receipt`'s `expected_verifier` refuse a receipt made out to anyone else, so a receipt shown to one party cannot be passed off to another. A receipt for anyone is refused too, because anyone could have been shown it. The refusal names who the receipt is for and happens before any chain read.
+  - `expectedVerifier` must be a non-zero 0x EVM address: a value that reads as 0 (`""`, `"0"`) is refused instead of accepting receipts for anyone, and a `zkd:` address gets a pointed error.
+  - `zkdesk_verify_receipt` also returns the receipt's asset, and says a receipt can be presented more than once: a verifier granting something per receipt remembers the ones it accepted.
+
 ## 3.15.0 (October 2026)
 
 - **TypeScript types for the agent SDK:** `agent/index.d.mts` and `agent/paywall.d.mts` describe `createAgent` and every agent method, `createPaywall`, and the memory, file and Redis stores, including the result shapes. A payment is either confirmed with its transaction or not confirmed with a status. A paid fetch either has the answer, or has the request id to retry with. Editors complete and check every call; nothing changes at run time.

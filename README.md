@@ -273,7 +273,7 @@ ZKDESK_SEED=0x… node agent/mcp.mjs             # MCP server (stdio) for Claude
   - `zkdesk_fetch_paid` (pays a ZKdesk 402 challenge up to `max_price`, then fetches again)
   - `zkdesk_incoming`, `zkdesk_wait_for_payment` (payments received from others; wait for one before acting)
   - `zkdesk_pay_link`, `zkdesk_request_link` (the dashboard's payment request links, paid or created)
-  - `zkdesk_receipts`, `zkdesk_prove_receipt`, `zkdesk_verify_receipt`
+  - `zkdesk_receipts`, `zkdesk_prove_receipt`, `zkdesk_verify_receipt` (with `expected_verifier`, a receipt made out to anyone else is refused)
 - **SDK:** `createAgent({ seed, network, maxPerTx })` from `agent/index.mjs`. TypeScript types ship beside it (`agent/index.d.mts`, `agent/paywall.d.mts`).
 - **Environment:** `ZKDESK_NETWORK` (default `mainnet`), `ZKDESK_API`, `ZKDESK_RPC`.
 - **Local guards** (`off` removes one): `ZKDESK_MAX_PER_TX` (default 50 USDG), `ZKDESK_MAX_PER_DAY` (rolling 24 h with fees, default 100, kept in a 0600 file), `ZKDESK_ALLOW_TO` (allowed recipients), `ZKDESK_TREASURIES` (allowed treasuries), `ZKDESK_MAX_FEE` (per relay step, default 2).

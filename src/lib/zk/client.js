@@ -607,9 +607,13 @@ export { debtOf, maxDebt, valueOf, LENDING };
 
 /**
  * Checks an exported receipt (proveReceipt output) against ZKDesk's MandateRegistry on this chain: the
- * current one, or a replaced contract set's for an older receipt. No keys needed.
+ * current one, or a replaced contract set's for an older receipt. No keys needed. expectedVerifier (a
+ * 0x EVM address): refuse a receipt made out to anyone else, including one for anyone (verifier 0),
+ * which could have been shown to anyone. A receipt can be presented more than once: a verifier that
+ * grants something per receipt remembers the ones it accepted.
  */
-export async function verifyReceipt(publicClient, record) {
+export async function verifyReceipt(publicClient, record, options) {
+  const expectedVerifier = options?.expectedVerifier;
   const p = record.proof;
   // The record names its registry and chain: only ZKDesk's own count, or a forged contract could answer true.
   if (publicClient.chain?.id !== deployment.chainId) throw new Error(`Verify with a client on chain ${deployment.chainId}.`);
@@ -617,8 +621,17 @@ export async function verifyReceipt(publicClient, record) {
   const ours = [deployment, ...Object.values(deployment)].map((d) => d?.mandates).filter(Boolean).map((a) => a.toLowerCase());
   const registry = String(record.registry ?? deployment.mandates).toLowerCase();
   if (!ours.includes(registry)) throw new Error("This receipt names a contract that is not ZKDesk's MandateRegistry on this network.");
+  const verifier = (() => { try { return BigInt(p?.verifier); } catch { throw new Error('This receipt names no valid verifier.'); } })(); // read once: checked and verified
+  if (expectedVerifier !== undefined && expectedVerifier !== null) {
+    if (/^zkd:/i.test(String(expectedVerifier))) throw new Error('Receipts are made out to a 0x EVM address, not a zkd: address.');
+    // Only a 0x address (or a bigint): a bare decimal or 0b/0o string would name another number.
+    const want = typeof expectedVerifier === 'bigint' ? expectedVerifier : /^0x[0-9a-f]{1,40}$/i.test(String(expectedVerifier)) ? BigInt(expectedVerifier) : -1n;
+    // A value that reads as 0 ('', ' ', '0') would accept receipts for anyone: refused, like any non-address.
+    if (want <= 0n || want >= 2n ** 160n) throw new Error(`expectedVerifier must be a non-zero 0x address (got "${expectedVerifier}").`);
+    if (verifier !== want) throw new Error(`This receipt is made out to ${verifier === 0n ? 'anyone (verifier 0)' : `verifier 0x${verifier.toString(16)}`}, not 0x${want.toString(16)}.`);
+  }
   return publicClient.readContract({
     address: registry, abi: abis.mandates, functionName: 'verifyReceipt',
-    args: [{ ...p, receiptRoot: BigInt(p.receiptRoot), ledgerId: BigInt(p.ledgerId), k: BigInt(p.k), verifier: BigInt(p.verifier), amount: BigInt(p.amount), owner: BigInt(p.owner) }],
+    args: [{ ...p, receiptRoot: BigInt(p.receiptRoot), ledgerId: BigInt(p.ledgerId), k: BigInt(p.k), verifier, amount: BigInt(p.amount), owner: BigInt(p.owner) }],
   });
 }

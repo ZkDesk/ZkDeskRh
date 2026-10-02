@@ -219,8 +219,12 @@ export interface Agent {
   receipts(): Promise<Receipt[]>;
   /** verifier: who the proof is for, a 0x address or number (default '0': anyone). */
   proveReceipt(id: string, options?: { verifier?: string | number | bigint; discloseAmount?: boolean; discloseOwner?: boolean }): Promise<ReceiptRecord>;
-  /** Checks a receipt against ZKdesk's own MandateRegistry on this chain; throws for another contract or chain. */
-  verifyReceipt(record: ReceiptRecord): Promise<boolean>;
+  /**
+   * Checks a receipt against ZKdesk's own MandateRegistry on this chain; throws for another contract or
+   * chain. expectedVerifier (your 0x address): throws for a receipt made out to anyone else, including
+   * one for anyone (verifier 0).
+   */
+  verifyReceipt(record: ReceiptRecord, options?: { expectedVerifier?: HexAddress | bigint }): Promise<boolean>;
 }
 
 export function createAgent(options: AgentOptions): Promise<Agent>;
