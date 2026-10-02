@@ -1,7 +1,8 @@
 // Treasury solvency statement: up to K unspent ledger notes, valued at contract-supplied prices,
 // cover the declared liabilities. Publishes only the statement (ledger, liabilities) plus the notes'
-// nullifiers, which the contract checks are unspent; zero-amount dummies pad the count, so neither
-// balances nor the number of notes can be recovered.
+// nullifiers, which the contract checks are unspent; zero-amount dummies pad the count. The balance
+// stays private, but the nullifiers are public: later spends of those notes link to the statement,
+// so the number of notes behind a statement can be learned over time (audit L-2).
 //
 // prices: USDG (6 dp) value of 1e18 base units of each asset; value6 = amount * price / 1e18.
 use lib::{
@@ -52,3 +53,5 @@ fn main(
     }
     assert(lte(liabilities * WAD, total));
 }
+
+mod tests;

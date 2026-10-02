@@ -9,20 +9,24 @@ import {IVerifier} from "./verifiers/TransactVerifier.sol";
 import {AssetGate} from "./AssetGate.sol";
 import {IConverter} from "./interfaces/IConverter.sol";
 
-/// @notice Immutable multi-asset shielded pool. No owner, no pause: exits are never gated.
-/// Notes are Poseidon commitments in one LeanIMT; spends reveal only nullifiers.
+/// @notice Immutable multi-asset shielded pool. No owner, no pause: exits are never gated. The asset
+/// gate only governs what enters (deposits, and the output asset of a convert); transfers and
+/// withdrawals of a note never consult it (audit M-3).
+/// Notes are Poseidon commitments in one LeanIMT of depth 32; spends reveal only nullifiers.
 /// Deposits wait `standby` seconds (screening window) before their notes enter the tree,
 /// and the depositor can always take a pending deposit back to its origin.
 /// Private converts swap one pool asset for another through a gate-approved converter.
-/// Gate-approved modules (the credit desk) spend and create notes under their own proofs.
+/// Modules (credit desk, treasury ledgers, mandates) spend and create notes under their own proofs.
+/// The module set is fixed once, by the deployer, right after deployment (audit M-7): governance
+/// cannot add a module later, so no new contract can ever take the pool's tokens.
 contract ZKDeskPool is ReentrancyGuard {
     using SafeERC20 for IERC20;
     using InternalLeanIMT for LeanIMTData;
 
     uint256 public constant FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
     uint256 public constant MAX_AMOUNT = 2 ** 100; // matches the circuit range check
-    uint256 public constant MAX_LEAVES = 2 ** 20; // circuit MAX_DEPTH = 20
-    uint256 public constant ROOT_HISTORY = 64;
+    uint256 public constant MAX_LEAVES = 2 ** 32; // circuit MAX_DEPTH = 32
+    uint256 public constant ROOT_HISTORY = 1024; // proofs may use any of the last 1024 roots
 
     /// Field order must match src/lib/zk/transact.js EXT_DATA.
     struct ExtData {
@@ -59,10 +63,14 @@ contract ZKDeskPool is ReentrancyGuard {
     IVerifier public immutable verifier;
     AssetGate public immutable gate;
     uint64 public immutable standby;
+    address internal immutable deployer;
 
     LeanIMTData internal tree;
-    uint256[ROOT_HISTORY] public roots;
-    uint256 public rootIndex;
+    /// Insertion number of each root (1-based); a root is known while within the last ROOT_HISTORY.
+    mapping(uint256 root => uint256 seq) public rootSeq;
+    uint256 public rootCount;
+    mapping(address module => bool) public isModule;
+    bool public modulesSet;
     mapping(uint256 nullifier => bool) public nullifierSpent;
     PendingDeposit[] public deposits;
     /// Tokens held for notes in the tree / for pending deposits. Solvency: balance >= both summed.
@@ -77,6 +85,7 @@ contract ZKDeskPool is ReentrancyGuard {
     event DepositFlagged(uint256 indexed id);
     event DepositRefunded(uint256 indexed id);
     event Converted(address indexed assetIn, uint256 amountIn, address indexed assetOut, uint256 amountOut);
+    event ModuleSet(address indexed module);
 
     error AssetNotAllowed();
     error UnknownRoot();
@@ -96,7 +105,7 @@ contract ZKDeskPool is ReentrancyGuard {
     error NotAuthorized();
 
     modifier onlyModule() {
-        if (!gate.isModule(msg.sender)) revert NotAuthorized();
+        if (!isModule[msg.sender]) revert NotAuthorized();
         _;
     }
 
@@ -104,10 +113,22 @@ contract ZKDeskPool is ReentrancyGuard {
         verifier = verifier_;
         gate = gate_;
         standby = standby_;
+        deployer = msg.sender;
+    }
+
+    /// @notice One-time: the deployer names the modules, then the set is fixed forever.
+    function setModules(address[] calldata modules) external {
+        if (msg.sender != deployer || modulesSet) revert NotAuthorized();
+        modulesSet = true;
+        for (uint256 i; i < modules.length; ++i) {
+            isModule[modules[i]] = true;
+            emit ModuleSet(modules[i]);
+        }
     }
 
     function transact(Proof calldata p, ExtData calldata ext) external nonReentrant {
-        if (!gate.isAllowed(p.asset) || !gate.isAllowed(p.outAsset)) revert AssetNotAllowed();
+        // Only what enters is gated: a deposit's asset and a convert's output asset.
+        if ((ext.extAmount > 0 && !gate.isAllowed(p.asset)) || (p.outAsset != p.asset && !gate.isAllowed(p.outAsset))) revert AssetNotAllowed();
         if (p.extDataHash != uint256(keccak256(abi.encode(ext))) % FIELD) revert ExtDataHashMismatch();
         if (p.publicAmount != publicAmountOf(ext.extAmount, ext.fee)) revert PublicAmountMismatch();
         _spend(p.root, p.inputNullifiers);
@@ -131,18 +152,17 @@ contract ZKDeskPool is ReentrancyGuard {
         _insert(p.outputCommitments[0]);
         _insert(p.outputCommitments[1]);
         if (p.outAsset != p.asset) {
-            // Private convert: -extAmount of `asset` goes through the converter, which must return
+            // Private convert: -extAmount of `asset` goes through the converter, which must deliver
             // at least publicAmountOut of `outAsset` (the proven output note). Surplus stays in the pool.
+            // Checked as solvency after the call, not as a balance difference around it.
             if (ext.extAmount >= 0 || ext.recipient != address(0) || !gate.isConverter(ext.converter)) revert BadConvert();
             uint256 amountIn = uint256(-ext.extAmount);
             shieldedSupply[p.asset] -= amountIn;
             token.forceApprove(ext.converter, amountIn);
-            uint256 before = IERC20(p.outAsset).balanceOf(address(this));
-            IConverter(ext.converter).convert(p.asset, amountIn, p.outAsset, p.publicAmountOut);
-            uint256 received = IERC20(p.outAsset).balanceOf(address(this)) - before;
-            if (received < p.publicAmountOut) revert BadConvert();
             shieldedSupply[p.outAsset] += p.publicAmountOut;
-            emit Converted(p.asset, amountIn, p.outAsset, received);
+            IConverter(ext.converter).convert(p.asset, amountIn, p.outAsset, p.publicAmountOut);
+            if (IERC20(p.outAsset).balanceOf(address(this)) < shieldedSupply[p.outAsset] + pendingSupply[p.outAsset]) revert BadConvert();
+            emit Converted(p.asset, amountIn, p.outAsset, p.publicAmountOut);
         } else if (ext.extAmount < 0) {
             if (ext.recipient == address(0)) revert MissingRecipient();
             uint256 amount = uint256(-ext.extAmount);
@@ -191,25 +211,26 @@ contract ZKDeskPool is ReentrancyGuard {
         emit DepositRefunded(id);
     }
 
-    // ---- Module hooks (credit desk). Modules verify their own proofs before calling these. ----
+    // ---- Module hooks. Modules verify their own proofs before calling these. The hooks share the
+    // pool's reentrancy lock, so nothing reached during a transact (a converter) can move notes. ----
 
-    function moduleSpend(uint256 root_, uint256[2] calldata nullifiers) external onlyModule {
+    function moduleSpend(uint256 root_, uint256[2] calldata nullifiers) external onlyModule nonReentrant {
         _spend(root_, nullifiers);
     }
 
-    function moduleInsert(uint256 commitment, bytes calldata ciphertext) external onlyModule {
+    function moduleInsert(uint256 commitment, bytes calldata ciphertext) external onlyModule nonReentrant {
         emit EncryptedNote(commitment, ciphertext);
         _insert(commitment);
     }
 
     /// @notice Tokens backing spent notes leave note form (e.g. collateral into the desk).
-    function moduleTake(address asset, uint256 amount, address to) external onlyModule {
+    function moduleTake(address asset, uint256 amount, address to) external onlyModule nonReentrant {
         shieldedSupply[asset] -= amount;
         IERC20(asset).safeTransfer(to, amount);
     }
 
     /// @notice Tokens enter note form from the module (e.g. drawn USDG or released collateral).
-    function moduleGive(address asset, uint256 amount) external onlyModule {
+    function moduleGive(address asset, uint256 amount) external onlyModule nonReentrant {
         IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
         shieldedSupply[asset] += amount;
     }
@@ -224,11 +245,12 @@ contract ZKDeskPool is ReentrancyGuard {
         return value >= 0 ? uint256(value) : FIELD - uint256(-value);
     }
 
+    /// @notice A root of the last ROOT_HISTORY insertions. The empty root 0 only while the tree is
+    /// empty (the first deposit's dummy inputs); a real note can never be proven against it.
     function isKnownRoot(uint256 root_) public view returns (bool) {
-        for (uint256 i; i < ROOT_HISTORY; ++i) {
-            if (roots[i] == root_) return true;
-        }
-        return false;
+        if (root_ == 0) return rootCount == 0;
+        uint256 seq = rootSeq[root_];
+        return seq != 0 && seq + ROOT_HISTORY > rootCount;
     }
 
     function root() external view returns (uint256) {
@@ -258,8 +280,7 @@ contract ZKDeskPool is ReentrancyGuard {
         if (tree.size >= MAX_LEAVES) revert TreeFull();
         uint256 index = tree.size;
         uint256 newRoot = tree._insert(commitment);
-        rootIndex = (rootIndex + 1) % ROOT_HISTORY;
-        roots[rootIndex] = newRoot;
+        rootSeq[newRoot] = ++rootCount;
         emit NewCommitment(commitment, index);
     }
 

@@ -16,3 +16,5 @@ contracts/lib/
 contracts/out/
 contracts/cache/
 circuits/target/
+receipt-e2e.json
+circuits/*/Prover.toml

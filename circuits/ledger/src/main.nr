@@ -108,3 +108,5 @@ fn main(
         assert_eq(cosign_intent, 0);
     }
 }
+
+mod tests;

@@ -65,8 +65,9 @@ contract MandatesTest is Test {
             [IMandateVerifier(address(new MandateAuthVerifier())), IMandateVerifier(address(new MandatePullVerifier())), IMandateVerifier(address(new ReceiptVerifier()))],
             pool, ledger, marker
         );
-        gate.setModule(address(ledger), true);
-        gate.setModule(address(registry), true);
+        address[] memory modules = new address[](2);
+        (modules[0], modules[1]) = (address(ledger), address(registry));
+        pool.setModules(modules);
         vm.startPrank(alice);
         MockUSDG(USDG).faucet(1000e6);
         MockStockToken(SPY).faucet(10e18);

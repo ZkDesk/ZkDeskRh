@@ -21,7 +21,7 @@ contract LendingPoolUSDG is ERC4626, Ownable, IConverter {
     using SafeERC20 for IERC20;
 
     IDeskDebt public desk;
-    /// @notice Spread owed to ZKDStaking (10% of interest), held in cash until swept (M6).
+    /// @notice The 10% interest spread, kept as reserves. There is no withdrawal path for it.
     uint256 public reserves;
 
     event DeskSet(address desk);

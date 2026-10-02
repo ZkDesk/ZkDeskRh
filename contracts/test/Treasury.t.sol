@@ -54,7 +54,9 @@ contract TreasuryTest is Test {
         marker.pin(SPY);
         IVerifier[3] memory verifiers = [IVerifier(address(new LedgerVerifier())), IVerifier(address(new RoleAuthVerifier())), IVerifier(address(new TreasuryAttestVerifier()))];
         ledger = new TreasuryLedger(verifiers, pool, marker, IERC4626(VAULT), stocks);
-        gate.setModule(address(ledger), true);
+        address[] memory modules = new address[](1);
+        modules[0] = address(ledger);
+        pool.setModules(modules);
         vm.startPrank(alice);
         MockUSDG(USDG).faucet(1000e6);
         IERC20(USDG).approve(address(pool), type(uint256).max);
@@ -195,8 +197,9 @@ contract TreasuryTest is Test {
         vm.expectRevert(TreasuryLedger.NotApproved.selector);
         ledger.act(p, e);
         _runAuth(6);
-        assertTrue(ledger.approved(p.cosignIntent));
+        assertTrue(ledger.approved(id, p.cosignIntent));
         ledger.act(p, e);
+        assertFalse(ledger.approved(id, p.cosignIntent), "an approval is used once (audit M-4)");
     }
 
     function test_actionIsBoundByTheProof() public {
@@ -255,11 +258,42 @@ contract TreasuryTest is Test {
         assertEq(prices[3], 0, "unpinned stock counts at zero");
     }
 
-    function test_ledgerNotesNeedTheLedgerModule() public {
-        _through(3);
-        gate.setModule(address(ledger), false);
-        (TreasuryLedger.LedgerProof memory p, TreasuryLedger.LedgerExt memory e) = _act(3);
-        vm.expectRevert(ZKDeskPool.NotAuthorized.selector);
+    // ---- Audit M-4 ----
+    // 10 create a second ledger (Carol owns it), 11 Carol approves the Ops intent there,
+    // 12 Owner limits transfers without approval to 1 per day, 13 first transfer, 14 second transfer.
+
+    /// M-4: an approval given on another ledger does not approve this ledger's transfer.
+    function test_audit_m4_approvalFromAnotherLedgerDoesNotCount() public {
+        _through(5); // create, deposit, attest, allocate, transfer 50
+        _runAuth(10);
+        _runAuth(11);
+        assertTrue(ledger.approved(vm.parseJsonUint(json, ".ledgerId2"), vm.parseJsonUint(json, ".intent")));
+        (TreasuryLedger.LedgerProof memory p, TreasuryLedger.LedgerExt memory e) = _act(5);
+        vm.expectRevert(TreasuryLedger.NotApproved.selector);
         ledger.act(p, e);
+    }
+
+    /// M-4: the Owner's limit on transfers without approval bounds the cumulative outflow.
+    function test_audit_m4_transferLimit() public {
+        _through(10);
+        _runAuth(12);
+        (uint64 maxTransfers, uint64 period,,) = ledger.limits(id);
+        assertEq(maxTransfers, 1);
+        assertEq(period, 1 days);
+        _runAct(13);
+        (TreasuryLedger.LedgerProof memory p, TreasuryLedger.LedgerExt memory e) = _act(14);
+        vm.expectRevert(TreasuryLedger.LimitReached.selector);
+        ledger.act(p, e);
+        vm.warp(block.timestamp + 1 days);
+        ledger.act(p, e); // a new period
+    }
+
+    /// M-7: the ledger is a pool module because the deployer named it, once; nobody can add another.
+    function test_ledgerIsAFixedModule() public {
+        assertTrue(pool.isModule(address(ledger)));
+        address[] memory modules = new address[](1);
+        modules[0] = address(0xbad);
+        vm.expectRevert(ZKDeskPool.NotAuthorized.selector);
+        pool.setModules(modules);
     }
 }

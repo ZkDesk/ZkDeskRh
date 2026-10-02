@@ -124,3 +124,5 @@ fn main(
     }
     assert_eq(sums, [total_sold, total_value, total_repay, total_repaid_scaled, total_written_off]);
 }
+
+mod tests;

@@ -117,7 +117,7 @@ contract GovernanceTest is Test {
         LendingPoolUSDG lending = new LendingPoolUSDG(usdg, address(this));
         Marker marker = new Marker(address(this), address(this), 1 hours);
         IVerifier v = IVerifier(address(new PositionVerifier()));
-        CreditDesk desk = new CreditDesk([v, v, v], pool, marker, lending, [uint256(1), 2], address(this));
+        CreditDesk desk = new CreditDesk([v, v, v, v], pool, marker, lending, [uint256(1), 2], address(this));
         DeskGuardian guard = new DeskGuardian(desk, address(timelock), guardianKey);
         desk.transferOwnership(address(guard));
 

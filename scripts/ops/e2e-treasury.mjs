@@ -49,6 +49,15 @@ const show = async (m, id) => {
   return l;
 };
 
+// Relay fees (vouchers) come from the Owner's personal private balance: top it up when low.
+await owner.client.sync();
+if (owner.client.balance(deployment.usdg) < 3000_000000n) {
+  await step('Owner tops up 5000 tUSDG privately (relay fees)', async () => {
+    await owner.client.deposit(deployment.usdg, 5000_000000n);
+    await new Promise((r) => setTimeout(r, (deployment.standbySeconds + 15) * 1000));
+    for (let i = 0; i < 8; i++) { await tick(); await owner.client.sync(); if (owner.client.balance(deployment.usdg) >= 3000_000000n) return; await new Promise((r) => setTimeout(r, 15000)); }
+  });
+}
 // Treasury steps pay their relay voucher from the acting member's personal private balance.
 for (const m of [treasurer, payer, auditor]) {
   await m.client.sync();

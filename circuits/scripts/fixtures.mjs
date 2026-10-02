@@ -20,14 +20,14 @@ import { hash2, ownerPk, toHex } from '../../src/lib/zk/notes.js';
 import { buildTransact } from '../../src/lib/zk/transact.js';
 import { buildPosition, debtOf, WAD } from '../../src/lib/zk/position.js';
 import { operatorPublicKey } from '../../src/lib/zk/grumpkin.js';
-import { buildHealth, buildLiquidation, planLiquidations, replaySlots, SLOTS } from '../../src/lib/zk/desk.js';
+import { buildEvict, buildHealth, buildLiquidation, planLiquidations, replaySlots, SLOTS } from '../../src/lib/zk/desk.js';
 import { ACTIONS, AUTH, authExtHash, buildAttest, buildLedger, buildRoleAuth, ledgerKeys, rolesOf } from '../../src/lib/zk/ledger.js';
 import { policyHash } from '../../src/lib/zk/notes.js';
 import { buildMandateAuth, buildPull, buildReceipt, MANDATE_ACTIONS } from '../../src/lib/zk/mandate.js';
 
 const EVM = { verifierTarget: 'evm' };
 const api = await Barretenberg.new();
-const CIRCUITS = { transact: 'TransactVerifier', position: 'PositionVerifier', health_epoch: 'HealthEpochVerifier', liquidate: 'LiquidateVerifier', ledger: 'LedgerVerifier', role_auth: 'RoleAuthVerifier', treasury_attest: 'TreasuryAttestVerifier', mandate_auth: 'MandateAuthVerifier', mandate_pull: 'MandatePullVerifier', receipt: 'ReceiptVerifier' };
+const CIRCUITS = { transact: 'TransactVerifier', position: 'PositionVerifier', health_epoch: 'HealthEpochVerifier', liquidate: 'LiquidateVerifier', evict: 'EvictVerifier', ledger: 'LedgerVerifier', role_auth: 'RoleAuthVerifier', treasury_attest: 'TreasuryAttestVerifier', mandate_auth: 'MandateAuthVerifier', mandate_pull: 'MandatePullVerifier', receipt: 'ReceiptVerifier' };
 const C = {};
 for (const name of Object.keys(CIRCUITS)) {
   const circuit = JSON.parse(readFileSync(`circuits/target/${name}.json`, 'utf8'));
@@ -51,7 +51,14 @@ let tree;
 let fixtures;
 const jsonable = (x) => JSON.parse(JSON.stringify(x, (_, v) => (typeof v === 'bigint' ? v.toString() : v)));
 
+// Noir #[test]s per circuit (circuits/<name>/src/tests.nr): the same witnesses, accepted and rejected.
+const nrTests = {};
+const keepTest = (kind, label, witness, ok) => {
+  const list = (nrTests[kind] ??= []);
+  if (list.filter((t) => t.ok === ok).length < (ok ? 3 : 6)) list.push({ label, witness, ok });
+};
 async function prove(kind, label, witness, extra = {}) {
+  keepTest(kind, label, witness, true);
   const t0 = performance.now();
   const { witness: w } = await C[kind].noir.execute(witness);
   const proof = await C[kind].backend.generateProof(w, EVM);
@@ -61,6 +68,7 @@ async function prove(kind, label, witness, extra = {}) {
 }
 /** The circuit must refuse this witness (it cannot be proven). */
 async function rejects(kind, label, witness) {
+  keepTest(kind, label, witness, false);
   const ok = await C[kind].noir.execute(witness).then(() => true, () => false);
   if (ok) throw new Error(`${label}: witness executed`);
   console.log(`${label}: circuit rejects ✓`);
@@ -106,6 +114,11 @@ const [spy] = await tx('deposit 10 SPY', { asset: SPY, outputs: [{ amount: 10n *
   const ok = buildPosition({ tree, sk: alice, collAsset: SPY, usdgAsset: USDG, mark: MARK, ltvBps: LTV, rateIndex: INDEX, operatorPk: OPERATOR_PK, ext: posExt, collIn: 10n * WAD, draw: 1n, inputs: [spy] });
   ok.witness.operator_cipher = [...ok.witness.operator_cipher.slice(0, 3), '7']; // operator copy lies about the blinding
   await rejects('position', 'wrong operator ciphertext', ok.witness);
+  // Audit H-1: an open below the class minimum; audit M-5: operator_r = 0 (eph at infinity).
+  const dust = buildPosition({ tree, sk: alice, collAsset: SPY, usdgAsset: USDG, mark: MARK, ltvBps: LTV, rateIndex: INDEX, operatorPk: OPERATOR_PK, ext: posExt, collIn: 1n, inputs: [spy] });
+  await rejects('position', 'open below the minimum collateral', { ...dust.witness, min_coll: WAD.toString() });
+  const r0 = buildPosition({ tree, sk: alice, collAsset: SPY, usdgAsset: USDG, mark: MARK, ltvBps: LTV, rateIndex: INDEX, operatorPk: OPERATOR_PK, ext: posExt, collIn: WAD, inputs: [spy], blindings: { operator: 0n } });
+  await rejects('position', 'operator_r = 0', r0.witness);
 }
 
 const open = await step('open: 10 SPY in, draw 500 USDG', { collIn: 10n * WAD, draw: 500_000000n, inputs: [spy] });
@@ -175,6 +188,13 @@ const afterEvents = [...events, ...batch.rows.map((r) => ({ type: 'position', sl
 const afterA = replaySlots(afterEvents, OPERATOR_SK)[3];
 const restA = { collateral: afterA.collateral, debtScaled: afterA.debtScaled, blinding: afterA.blinding };
 await step(`close A after liquidation: ${afterA.collateral} NVDA back`, { ...nv, mark: NV72, slot: 3, old: restA, collOut: afterA.collateral, repay: debtOf(afterA.debtScaled, INDEX), inputs: afterA.debtScaled ? [a.notes[1]] : [] });
+
+// Audit H-1: an idle position without debt is evicted; its collateral returns to the owner's note.
+const [nvda2] = await tx('deposit 1 NVDA', { asset: NVDA, outputs: [{ amount: WAD, owner: me }], ext: { extAmount: WAD } });
+const idle = await step('open C: 1 NVDA, no debt', { ...nv, mark: NV72, slot: 7, collIn: WAD, inputs: [nvda2] });
+const ev = buildEvict({ asset: NVDA, collateral: WAD, debtScaled: 0n, owner: me, blinding: idle.position.blinding });
+await prove('evict', 'evict C after a day without activity', ev.witness, { slot: 7, asset: toHex(NVDA), collateral: WAD, commitment: ev.public.commitment });
+await rejects('evict', 'evict with a forged debt-free opening', { ...ev.witness, collateral: (2n * WAD).toString() });
 const m3 = fixtures;
 
 // ---------------- M4 ----------------
@@ -189,8 +209,8 @@ const cfg = { name: 'Ops treasury', owner: ownerPk(A), treasurer: ownerPk(Bb), p
 ledger.config = cfg;
 const ATTEST_ASSETS_FIX = [USDG, VAULT, SPY, 0x9991n, NVDA, 0x7e51an];
 const ledgerExt = (o) => ({ recipient: ZERO, extAmount: 0n, encryptedOutput1: '0x01', encryptedOutput2: '0x02', ...o });
-async function auth(label, { sk, config, action, newValue = 0n, shares, bytes = '0x06' }) {
-  const built = buildRoleAuth({ ledger, sk, config, action, newValue, extHash: authExtHash(shares, bytes) });
+async function auth(label, { sk, config, action, newValue = 0n, shares, bytes = '0x06', on = ledger }) {
+  const built = buildRoleAuth({ ledger: on, sk, config, action, newValue, extHash: authExtHash(shares, bytes) });
   await prove('role_auth', label, built.witness, { ext: { shares, config: bytes } });
 }
 async function act(label, args) {
@@ -239,7 +259,18 @@ await act('deallocate all vault shares (Treasurer)', { sk: Bb, role: 'Treasurer'
 const cfg2 = { ...cfg, payer: ownerPk(E), rolesSalt: 73n };
 await auth('rotate: Eve replaces Carol as Payer (Owner)', { sk: A, config: cfg, action: AUTH.rotate, newValue: rolesOf(cfg2), shares: ['0x05'] });
 ledger.config = cfg2;
-await act('transfer 10 USDG to Eve (new Payer)', { sk: E, role: 'Payer', action: ACTIONS.transfer, asset: USDG, inputs: [big.notes[0]], out: { amount: 10_000000n, owner: ownerPk(E) } });
+const eve = await act('transfer 10 USDG to Eve (new Payer)', { sk: E, role: 'Payer', action: ACTIONS.transfer, asset: USDG, inputs: [big.notes[0]], out: { amount: 10_000000n, owner: ownerPk(E) } });
+
+// Audit M-4: Carol (Payer of the Ops treasury) owns a second ledger and "approves" the Ops intent there.
+const L2 = { ...ledgerKeys(0x2ed6e5n) };
+const cfgL2 = { ...cfg, name: 'Carol side ledger', owner: ownerPk(Cc), rolesSalt: 74n, policySalt: 75n };
+await auth('create a second ledger (Carol as its Owner)', { sk: Cc, config: cfgL2, action: AUTH.create, shares: ['0x07'], on: L2 });
+await auth('approve the Ops intent from the second ledger (Carol)', { sk: Cc, config: cfgL2, action: AUTH.approve, newValue: big.built.public.cosignIntent, shares: [], bytes: '0x', on: L2 });
+// Audit M-4: the Owner caps transfers without approval at 1 per day; the second one is refused.
+const LIMIT = 1n | (86_400n << 64n);
+await auth('limit: 1 transfer without approval per day (Owner)', { sk: A, config: cfg2, action: 4, newValue: LIMIT, shares: [], bytes: '0x' });
+const t1 = await act('transfer 5 USDG to Eve (1st under the limit)', { sk: E, role: 'Payer', action: ACTIONS.transfer, asset: USDG, inputs: [eve.notes[0]], out: { amount: 5_000000n, owner: ownerPk(E) } });
+await act('transfer 5 USDG to Eve (2nd: over the limit)', { sk: E, role: 'Payer', action: ACTIONS.transfer, asset: USDG, inputs: [t1.notes[0]], out: { amount: 5_000000n, owner: ownerPk(E) } });
 const m4 = fixtures;
 
 // ---------------- M5 ----------------
@@ -319,10 +350,36 @@ for (const [name, file] of Object.entries(CIRCUITS)) {
   mkdirSync('src/lib/zk/artifacts', { recursive: true });
   writeFileSync(`src/lib/zk/artifacts/${name}.json`, JSON.stringify(C[name].circuit));
 }
+const literal = (type, v) => {
+  if (type.kind === 'array') return `[${v.map((x) => literal(type.type, x)).join(', ')}]`;
+  if (type.kind === 'boolean') return v === true || v === 'true' ? 'true' : 'false';
+  return BigInt(v).toString();
+};
+const fnName = (label, used) => {
+  let n = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60) || 'case';
+  if (/^[0-9]/.test(n)) n = `case_${n}`;
+  while (used.has(n)) n += '_';
+  used.add(n);
+  return n;
+};
+for (const [kind, tests] of Object.entries(nrTests)) {
+  const params = C[kind].circuit.abi.parameters;
+  const used = new Set();
+  const NL = '\n';
+  const body = tests.map((t) => {
+    const args = params.map((p) => literal(p.type, t.witness[p.name])).join(`,${NL}        `);
+    const name = fnName(`${t.ok ? '' : 'rejects '}${t.label}`, used);
+    return [t.ok ? '#[test]' : '#[test(should_fail)]', `fn ${name}() {`, '    super::main(', `        ${args},`, '    );', '}', ''].join(NL);
+  }).join(NL);
+  writeFileSync(`circuits/${kind}/src/tests.nr`, `// Generated by circuits/scripts/fixtures.mjs from the witnesses behind circuits/fixtures (do not edit):
+// each accepted witness is also a Solidity fixture; each rejected one is a property the circuit enforces.
+
+${body}`);
+}
 mkdirSync('circuits/fixtures', { recursive: true });
 const common = { usdg: toHex(USDG), spy: toHex(SPY), nvda: toHex(NVDA), lending: toHex(LENDING), operatorPk: OPERATOR_PK.map((x) => x.toString()) };
 writeFileSync('circuits/fixtures/m2.json', JSON.stringify({ ...common, mark: MARK.toString(), ltvBps: LTV, shares: shares.toString(), redeemAssets: back.toString(), closedLeaf: closed.position === null, txs: m2 }, null, 2));
-writeFileSync('circuits/fixtures/m4.json', JSON.stringify(jsonable({ ...common, vault: toHex(VAULT), ledgerId: ledger.owner, rolesCommit: rolesOf(cfg), rolesCommit2: rolesOf(cfg2), policyHash: policyHash(cfg), intent: big.built.public.cosignIntent, attestAssets: ATTEST_ASSETS_FIX.map(toHex), prices: PRICES, shares600, vaultBack, txs: m4 }), null, 2));
+writeFileSync('circuits/fixtures/m4.json', JSON.stringify(jsonable({ ...common, vault: toHex(VAULT), ledgerId: ledger.owner, ledgerId2: L2.owner, limit: LIMIT, rolesCommit: rolesOf(cfg), rolesCommit2: rolesOf(cfg2), policyHash: policyHash(cfg), intent: big.built.public.cosignIntent, attestAssets: ATTEST_ASSETS_FIX.map(toHex), prices: PRICES, shares600, vaultBack, txs: m4 }), null, 2));
 writeFileSync('circuits/fixtures/m5.json', JSON.stringify(jsonable({ ...common, ledgerId: L5.owner, T, commits: { payroll: cPay, invoice: cInv, spy: cSpy }, receiptRoot: receipts.root, spyRaw: p3.built.raw, txs: m5 }), null, 2));
 writeFileSync('circuits/fixtures/m3.json', JSON.stringify(jsonable({ ...common, price: PRICE, batch: batch.public, offHours: offHours.public, txs: m3 }), null, 2));
 console.log(`wrote ${m2.length} M2, ${m3.length} M3, ${m4.length} M4 and ${m5.length} M5 fixtures`);

@@ -17,7 +17,7 @@
 //   { kind: 'mandate_pull', proof, ext } -> MandateRegistry.pull (one payment under a mandate)
 import { randomBytes } from 'node:crypto';
 import { concatHex, isAddress, isHex, keccak256, toHex, zeroAddress } from 'viem';
-import { abis, db, deployment, publicClient, relayer, sendFromRelayer, revertName, json } from './_lib/server.js';
+import { abis, db, deployment, deploymentReady, publicClient, relayer, sendFromRelayer, revertName, json } from './_lib/server.js';
 import { relayFees } from './_lib/fees.js';
 import { CONFIG_BYTES, KEY_SHARE_BYTES, MANDATE_BYTES, NOTE_CIPHERTEXT_BYTES, POSITION_CIPHERTEXT_BYTES } from '../src/lib/zk/crypto.js';
 
@@ -147,6 +147,7 @@ const PARSERS = { position: parsePosition, ledger: parseLedger, ledger_auth: par
 const hashToken = (t) => keccak256(t);
 
 export default async function handler(req, res) {
+  if (!deploymentReady) return json(res, 503, { error: 'network_upgrading' }); // still on v1 contracts
   if (req.method === 'GET') {
     if (!relayer) return json(res, 200, { relayer: null, available: false });
     const [fees, balance] = await Promise.all([relayFees(), publicClient.getBalance({ address: relayer.address })]).catch(() => [null, 0n]);

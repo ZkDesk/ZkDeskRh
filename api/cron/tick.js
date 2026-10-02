@@ -10,6 +10,8 @@
 //   snapshots    — solvency per asset and lending pool state, hourly and after new events
 import { parseAbi } from 'viem';
 import { abis, cronAuthorized, db, deployment, keeper, publicClient, relayer, sendFrom, revertName, json } from '../_lib/server.js';
+import { deploymentReady } from '../_lib/server.js';
+import { checkAlerts } from '../_lib/alerts.js';
 
 const EVENTS = parseAbi([
   'event NewCommitment(uint256 indexed commitment, uint256 index)',
@@ -216,6 +218,7 @@ async function snapshots() {
 
 export default async function handler(req, res) {
   if (!cronAuthorized(req)) return json(res, 401, { error: 'unauthorized' });
+  if (!deploymentReady) return json(res, 200, { skipped: 'network still on v1 contracts' });
   const report = { indexed: await index() };
   if (keeper) {
     report.cleared = await clearDue();
@@ -224,6 +227,7 @@ export default async function handler(req, res) {
   }
   report.reconciled = await reconcile();
   report.pruned = await prune();
+  report.alerts = await checkAlerts().catch((error) => ({ error: revertName(error) }));
   // Hourly, and on any tick that indexed new events, so a deposit shows within about a minute of clearing.
   if (new Date().getUTCMinutes() === 0 || report.indexed?.logs > 0 || req.query?.snapshot === '1') report.snapshots = await snapshots();
   return json(res, 200, report);

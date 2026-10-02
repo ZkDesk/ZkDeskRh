@@ -8,12 +8,24 @@ solc_version = "0.8.28"
 evm_version = "cancun"
 optimizer = true
 optimizer_runs = 200
+# Pinned so a build is reproducible and its bytecode can be verified on the explorer.
+via_ir = false
+bytecode_hash = "ipfs"
+cbor_metadata = true
 fs_permissions = [{ access = "read", path = "../circuits/fixtures" }, { access = "read-write", path = "../src/lib/chain/deployments" }]
 remappings = [
   "forge-std/=lib/forge-std/src/",
   "@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/",
   "poseidon-solidity/=node_modules/poseidon-solidity/",
 ]
+
+[invariant]
+runs = 256
+depth = 64
+fail_on_revert = false
+
+[fuzz]
+runs = 1024
 
 [rpc_endpoints]
 robinhood_testnet = "https://rpc.testnet.chain.robinhood.com"

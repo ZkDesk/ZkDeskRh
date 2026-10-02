@@ -22,3 +22,5 @@ fn main(
     assert_eq(roles_of(role_pks, roles_salt), roles_commit);
     assert_eq(owner_pk(sk), role_pks[0]);
 }
+
+mod tests;

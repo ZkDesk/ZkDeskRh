@@ -1,0 +1,17 @@
+# Extends the default gitleaks rules. The private repo intentionally tracks the two
+# files below (owner decision); the public mirror strips them. The other entries are reviewed
+# false positives in public data or private reference material.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Private-repo-only files, stripped from the public mirror"
+paths = [
+  '''^secrets/mainnet-governance-keys\.json$''',
+  '''^github_setup\.md$''',
+  # False positives: "token" keys holding public ERC-20 addresses.
+  '''^src/lib/chain/deployments/[0-9]+(\.v2)?\.json$''',
+  # Private reference material, stripped from the public mirror: page snapshots and source briefs.
+  '''^evidence/''',
+  '''^docs/''',
+]

@@ -40,7 +40,7 @@ for (const file of walk('api', ['.js'])) {
 }
 
 // 3 + 4. Browser code: no key/note persistence, no server secrets.
-const SECRETS = /(RELAYER_PRIVATE_KEY|DEPLOYER_PRIVATE_KEY|DESK_OPERATOR_SK|SCHEDULER_SEED|SUPABASE_DB_URL|SUPABASE_SERVICE_ROLE|CRON_SECRET)/;
+const SECRETS = /(RELAYER_PRIVATE_KEY|KEEPER_PRIVATE_KEY|ALERT_TELEGRAM_TOKEN|ALERT_WEBHOOK_URL|DEPLOYER_PRIVATE_KEY|DESK_OPERATOR_SK|SCHEDULER_SEED|SUPABASE_DB_URL|SUPABASE_SERVICE_ROLE|CRON_SECRET)/;
 for (const file of [...walk('src/lib', ['.js']), ...walk('src/dashboard/adapters', ['.js'])]) {
   const src = readFileSync(file, 'utf8');
   if (/(localStorage|sessionStorage|indexedDB)\s*\.\s*(setItem|open)/.test(src)) failures.push(`${file}: writes browser storage (keys and notes must stay in memory)`);

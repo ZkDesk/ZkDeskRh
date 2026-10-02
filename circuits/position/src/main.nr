@@ -38,6 +38,7 @@ fn main(
     operator_pk: pub [Field; 2],
     operator_eph: pub [Field; 2],
     operator_cipher: pub [Field; 4],
+    min_coll: pub Field,
     sk: Field,
     old_coll: Field,
     old_debt_scaled: Field,
@@ -120,6 +121,12 @@ fn main(
     if (new_coll == 0) & (new_debt_scaled == 0) {
         assert_eq(new_leaf, 0); // fully closed: the slot is freed
     } else {
+        // Audit H-1: opening, or withdrawing from, a position leaves at least the class minimum, so a
+        // slot costs real capital. Repay and add stay open to a position a liquidation left below it.
+        if (old_leaf == 0) | (coll_out != 0) {
+            min_coll.assert_max_bit_size::<100>();
+            assert(lte(min_coll, new_coll));
+        }
         assert_eq(position_commitment(coll_asset, new_coll, new_debt_scaled, owner, new_blinding), new_leaf);
     }
 
@@ -132,3 +139,5 @@ fn main(
         assert(lte(debt_term(new_debt_scaled, rate_index), value_term(new_coll, mark, ltv_bps)));
     }
 }
+
+mod tests;

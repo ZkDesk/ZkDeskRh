@@ -16,8 +16,12 @@ import {Marker} from "./Marker.sol";
 /// a policy hash and an attestation epoch counter. No balances, members or amounts.
 ///
 /// Governance (RoleAuthProof, OWNER only): create, rotate roles, set policy, approve a transfer above
-/// the dual-control threshold. Key shares (the ledger secret, encrypted to each member) and the
-/// config (encrypted to the ledger key) are posted as events and bound into the proof.
+/// the dual-control threshold, set the outflow limit. Key shares (the ledger secret, encrypted to
+/// each member) and the config (encrypted to the ledger key) are posted as events and bound into the
+/// proof. An approval belongs to one ledger and is used once (audit M-4).
+/// Outflow limit (audit M-4): the Owner may cap how many transfers leave the ledger without the
+/// Owner's approval per period. Each such transfer is below the dual-control threshold, so the cap
+/// bounds the cumulative outflow (count x threshold) without revealing any amount.
 /// Treasury statements (AttestProof): unspent ledger notes at contract prices cover declared
 /// liabilities; only the statement is published.
 contract TreasuryLedger is ReentrancyGuard {
@@ -31,6 +35,7 @@ contract TreasuryLedger is ReentrancyGuard {
     uint8 public constant ROTATE = 1;
     uint8 public constant SET_POLICY = 2;
     uint8 public constant APPROVE = 3;
+    uint8 public constant SET_LIMIT = 4; // newValue = maxTransfers | period << 64 (0 = no limit)
     uint256 public constant ATTEST_NOTES = 8; // circuits/treasury_attest K
     uint256 public constant ATTEST_ASSETS = 6; // circuits/treasury_attest A
 
@@ -89,13 +94,22 @@ contract TreasuryLedger is ReentrancyGuard {
     IERC20 public immutable usdg;
     address[4] internal stocks;
 
+    struct Limit {
+        uint64 maxTransfers; // transfers without the Owner's approval per period; 0 = no limit
+        uint64 period; // seconds
+        uint64 windowStart;
+        uint64 used;
+    }
+
     mapping(uint256 id => Ledger) public ledgers;
-    mapping(uint256 intent => bool) public approved;
+    mapping(uint256 id => mapping(uint256 intent => bool)) public approved;
+    mapping(uint256 id => Limit) public limits;
 
     event LedgerCreated(uint256 indexed id, uint256 rolesCommit, uint256 policyHash);
     event RolesRotated(uint256 indexed id, uint256 rolesCommit);
     event PolicySet(uint256 indexed id, uint256 policyHash);
     event IntentApproved(uint256 indexed id, uint256 intent);
+    event LimitSet(uint256 indexed id, uint64 maxTransfers, uint64 period);
     event KeyShare(uint256 indexed id, bytes share);
     event LedgerConfig(uint256 indexed id, bytes config);
     event LedgerAction(uint256 indexed id, uint8 action);
@@ -113,6 +127,7 @@ contract TreasuryLedger is ReentrancyGuard {
     error NoteSpent();
     error UnknownRoot();
     error InvalidProof();
+    error LimitReached();
 
     /// verifiers: [ledger, role_auth, treasury_attest]
     constructor(IVerifier[3] memory verifiers, ZKDeskPool pool_, Marker marker_, IERC4626 vault_, address[4] memory stocks_) {
@@ -135,7 +150,7 @@ contract TreasuryLedger is ReentrancyGuard {
         } else if (p.rolesCommit != l.rolesCommit || p.policyHash != l.policyHash) {
             revert StaleRoles();
         }
-        if (p.action > APPROVE) revert BadAction();
+        if (p.action > SET_LIMIT) revert BadAction();
         bytes32[] memory x = new bytes32[](6);
         x[0] = bytes32(p.ledgerId);
         x[1] = bytes32(p.rolesCommit);
@@ -154,9 +169,14 @@ contract TreasuryLedger is ReentrancyGuard {
         } else if (p.action == SET_POLICY) {
             l.policyHash = p.newValue;
             emit PolicySet(p.ledgerId, p.newValue);
-        } else {
-            approved[p.newValue] = true;
+        } else if (p.action == APPROVE) {
+            approved[p.ledgerId][p.newValue] = true;
             emit IntentApproved(p.ledgerId, p.newValue);
+        } else {
+            (uint64 maxTransfers, uint64 period) = (uint64(p.newValue), uint64(p.newValue >> 64));
+            if (maxTransfers != 0 && period == 0) revert BadAction();
+            limits[p.ledgerId] = Limit(maxTransfers, period, uint64(block.timestamp), 0);
+            emit LimitSet(p.ledgerId, maxTransfers, period);
         }
         for (uint256 i; i < shares.length; ++i) emit KeyShare(p.ledgerId, shares[i]);
         if (config.length > 0) emit LedgerConfig(p.ledgerId, config);
@@ -169,7 +189,12 @@ contract TreasuryLedger is ReentrancyGuard {
         if (l.rolesCommit == 0) revert UnknownLedger();
         if (p.extDataHash != uint256(keccak256(abi.encode(e))) % FIELD) revert ExtDataHashMismatch();
         if (p.publicAmount != pool.publicAmountOf(e.extAmount, 0) || e.extAmount > 0) revert PublicAmountMismatch();
-        if (p.cosignIntent != 0 && !approved[p.cosignIntent]) revert NotApproved();
+        if (p.cosignIntent != 0) {
+            if (!approved[p.ledgerId][p.cosignIntent]) revert NotApproved();
+            delete approved[p.ledgerId][p.cosignIntent];
+        } else if (p.action == TRANSFER_OUT) {
+            _countTransfer(p.ledgerId);
+        }
         uint256 amount = uint256(-e.extAmount);
         if (p.action == ALLOCATE || p.action == DEALLOCATE) {
             (address from, address to) = p.action == ALLOCATE ? (address(usdg), address(vault)) : (address(vault), address(usdg));
@@ -200,6 +225,13 @@ contract TreasuryLedger is ReentrancyGuard {
         }
         pool.moduleInsert(p.outputCommitments[1], e.encryptedOutput2);
         emit LedgerAction(p.ledgerId, p.action);
+    }
+
+    function _countTransfer(uint256 id) internal {
+        Limit storage lim = limits[id];
+        if (lim.maxTransfers == 0) return;
+        if (block.timestamp >= lim.windowStart + lim.period) (lim.windowStart, lim.used) = (uint64(block.timestamp), 0);
+        if (++lim.used > lim.maxTransfers) revert LimitReached();
     }
 
     // ---- Statements ----

@@ -10,6 +10,8 @@ pub global DOM_POSITION: Field = 0x5a4b442e706f73;
 // ASCII "ZKD.op" (operator encryption) / "ZKD.liq" (liquidation state for the owner).
 pub global DOM_OPERATOR: Field = 0x5a4b442e6f70;
 pub global DOM_LIQ: Field = 0x5a4b442e6c6971;
+// ASCII "ZKD.evict": the note an evicted (idle, zero-debt) position returns to its owner.
+pub global DOM_EVICT: Field = 0x5a4b442e6576696374;
 // ASCII "ZKD.ledger" / "ZKD.roles" / "ZKD.policy" / "ZKD.intent" (treasury ledgers).
 pub global DOM_LEDGER: Field = 0x5a4b442e6c6564676572;
 pub global DOM_ROLES: Field = 0x5a4b442e726f6c6573;
@@ -22,8 +24,9 @@ pub global DOM_RECEIPT: Field = 0x5a4b442e72656365697074;
 pub global WAD: Field = 1000000000000000000;
 // value6 = coll * mark / 1e20, so debt <= value6 * bps / 1e4  <=>  debt_scaled * index * 1e6 <= coll * mark * bps
 pub global HEALTH_SCALE: Field = 1000000;
-// LeanIMT depth: up to ~1M notes. Matches the contract tree cap.
-pub global MAX_DEPTH: u32 = 20;
+// LeanIMT depth: up to ~4.3B notes. Matches the contract tree cap (audit M-2: a 2^20 tree could be
+// filled with dummy outputs and then freeze every exit).
+pub global MAX_DEPTH: u32 = 32;
 
 // Spend authority is knowledge of `sk`; owner and nullifier key both derive from it.
 pub fn owner_pk(sk: Field) -> Field {
@@ -115,8 +118,8 @@ pub fn merkle_root(leaf: Field, depth: u32, index: Field, siblings: [Field; MAX_
     node
 }
 
-/// Same root as merkle_root with one hash per level (swap, then hash). Deployed verifiers pin the
-/// constraint system of merkle_root, so it stays as is; new circuits use this one.
+/// Same root as merkle_root with one hash per level (swap, then hash). Every circuit uses this one;
+/// merkle_root stays as the readable reference the tests compare it with.
 pub fn merkle_root_swap(leaf: Field, depth: u32, index: Field, siblings: [Field; MAX_DEPTH]) -> Field {
     assert(depth <= MAX_DEPTH);
     let bits: [bool; MAX_DEPTH] = index.to_le_bits();
@@ -149,7 +152,7 @@ pub fn spend_inputs(
         let commitment = note_commitment(asset, amounts[i], owner, blindings[i]);
         assert_eq(nullifier(commitment, nk), nullifiers[i]);
         if amounts[i] != 0 {
-            assert_eq(merkle_root(commitment, depths[i], indices[i], siblings[i]), root);
+            assert_eq(merkle_root_swap(commitment, depths[i], indices[i], siblings[i]), root);
         }
         sum += amounts[i];
     }
@@ -167,6 +170,8 @@ pub fn output_note(asset: Field, amount: Field, owner: Field, blinding: Field) -
 /// Poseidon keystream (c_i = v_i + H(key, i)). Returns (ephemeral point, ciphertext).
 /// Mirrored by src/lib/zk/grumpkin.js.
 pub fn operator_encrypt<let N: u32>(values: [Field; N], pk: [Field; 2], r: Field) -> ([Field; 2], [Field; N]) {
+    // r = 0 would put eph and the shared point at infinity (audit M-5); never needed.
+    assert(r != 0);
     let s = EmbeddedCurveScalar::from_field(r);
     let eph = fixed_base_scalar_mul(s);
     let shared = multi_scalar_mul([EmbeddedCurvePoint { x: pk[0], y: pk[1] }], [s]);
@@ -195,6 +200,11 @@ pub fn liquidated_blinding(blinding: Field) -> Field {
 
 pub fn liquidation_pad(blinding: Field, i: Field) -> Field {
     hash_3([DOM_LIQ, blinding, i])
+}
+
+// An evicted position's collateral returns as a note the owner can find without a ciphertext.
+pub fn evicted_blinding(blinding: Field) -> Field {
+    hash_2([DOM_EVICT, blinding])
 }
 
 // a <= b as integers (both must be < p, which bounded products guarantee).

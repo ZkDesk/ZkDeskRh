@@ -4,10 +4,10 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import pg from 'pg';
 import { createPublicClient, createWalletClient, http } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { chain, deployment, abis, MAINNET } from '../../src/lib/chain/config.js';
+import { chain, deployment, deploymentReady, abis, MAINNET } from '../../src/lib/chain/config.js';
 import ca from './supabase-ca.js';
 
-export { chain, deployment, abis, MAINNET };
+export { chain, deployment, deploymentReady, abis, MAINNET };
 
 /** A service secret for this network: the mainnet functions read MAINNET_<name>. */
 export const secret = (name) => process.env[MAINNET ? `MAINNET_${name}` : name];

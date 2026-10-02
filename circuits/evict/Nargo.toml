@@ -1,0 +1,7 @@
+[package]
+name = "evict"
+type = "bin"
+authors = ["ZKDesk"]
+
+[dependencies]
+lib = { path = "../lib" }

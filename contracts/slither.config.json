@@ -1,0 +1,4 @@
+{
+  "filter_paths": "(^|/)lib/,(^|/)node_modules/,(^|/)test/,(^|/)script/,src/mocks/,src/vendor/,src/verifiers/",
+  "fail_on": "high"
+}

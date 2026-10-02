@@ -51,3 +51,5 @@ fn main(
         assert_eq(sum_in + public_amount, out_amounts[0]);
     }
 }
+
+mod tests;

@@ -68,3 +68,5 @@ fn main(
 
     assert_eq(hash_2([bitmap, salt]), breach_commit);
 }
+
+mod tests;

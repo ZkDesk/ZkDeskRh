@@ -2,7 +2,7 @@
 // Supabase mirrors these events for speed; clients rebuild the tree from events, check its size against the pool, and the contract rejects any unknown root.
 import { LeanIMT } from '@zk-kit/lean-imt';
 import { parseAbi, parseAbiItem } from 'viem';
-import { hash2, mandateCommit, noteCommitment, nullifier, policyHash, positionCommitment, receiptLeaf } from './notes.js';
+import { evictedBlinding, hash2, mandateCommit, noteCommitment, nullifier, policyHash, positionCommitment, receiptLeaf } from './notes.js';
 import { decryptConfig, decryptKeyShare, decryptMandate, decryptNote, decryptPosition } from './crypto.js';
 import { heldRoles, ledgerKeys, rolesOf } from './ledger.js';
 import { applyLiquidation, LIQUIDATION_CIPHERTEXT_BYTES } from './desk.js';
@@ -112,7 +112,45 @@ export function myNotes(state, keys) {
     const spent = state.spent.has(nullifier(commitment, keys.nk));
     notes.push({ ...opened, commitment, leafIndex, block, status: spent ? 'spent' : leafIndex === undefined ? 'pending' : 'unspent' });
   }
+  // An evicted position's collateral (CreditDesk.evict) comes back without a ciphertext: the owner
+  // derives the note from the position it replaces.
+  for (const history of state.slotHistory?.values() ?? []) {
+    for (const { evicted } of replaySlot(history, keys)) {
+      if (!evicted) continue;
+      const note = { asset: evicted.asset, amount: evicted.collateral, blinding: evictedBlinding(evicted.blinding) };
+      const commitment = noteCommitment({ ...note, owner: keys.owner });
+      const leafIndex = state.indexOf.get(commitment);
+      if (leafIndex === undefined) continue; // a close, not an eviction
+      notes.push({ ...note, commitment, leafIndex, status: state.spent.has(nullifier(commitment, keys.nk)) ? 'spent' : 'unspent', evicted: true });
+    }
+  }
   return notes;
+}
+
+/**
+ * Replays one desk slot for this key set: per update, the position we own after it (or null), the
+ * liquidations that touched it, and `evicted` when an update cleared a position of ours without debt.
+ */
+function replaySlot(history, keys) {
+  const steps = [];
+  let mine = null;
+  let liquidated = [];
+  for (const s of history) {
+    const before = mine;
+    if (mine && (s.ciphertext.length - 2) / 2 === LIQUIDATION_CIPHERTEXT_BYTES) {
+      const { sold, repaidScaled, ...next } = applyLiquidation(mine, s.ciphertext);
+      mine = next;
+      liquidated = [...liquidated, { sold, repaidScaled, block: s.block, tx: s.tx }];
+    } else {
+      const opened = decryptPosition(s.ciphertext, keys.encSecret);
+      mine = opened && positionCommitment({ ...opened, owner: keys.owner }) === s.leaf ? opened : null;
+      if (!mine) liquidated = [];
+    }
+    if (mine && positionCommitment({ ...mine, owner: keys.owner }) !== s.leaf) mine = null;
+    const evicted = s.leaf === 0n && s.ciphertext === '0x' && before && before.debtScaled === 0n ? before : null;
+    steps.push({ s, mine, liquidated, evicted });
+  }
+  return steps;
 }
 
 /**
@@ -123,21 +161,7 @@ export function myNotes(state, keys) {
 export function myPositions(state, keys) {
   const out = [];
   for (const history of state.slotHistory.values()) {
-    let mine = null;
-    let liquidated = [];
-    for (const s of history) {
-      if (mine && (s.ciphertext.length - 2) / 2 === LIQUIDATION_CIPHERTEXT_BYTES) {
-        const { sold, repaidScaled, ...next } = applyLiquidation(mine, s.ciphertext);
-        mine = next;
-        liquidated = [...liquidated, { sold, repaidScaled, block: s.block, tx: s.tx }];
-      } else {
-        const opened = decryptPosition(s.ciphertext, keys.encSecret);
-        mine = opened && positionCommitment({ ...opened, owner: keys.owner }) === s.leaf ? opened : null;
-        if (!mine) liquidated = [];
-      }
-      if (mine && positionCommitment({ ...mine, owner: keys.owner }) !== s.leaf) mine = null;
-    }
-    const last = history[history.length - 1];
+    const { s: last, mine, liquidated } = replaySlot(history, keys).at(-1);
     if (mine && last.leaf !== 0n) out.push({ ...mine, slot: last.slot, leaf: last.leaf, block: last.block, liquidated });
   }
   return out;

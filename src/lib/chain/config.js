@@ -15,7 +15,10 @@ import mandatesAbi from './abis/MandateRegistry.json' with { type: 'json' };
 // Network: mainnet (4663) or testnet (46630), fixed for the life of a page or a function instance.
 // Browser: ?network=, else the choice saved by the navbar switch, else mainnet once it is deployed. Server: the /api/mainnet/*
 // wrappers set globalThis.ZKDESK_NETWORK before loading the shared handlers; otherwise testnet.
-export const mainnetReady = Boolean(deployment4663.pool);
+// This app version speaks to the v2 contracts. A network still on v1 is shown as upgrading (its v1
+// notes stay withdrawable with the v1-final release).
+export const mainnetReady = deployment4663.version === 2;
+export const testnetReady = deployment46630.version === 2;
 function pick() {
   // The account worker is started with its page's network as its name.
   if (typeof window === 'undefined' && typeof WorkerGlobalScope !== 'undefined') return self.name === 'mainnet' ? 'mainnet' : 'testnet';
@@ -26,12 +29,15 @@ function pick() {
     saved = localStorage.getItem('zkdesk.network');
   } catch { /* storage unavailable: fall back to the default */ }
   const want = asked || saved || 'mainnet';
-  return want === 'mainnet' && mainnetReady ? 'mainnet' : 'testnet';
+  if (want === 'mainnet' && mainnetReady) return 'mainnet';
+  return testnetReady || !mainnetReady ? 'testnet' : 'mainnet';
 }
 export const network = pick();
 export const MAINNET = network === 'mainnet';
 export const chain = MAINNET ? robinhood : robinhoodTestnet;
 export const deployment = MAINNET ? deployment4663 : deployment46630;
+/** False while this network still runs the v1 contracts: services stand down instead of failing. */
+export const deploymentReady = deployment.version === 2;
 /** Base path of this network's API (the mainnet functions live under /api/mainnet). */
 export const apiBase = MAINNET ? '/api/mainnet' : '/api';
 /** Display names: real assets on mainnet, "t"-prefixed test assets on testnet. */

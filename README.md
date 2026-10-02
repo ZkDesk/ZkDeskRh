@@ -40,6 +40,8 @@ Every action you take is proven in your browser with zero-knowledge proofs and v
 - [Circuits](#circuits)
 - [Public API](#public-api)
 - [Testing and CI](#testing-and-ci)
+- [Deployed contracts](#deployed-contracts)
+- [Operations](#operations)
 - [Security](#security)
 - [License](#license)
 
@@ -59,7 +61,7 @@ ZKdesk is a **client-proved** system:
 | --- | --- |
 | **Shielded pool** | UTXO-style notes (commitments to asset, amount, owner and blinding). Spending publishes a nullifier, which prevents double spends without revealing the note. |
 | **Private transfers** | Send and receive privately. Relayed actions don't show your public address and need no gas; the relay fee is paid from your private notes. Deposits and withdrawals are public at the edge of the pool. |
-| **Confidential credit** | Borrow USDG against stock-token collateral. Each position is a hidden commitment in one of the desk's 64 slots. A USDG lending pool supplies the liquidity. |
+| **Confidential credit** | Borrow USDG against stock-token collateral. Each position is a hidden commitment in one of the desk's 64 slots, with a minimum size per collateral class; an idle position without debt is evicted after a day, and its collateral returns to the owner as a note. A USDG lending pool supplies the liquidity. |
 | **Proven solvency** | The desk operator regularly proves a health epoch over every slot: total collateral, total debt and a commitment to exactly which positions are liquidatable. If no epoch is attested in time, new borrowing halts. |
 | **Sealed liquidations** | Breached positions are liquidated in sealed batches that are checked against the attested epoch. |
 | **Private treasuries** | Shared private ledgers with role-based members. Each treasury's view key is shared as encrypted on-chain key shares. |
@@ -79,18 +81,21 @@ ZKdesk is a **client-proved** system:
 | **Credit** | Each step's collateral, borrow and repay amounts and slot; desk and batch totals | The desk operator reads each position's collateral, debt and owner key | Which wallet owns a position |
 | **Treasury** | Treasury identifier, action type, allocated or withdrawn amounts, solvency results | The opt-in scheduler, if made Payer, can read that treasury and act as its Payer (pay mandates; transfer below the dual-control threshold) | Balances, members, roles and policy values |
 | **Payments** | Mandate commitments, status changes, each payment's period and timing | The opt-in scheduler, for treasuries that use it | Recipient, terms and amounts |
+| **Receipts and statements** | A receipt names the treasury and the period, so whoever receives it can match it to that mandate's public payments and learn its schedule. A solvency statement publishes the nullifiers of the notes it counts, so later spends of those notes link back to it | — | The amount and the recipient unless disclosed; the treasury balance |
 
 Slot numbers, treasury identifiers and timing can be correlated. The full model is in the [developer docs](https://zkdesk.tech/docs#privacy).
 
 ## Governance and trust
 
-ZKdesk has not been independently audited. Protocol configuration is owned by a governance multisig acting through a timelock (24 hours on mainnet); the multisig currently has a single signer.
+ZKdesk has not been audited by an independent firm. An automated AI audit (October 2026) found two high and seven medium issues; all are fixed in the contracts and services listed under [Security](#security).
 
-- **After the 24-hour timelock**, governance can de-list an asset (which also blocks its withdrawals from the pool), add a module that can move pool funds, disable a collateral class on the desk (which blocks every step in that class), change the liquidation venue and bonus address, and unpause the desk.
-- **Immediately**, the guardian can pause new borrowing and partial collateral withdrawals; the deposit screener can flag a deposit during its 60-second standby so that it can only be refunded; and the relayer key sets the market-hours flag.
+- **Governance** is a Safe with a 2-of-3 threshold acting through a timelock of 48 hours (24 hours until a change already scheduled through the timelock takes effect on 3 October 2026). The three signer keys are held by the project's developer, not by independent parties or hardware devices.
+- **After the 48-hour timelock**, governance can list or de-list assets for *new* deposits (a de-listed asset can still be withdrawn), change collateral class parameters (a disabled class still allows repaying, adding collateral and closing), change the liquidation venue and bonus address, set the price-pinning key and unpause the desk. It cannot add a contract that moves pool funds: the pool's modules are fixed at deployment.
+- **Immediately**, the guardian key can pause new borrowing and partial collateral withdrawals, and the screener key can flag a deposit during its 60-second standby so that it can only be refunded to its origin. Both are separate from the deployer.
+- **Every timelock proposal** raises an alert to the operators during its delay.
 - **Liquidations** repay lenders first; the bonus and any surplus go to the governance Safe. Debt a liquidation cannot cover is written off and lowers lending-pool share value.
-- **The relayer** submits private actions and runs upkeep. While it is down, funds stay in the contracts but private actions, deposit clearing, price pinning and health epochs pause.
-- **Reserves** (10% of interest) have no withdrawal path yet and stay in the lending pool.
+- **The relayer** submits private actions; every relay pays its own gas. Desk epochs, liquidations, price pins and deposit clearing run from a separate keeper key. While the services are down, funds stay in the contracts but private actions, clearing, pinning and health epochs pause.
+- **Reserves** (10% of interest) have no withdrawal path and stay in the lending pool.
 
 Full details: [Governance and safety](https://zkdesk.tech/docs#governance) and [Security status and limitations](https://zkdesk.tech/docs#status).
 
@@ -210,24 +215,17 @@ forge install foundry-rs/forge-std@v1.16.2 --no-git
 forge test
 ```
 
-Most suites verify real UltraHonk proofs generated from `circuits/fixtures`. `MainnetFork.t.sol` runs only when `MAINNET_FORK` is set. Deployed addresses for each network are tracked in `src/lib/chain/deployments/`.
+Most suites verify real UltraHonk proofs generated from `circuits/fixtures`; `Invariants.t.sol` and `Fuzz.t.sol` cover accounting under random sequences. `MainnetFork.t.sol` runs only when `MAINNET_FORK` is set. Deployed addresses for each network are in `src/lib/chain/deployments/`.
 
-### Outdated comments in deployed contracts
+`bash contracts/deploy-v2.sh <testnet|mainnet> --broadcast` deploys the protocol and verifies every contract's source on Sourcify. Anyone can then confirm the governance and wiring with a read-only check:
 
-Deployed contract sources are kept byte-identical so they match on-chain verification. A few comments in them predate the mainnet launch; the code behaves as described here.
+```sh
+node scripts/check-deployment.mjs mainnet
+```
 
-| Location | Comment says | Actual behaviour |
-| --- | --- | --- |
-| `ZKDeskPool.sol` header | "No owner, no pause: exits are never gated" | The pool has no owner or upgrade path, but every transaction requires its asset to be listed in `AssetGate`, which governance controls through the timelock. Governance can also approve modules that move pool funds. See [Governance and trust](#governance-and-trust). |
-| `CreditDesk.sol` `operatorPk` and `api/cron/desk.js` | Operator key is a "testnet stand-in for the TEE" | The same operator-key model runs on mainnet. Moving the operator into a TEE is planned. |
-| `CreditDesk.sol` header and `healthy()` | Draws halt after "two missed" epochs | Draws halt once 3 epoch lengths pass without an attestation: 45 minutes in market hours, 3 hours outside them. |
-| `CreditDesk.sol` and `LendingPoolUSDG.sol` reserves | 10% of interest goes to `ZKDStaking`, "held in cash until swept (M6)" | Reserves stay in the lending pool and have no withdrawal path. `ZKDStaking` is deployed on testnet only. |
-| `CreditDesk.sol` `bonusSink` | "sequencer bond pool" | Liquidation bonus and surplus go to the governance Safe on mainnet. |
-| `CreditDesk.sol` fee check | "relayer pays gas for credit steps on testnet" | Credit steps carry no fee in the proof. Off-chain, the relayer only accepts them with a prepaid voucher (a private self-transfer that pays the fee). |
-| `CreditDesk.sol` `ISaleVenue` | "testnet: MockAMM" | Mainnet sells through `UniswapV3Venue`. |
-| `CreditDesk.sol` header, `circuits/position` | Owner, size, debt and LTV are private | Position contents are encrypted, but the desk operator can read them, and each step's collateral and borrow amounts are public. See [Who sees what](#who-sees-what). |
-| `Marker.sol` `marketOpen` | "Informational market-hours flag" | The flag selects the liquidation price band, the epoch interval and the off-hours liquidation floor. The relayer key sets it. |
-| `circuits/treasury_attest` | Neither balances nor the number of notes can be recovered | The balance stays private, but the declared liability and the covering notes' nullifiers are public, so later spends of those notes link to the statement. |
+It checks the Safe threshold, the timelock delay, who owns each contract, the guardian and screener keys, the fixed pool modules, the tree depth and every collateral class.
+
+The first deployment (v1, tag `v1-final`) stays on-chain so its notes can still be withdrawn. Its `Marker` (price pins) is shared with v2; that contract's comment calls `marketOpen` an "informational market-hours flag", but the flag selects the liquidation price band, the epoch interval and the off-hours liquidation floor.
 
 ## Circuits
 
@@ -250,20 +248,77 @@ All endpoints are served from the site origin. Mainnet equivalents live under `/
 | `GET` | `/api/relay` | Relayer address, availability and the live minimum relay fees per asset (base units) |
 | `POST` | `/api/relay` | Submit a proven private action |
 | `GET` | `/api/ops/:id` | Status of a relayed operation |
-| `GET` / `POST` | `/api/requests` | Sealed treasury approval requests. No authentication: anyone can read or post ciphertexts, which only treasury members can open |
+| `GET` / `POST` | `/api/requests` | Sealed treasury approval requests. Anyone can read the ciphertexts, which only treasury members can open; posting needs a signature from the treasury's mailbox key |
 
 ## Testing and CI
 
-Pushes to `main` and every pull request run on GitHub Actions:
+Pushes to `main` and every pull request run on GitHub Actions, with every action pinned to a commit and read-only permissions:
 
-1. **App:** install, `pnpm test`, `pnpm build` and the privacy check.
-2. **Contracts:** `forge test` with real proofs.
+| Job | What it runs |
+| --- | --- |
+| App | `pnpm test`, `pnpm build` and the privacy check (no client IPs or payload logging on the server, no keys in browser storage, no server secrets in the bundle) |
+| Contracts | `forge test`: real-proof suites, a test for each audit finding, invariants and fuzzing |
+| Circuits | `nargo check` and `nargo test` over all 12 crates; each circuit's tests replay accepted and rejected witnesses |
+| Slither | Static analysis of the contracts (generated verifiers stubbed); fails on any high-impact finding |
+| Semgrep | JavaScript and secret rules over the app and services |
+| gitleaks | Secret scanning over the full history |
+
+Invariants (`contracts/test/Invariants.t.sol`, 256 runs of 64 random calls):
+
+| Invariant | Test |
+| --- | --- |
+| The pool holds at least every note and pending deposit, per asset, and its books match exactly | `invariant_poolConservation` |
+| No nullifier is accepted twice | `invariant_noDoubleSpend` |
+| Every insertion is a root, and the current root is always usable | `invariant_rootHistory` |
+| The desk holds exactly its positions' collateral, and its debt matches | `invariant_deskBooks` |
+| One slot per live position; lender value is cash plus debt minus reserves | `invariant_slotsAndLenderNav` |
+
+## Deployed contracts
+
+Robinhood Chain mainnet (chain 4663), v2, deployed in block 77886136. Every contract and library source is verified on [Sourcify](https://repo.sourcify.dev/4663/0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F), which the explorer imports. Check the governance, wiring and verification yourself with `node scripts/check-deployment.mjs mainnet`.
+
+| Contract | Address |
+| --- | --- |
+| ZKDeskPool (shielded pool) | [0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F](https://robinhoodchain.blockscout.com/address/0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F) |
+| AssetGate | [0x20C827ef24450ce51870343cb510Be3948c91650](https://robinhoodchain.blockscout.com/address/0x20C827ef24450ce51870343cb510Be3948c91650) |
+| CreditDesk | [0x924e2778adD4E92322AB2AA81eC70C233F82b58b](https://robinhoodchain.blockscout.com/address/0x924e2778adD4E92322AB2AA81eC70C233F82b58b) |
+| DeskGuardian | [0x4080eE52CDb548E982303aaCDd88B87205192252](https://robinhoodchain.blockscout.com/address/0x4080eE52CDb548E982303aaCDd88B87205192252) |
+| LendingPoolUSDG | [0x159430b0aa298AA734BBA73EAb0Fd030a51D777b](https://robinhoodchain.blockscout.com/address/0x159430b0aa298AA734BBA73EAb0Fd030a51D777b) |
+| UniswapV3Venue | [0x028FD6D8fD04e3fD8D6A558a8cf3C82C2293eEFe](https://robinhoodchain.blockscout.com/address/0x028FD6D8fD04e3fD8D6A558a8cf3C82C2293eEFe) |
+| TreasuryLedger | [0x5Be8E8036d403adB3f6391d1704092302700Ab2f](https://robinhoodchain.blockscout.com/address/0x5Be8E8036d403adB3f6391d1704092302700Ab2f) |
+| MandateRegistry | [0xF45403a2BAc9775c48D5749e14DB4a290B52CbcD](https://robinhoodchain.blockscout.com/address/0xF45403a2BAc9775c48D5749e14DB4a290B52CbcD) |
+| Marker (shared with v1) | [0xC3061368E66b5a4253E5E98346677c6Ce093A735](https://robinhoodchain.blockscout.com/address/0xC3061368E66b5a4253E5E98346677c6Ce093A735) |
+| Governance Safe (2-of-3) | [0x1abAE714C8A68c73627b021F18FB3A68d9BE4EF8](https://robinhoodchain.blockscout.com/address/0x1abAE714C8A68c73627b021F18FB3A68d9BE4EF8) |
+| TimelockController | [0xe89b6689d8C1C30fD9FF47b4dbcFe5c4b790c0fF](https://robinhoodchain.blockscout.com/address/0xe89b6689d8C1C30fD9FF47b4dbcFe5c4b790c0fF) |
+
+The v1 contracts (tag `v1-final`) remain on-chain so their notes can be withdrawn; v1 pool: [0x804170e2A552EFF5b29710E9378E7c7Df31D607A](https://robinhoodchain.blockscout.com/address/0x804170e2A552EFF5b29710E9378E7c7Df31D607A). Testnet (46630) addresses are in `src/lib/chain/deployments/46630.json`.
+
+## Operations
+
+The services alert the operators (Telegram or a webhook) on low relayer or keeper gas, overdue desk epochs, a paused desk, failing relays and every timelock proposal. During an incident the guardian pauses new borrowing at once, while repaying, closing and every pool withdrawal keep working. A proposal that should not happen can be cancelled by the Safe during its 48-hour delay.
 
 ## Security
 
 - Your keys never leave your browser. What the public and ZKdesk services can see is listed in [Who sees what](#who-sees-what).
 - Authorization is enforced on-chain by proof verification, not by the frontend.
-- Please report vulnerabilities privately through GitHub's **Report a vulnerability** form on the [Security tab](https://github.com/ZkDesk/ZkDeskRh/security) rather than in a public issue.
+- Report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
+
+Findings of the automated audit (October 2026) and their fixes:
+
+| Finding | Fix | Test |
+| --- | --- | --- |
+| H-1: 64 dust positions could fill every credit slot | A minimum position size per class, bound into the position proof; idle positions without debt are evicted after a day (`circuits/evict`) | `test_audit_h1_*` |
+| H-2: the relayer could be drained with free relays | Every relay pays its gas (a fee note, or a prepaid voucher for steps without a fee field); a separate keeper key runs the desk | `scripts/ops/relay-test.mjs` |
+| M-1: an old health proof could roll back the liquidatable set | Epochs use the current marks and index; the operator attests and liquidates in one transaction | `test_audit_m1_*` |
+| M-2: a full note tree would freeze exits | Tree depth 32 and a 1,024-root history; the empty root is only accepted while the tree is empty | `test_audit_m2_rootHistory` |
+| M-3: governance could block exits | Delisting and disabling stop new deposits and new risk only | `test_audit_m3_*` |
+| M-4: dual control could be bypassed from a second treasury | Approvals belong to one treasury and are used once; owners can limit transfers without approval per period | `test_audit_m4_*` |
+| M-5: one position could halt the operator | The circuit rejects `operator_r = 0`, and the operator decodes the point at infinity | `zk.test.js`, `circuits/position` tests |
+| M-6: the approval mailbox could be flooded | Posts are signed with a key only treasury members hold; per-treasury daily cap; 14-day expiry | `scripts/ops/e2e-approvals.mjs` |
+| M-7: governance was a single key | 2-of-3 Safe, 48-hour timelock, separate guardian and screener, fixed pool modules, timelock alerts | `test_audit_m7_modulesAreFixed`, `scripts/check-deployment.mjs` |
+| L-1, L-2: receipts and statements link to public data | Documented in [Who sees what](#who-sees-what) | — |
+
+Slither reports no high-impact issues. Its medium findings are reentrancy patterns in functions that already hold a reentrancy lock and only call the protocol's own immutable contracts, and return values that are deliberately ignored.
 
 > Stock tokens are issued by third parties and carry their own eligibility and transfer rules. Nothing in this repository is an offer of a financial product.
 

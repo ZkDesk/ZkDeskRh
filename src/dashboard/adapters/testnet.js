@@ -5,7 +5,7 @@
 // Keys never reach this page: the account worker (lib/zk/account.worker.js) derives them from the
 // wallet signature and holds them with the client and prover; it is terminated on wallet change.
 import { isAddress, parseUnits } from 'viem';
-import { abis, apiBase, deployment, MAINNET, mainnetReady, minRelayFee, network, NETWORK_NAME, payableFee, stocks, USD_SYMBOL } from '../../lib/chain/config.js';
+import { abis, apiBase, deployment, MAINNET, mainnetReady, testnetReady, minRelayFee, network, NETWORK_NAME, payableFee, stocks, USD_SYMBOL } from '../../lib/chain/config.js';
 import { connectWallet, onWalletChange, publicClient } from '../../lib/chain/wallet.js';
 import { keyRequest } from '../../lib/zk/keys.js';
 import { debtOf, friendly, valueOf } from '../../lib/zk/client.js';
@@ -374,7 +374,7 @@ async function submit(state, type, values) {
 
 export default {
   mode: 'testnet',
-  net: { mainnet: MAINNET, network, mainnetReady, usd: USD_SYMBOL, name: NETWORK_NAME, t: T, label: MAINNET ? 'Mainnet' : 'Testnet' },
+  net: { mainnet: MAINNET, network, mainnetReady, testnetReady, usd: USD_SYMBOL, name: NETWORK_NAME, t: T, label: MAINNET ? 'Mainnet' : 'Testnet' },
   load: () => offline(),
   connect: () => connect().catch((error) => { const message = friendly(error.shortMessage || error.message); emit(offline(message)); throw new Error(message); }),
   subscribe(callback) {

@@ -1,7 +1,7 @@
 // Desk operator logic: opens every live position with the operator key, builds the epoch health
 // proof and sealed liquidation batches (circuits/health_epoch, circuits/liquidate). Server-side
 // only (api/cron/desk.js, scripts/ops); owners use `applyLiquidation` to follow their own position.
-import { hash2, liquidatedBlinding, liquidationPad, positionCommitment, randomField, FIELD } from './notes.js';
+import { evictedBlinding, hash2, liquidatedBlinding, liquidationPad, noteCommitment, positionCommitment, randomField, FIELD } from './notes.js';
 import { operatorDecrypt } from './grumpkin.js';
 import { WAD } from './position.js';
 
@@ -159,4 +159,18 @@ export function buildLiquidation({ entries, bitmap, salt, asset, mark, price, li
     repays: all.map((r) => str(r.repay)), repaid_scaled: all.map((r) => str(r.repaidScaled)),
   };
   return { witness, public: pub, rows };
+}
+
+/**
+ * Eviction of an idle zero-debt position (circuits/evict): its collateral returns to the owner as a
+ * note whose blinding the owner derives (evictedBlinding), so no ciphertext is needed.
+ */
+export function buildEvict(p) {
+  if (p.debtScaled !== 0n) throw new Error('Only a position without debt can be evicted.');
+  const note = { asset: p.asset, amount: p.collateral, owner: p.owner, blinding: evictedBlinding(p.blinding) };
+  const pub = { leaf: positionCommitment(p), asset: p.asset, collateral: p.collateral, commitment: noteCommitment(note) };
+  return {
+    public: pub,
+    witness: { leaf: str(pub.leaf), asset: str(p.asset), collateral: str(p.collateral), commitment: str(pub.commitment), owner: str(p.owner), blinding: str(p.blinding) },
+  };
 }

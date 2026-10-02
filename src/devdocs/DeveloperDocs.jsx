@@ -283,26 +283,27 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
 
         <Section id="governance" eyebrow="Security" title="Governance and safety">
           <ul>
-            <li><strong>Timelock:</strong> configuration of the protocol contracts is owned by a governance multisig acting through a timelock (24 hours on mainnet), so every change is visible before it takes effect.</li>
+            <li><strong>Timelock:</strong> configuration of the protocol contracts is owned by a 2-of-3 governance Safe acting through a timelock (48 hours on mainnet once a change already scheduled through it takes effect on 3 October 2026; 24 hours until then), so every change is visible before it takes effect. Every proposal also alerts the operators.</li>
             <li><strong>Guardian:</strong> a guardian can pause new risk on the credit desk immediately. A pause stops new borrowing and partial collateral withdrawals; it never blocks repaying, adding collateral or closing.</li>
-            <li><strong>Pool:</strong> the shielded pool has no owner and no upgrade path; deposits during standby can always be refunded to their origin. Which assets it accepts, and which modules may move funds, is set by governance (see below).</li>
+            <li><strong>Pool:</strong> the shielded pool has no owner and no upgrade path; deposits during standby can always be refunded to their origin. Its modules (credit desk, treasuries, payments) were fixed at deployment. Governance only decides which assets may enter; withdrawals and transfers never depend on it.</li>
             <li><strong>Solvency checks:</strong> pool balances are compared with outstanding notes for every asset and published on Transparency.</li>
-            <li><strong>Gas safety:</strong> when relayer gas runs low, desk epochs pause first so user transactions keep going through.</li>
+            <li><strong>Gas safety:</strong> desk epochs, liquidations, price pins and deposit clearing run from their own keeper key, so relay traffic cannot starve them; user relays stop at a balance floor.</li>
           </ul>
           <h3>Governance powers</h3>
-          <p>These powers exist today and are listed so you can judge the trust involved. The multisig, the guardian and the deposit screener are currently held by one signer; the relayer key is operated by ZKdesk.</p>
+          <p>These powers exist today and are listed so you can judge the trust involved. The three Safe signer keys, the guardian and the deposit screener are held by the project's developer (the guardian and screener are separate keys from the deployer); the relayer and keeper keys are operated by ZKdesk.</p>
           <ul>
-            <li><strong>After the 24-hour timelock:</strong> de-list an asset, which also blocks its withdrawals from the pool; add a module, which can move pool funds; disable a collateral class on the desk, which blocks every step in that class; change the liquidation venue and the bonus address; unpause the desk.</li>
-            <li><strong>Immediately, without the timelock:</strong> the guardian can pause the desk; the deposit screener can flag a deposit during its standby so that it can only be refunded; the relayer key sets the market-hours flag, which selects the liquidation price band and epoch interval.</li>
+            <li><strong>After the 48-hour timelock:</strong> list or de-list an asset for new deposits (a de-listed asset can still be withdrawn); change collateral class parameters, including the minimum position size (a disabled class still allows repaying, adding collateral and closing); change the liquidation venue and the bonus address; change the price-pinning key; unpause the desk. Governance cannot add a contract that moves pool funds.</li>
+            <li><strong>Immediately, without the timelock:</strong> the guardian can pause new borrowing and partial withdrawals; the deposit screener can flag a deposit during its standby so that it can only be refunded; the pinning key sets the market-hours flag, which selects the liquidation price band and epoch interval.</li>
           </ul>
         </Section>
 
         <Section id="status" eyebrow="Security" title="Security status and limitations">
-          <Callout tone="warning" title="Not audited">The circuits, contracts, relayer and key derivation have not been independently audited. An audit is planned. Until then, treat ZKdesk as early software and keep amounts small.</Callout>
+          <Callout tone="warning" title="Not audited by a firm">The circuits, contracts, relayer and key derivation have not been audited by an independent firm. An automated AI audit (October 2026) found two high and seven medium issues; all are fixed in the current deployment, each with a test. Treat ZKdesk as early software and keep amounts small.</Callout>
           <ul>
-            <li>The governance multisig currently has a single signer; moving to multiple independent signers is planned.</li>
+            <li>The governance Safe needs two of three signatures, but all three keys are held by the project's developer rather than independent parties or hardware devices.</li>
             <li>The desk operator can read the contents of credit positions, including each one's owner key, in order to prove health and run liquidations. Moving the operator into a trusted execution environment is planned.</li>
-            <li>A single relayer submits private actions and runs protocol upkeep. While it is unavailable, funds stay in the contracts, but private actions, deposit clearing, price pinning and health epochs pause, so new borrowing halts and liquidations wait.</li>
+            <li>One relayer submits private actions and one keeper runs protocol upkeep. While they are unavailable, funds stay in the contracts, but private actions, deposit clearing, price pinning and health epochs pause, so new borrowing halts and liquidations wait.</li>
+            <li>Credit, treasury and payment steps pay their relay fee with a prepaid voucher, bought by a private self-transfer from the acting member's personal balance, so each such step takes one extra proof.</li>
             <li>The 10% of interest set aside as reserves has no withdrawal path yet; it stays in the lending pool and does not count toward lender shares.</li>
             <li>Deposit screening is a fixed standby; no third-party screening provider is connected yet.</li>
             <li>Market hours do not yet account for exchange holidays.</li>
@@ -317,10 +318,12 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
 
         <Section id="parameters" eyebrow="Reference" title="Protocol parameters">
           <Table head={['Parameter', 'Value']} rows={[
-            ['Note tree depth / accepted recent roots', '20 / 64'],
+            ['Note tree depth / accepted recent roots', '32 / 1,024'],
             ['Inputs and outputs per transfer', '2 and 2'],
             ['Deposit screening standby', '60 seconds'],
             ['Credit desk slots', '64'],
+            ['Minimum position', 'About $25 of collateral when opening or after a withdrawal (per class, set by governance)'],
+            ['Idle position eviction', 'A position without debt and without activity for 1 day; its collateral returns to the owner as a note'],
             ['Health epoch interval', '15 minutes in market hours, 1 hour outside'],
             ['Borrowing halts after', '3 epoch lengths without an attestation (45 minutes in market hours, 3 hours outside)'],
             ['Liquidation batch size', 'Up to 4 positions of one class'],
@@ -330,7 +333,8 @@ position   = Poseidon(DOM_POS, collateralAsset, collateral, debtScaled, owner, b
             ['Interest to reserves', '10%'],
             ['Solvency statement size', 'Up to 8 treasury notes'],
             ['Mark validity', '25 hours on mainnet, 1 hour on testnet'],
-            ['Governance delay', '24 hours on mainnet, 5 minutes on testnet'],
+            ['Governance delay', '48 hours on mainnet, 5 minutes on testnet'],
+            ['Epoch marks', 'The current pin; the previous one only within 10 minutes of a new round'],
           ]} />
         </Section>
 

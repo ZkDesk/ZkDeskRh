@@ -4,8 +4,8 @@
     "inputs": [
       {
         "name": "verifiers",
-        "type": "address[3]",
-        "internalType": "contract IVerifier[3]"
+        "type": "address[4]",
+        "internalType": "contract IVerifier[4]"
       },
       {
         "name": "pool_",
@@ -34,6 +34,19 @@
       }
     ],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "ATTEST_GRACE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -77,6 +90,19 @@
   {
     "type": "function",
     "name": "EPOCH",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "EVICT_AFTER",
     "inputs": [],
     "outputs": [
       {
@@ -450,6 +476,133 @@
   },
   {
     "type": "function",
+    "name": "attestAndLiquidate",
+    "inputs": [
+      {
+        "name": "h",
+        "type": "tuple",
+        "internalType": "struct CreditDesk.HealthProof",
+        "components": [
+          {
+            "name": "proof",
+            "type": "bytes",
+            "internalType": "bytes"
+          },
+          {
+            "name": "marks",
+            "type": "uint256[4]",
+            "internalType": "uint256[4]"
+          },
+          {
+            "name": "rateIndex",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "sumValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "sumDebt",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "breachCommit",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      },
+      {
+        "name": "batches",
+        "type": "tuple[]",
+        "internalType": "struct CreditDesk.LiquidationProof[]",
+        "components": [
+          {
+            "name": "proof",
+            "type": "bytes",
+            "internalType": "bytes"
+          },
+          {
+            "name": "collAsset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "mark",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "price",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "rateIndex",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "slots",
+            "type": "uint8[4]",
+            "internalType": "uint8[4]"
+          },
+          {
+            "name": "oldLeaves",
+            "type": "uint256[4]",
+            "internalType": "uint256[4]"
+          },
+          {
+            "name": "newLeaves",
+            "type": "uint256[4]",
+            "internalType": "uint256[4]"
+          },
+          {
+            "name": "encSold",
+            "type": "uint256[4]",
+            "internalType": "uint256[4]"
+          },
+          {
+            "name": "encRepaid",
+            "type": "uint256[4]",
+            "internalType": "uint256[4]"
+          },
+          {
+            "name": "totalSold",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "totalValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "totalRepay",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "totalRepaidScaled",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "totalWrittenOff",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "bonusSink",
     "inputs": [],
     "outputs": [
@@ -523,6 +676,11 @@
         "name": "maxCollateral",
         "type": "uint128",
         "internalType": "uint128"
+      },
+      {
+        "name": "minCollateral",
+        "type": "uint128",
+        "internalType": "uint128"
       }
     ],
     "stateMutability": "view"
@@ -549,6 +707,59 @@
         "name": "",
         "type": "uint64",
         "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "evict",
+    "inputs": [
+      {
+        "name": "e",
+        "type": "tuple",
+        "internalType": "struct CreditDesk.EvictProof",
+        "components": [
+          {
+            "name": "proof",
+            "type": "bytes",
+            "internalType": "bytes"
+          },
+          {
+            "name": "slot",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "asset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "collateral",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "commitment",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "evictVerifier",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IVerifier"
       }
     ],
     "stateMutability": "view"
@@ -863,6 +1074,11 @@
         "internalType": "uint128"
       },
       {
+        "name": "minCollateral",
+        "type": "uint128",
+        "internalType": "uint128"
+      },
+      {
         "name": "enabled",
         "type": "bool",
         "internalType": "bool"
@@ -962,6 +1178,25 @@
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "touchedAt",
+    "inputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
       }
     ],
     "stateMutability": "view"
@@ -1103,6 +1338,12 @@
         "internalType": "uint128"
       },
       {
+        "name": "minCollateral",
+        "type": "uint128",
+        "indexed": false,
+        "internalType": "uint128"
+      },
+      {
         "name": "enabled",
         "type": "bool",
         "indexed": false,
@@ -1141,6 +1382,37 @@
       },
       {
         "name": "repay",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Evicted",
+    "inputs": [
+      {
+        "name": "slot",
+        "type": "uint8",
+        "indexed": true,
+        "internalType": "uint8"
+      },
+      {
+        "name": "asset",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "collateral",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "commitment",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
@@ -1352,6 +1624,11 @@
   {
     "type": "error",
     "name": "MarkUnusable",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotIdle",
     "inputs": []
   },
   {

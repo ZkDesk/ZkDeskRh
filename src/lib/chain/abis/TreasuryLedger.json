@@ -136,6 +136,19 @@
   },
   {
     "type": "function",
+    "name": "SET_LIMIT",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "SET_POLICY",
     "inputs": [],
     "outputs": [
@@ -266,6 +279,11 @@
     "type": "function",
     "name": "approved",
     "inputs": [
+      {
+        "name": "id",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
       {
         "name": "intent",
         "type": "uint256",
@@ -464,6 +482,40 @@
   },
   {
     "type": "function",
+    "name": "limits",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "maxTransfers",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "period",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "windowStart",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "used",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "marker",
     "inputs": [],
     "outputs": [
@@ -617,6 +669,31 @@
   },
   {
     "type": "event",
+    "name": "LimitSet",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxTransfers",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      },
+      {
+        "name": "period",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "PolicySet",
     "inputs": [
       {
@@ -701,6 +778,11 @@
   {
     "type": "error",
     "name": "LedgerExists",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "LimitReached",
     "inputs": []
   },
   {

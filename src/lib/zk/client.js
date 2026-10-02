@@ -176,8 +176,9 @@ export function createClient({ publicClient, walletClient = null, address = null
   async function market(symbol) {
     const token = stocks[symbol].token;
     operatorPk ??= await Promise.all([0n, 1n].map((i) => read(deployment.desk, abis.desk, 'operatorPk', [i])));
-    const [[price], index] = await Promise.all([read(deployment.marker, abis.marker, 'current', [token]), read(deployment.desk, abis.desk, 'index')]);
-    return { token, mark: big(price), ltvBps: stocks[symbol].ltvBps, liqBps: stocks[symbol].liqBps, index, operatorPk };
+    const [[price], index, cls] = await Promise.all([read(deployment.marker, abis.marker, 'current', [token]), read(deployment.desk, abis.desk, 'index'), read(deployment.desk, abis.desk, 'classes', [token])]);
+    // classes(): ltvBps, liqThresholdBps, enabled, maxCollateral, minCollateral (the smallest position).
+    return { token, mark: big(price), ltvBps: stocks[symbol].ltvBps, liqBps: stocks[symbol].liqBps, minColl: cls[4] ?? 0n, index, operatorPk };
   }
 
   /** Desk epoch status: last attestation, whether new draws are halted, epoch count. */
@@ -188,15 +189,17 @@ export function createClient({ publicClient, walletClient = null, address = null
 
   /** One credit step. position: from positions() or null to open. */
   async function credit({ symbol, position = null, collIn = 0n, collOut = 0n, draw = 0n, repay = 0n }) {
+    const m = await market(symbol);
+    const left = (position?.collateral ?? 0n) + collIn - collOut;
+    if (left > 0n && (!position || collOut) && left < m.minColl) throw new Error(`A position must hold at least ${Number(m.minColl) / 1e18} ${symbol} of collateral.`);
     const paid = await voucher(); // first, so the step's inputs are picked from what is left
     await sync();
-    const m = await market(symbol);
     const payAsset = repay ? deployment.usdg : m.token;
     const inputs = pickInputs(payAsset, collIn + repay);
     const slot = position ? position.slot : freeSlot(state);
     if (slot === null) throw new Error('The credit desk is full. Please try again later.');
     const old = position && { collateral: position.collateral, debtScaled: position.debtScaled, blinding: position.blinding };
-    const args = { tree: state.tree, sk: keys.sk, collAsset: big(m.token), usdgAsset: USDG, mark: m.mark, ltvBps: m.ltvBps, rateIndex: m.index, operatorPk: m.operatorPk, old, collIn, collOut, draw, repay, inputs };
+    const args = { tree: state.tree, sk: keys.sk, collAsset: big(m.token), usdgAsset: USDG, mark: m.mark, ltvBps: m.ltvBps, minColl: m.minColl, rateIndex: m.index, operatorPk: m.operatorPk, old, collIn, collOut, draw, repay, inputs };
     const empty = { relayer: zeroAddress, fee: 0n, encryptedOutput1: '0x', encryptedOutput2: '0x', encryptedPosition: '0x' };
     const draft = buildPosition({ ...args, ext: empty });
     const [o1, o2] = draft.outputs;

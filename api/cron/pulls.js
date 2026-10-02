@@ -5,6 +5,7 @@
 // mandate_pull proof and relay as a person would (cap, period, expiry and one pull per period are
 // enforced by the circuit and the MandateRegistry). Holds SCHEDULER_SEED (Vercel env only).
 import { cachedProver, cronAuthorized, deployment, json, publicClient, revertName, secret } from '../_lib/server.js';
+import { deploymentReady } from '../_lib/server.js';
 import { deriveKeys } from '../../src/lib/zk/keys.js';
 import { createClient } from '../../src/lib/zk/client.js';
 import { createProver } from '../../src/lib/zk/prover.js';
@@ -51,6 +52,7 @@ const prove = async (kind, witness) => {
 
 export default async function handler(req, res) {
   if (!cronAuthorized(req)) return json(res, 401, { error: 'unauthorized' });
+  if (!deploymentReady) return json(res, 200, { skipped: 'network still on v1 contracts' });
   if (!secret('SCHEDULER_SEED') || !deployment.mandates) return json(res, 503, { error: 'scheduler_unavailable' });
   try {
     return json(res, 200, await runPulls({ keys: deriveKeys(secret('SCHEDULER_SEED')), prove }));

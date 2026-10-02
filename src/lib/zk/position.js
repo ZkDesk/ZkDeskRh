@@ -29,7 +29,7 @@ const str = (x) => x.toString();
  */
 /** blindings: optional {position, outputs: [b0, b1], operator} to reproduce a draft (ciphertexts are made first). */
 /** operatorPk: the desk operator's Grumpkin key [x, y] (CreditDesk.operatorPk). */
-export function buildPosition({ tree, sk, collAsset, usdgAsset, mark, ltvBps, rateIndex, operatorPk, old = null, collIn = 0n, collOut = 0n, draw = 0n, repay = 0n, inputs = [], ext, blindings = {} }) {
+export function buildPosition({ tree, sk, collAsset, usdgAsset, mark, ltvBps, minColl = 0n, rateIndex, operatorPk, old = null, collIn = 0n, collOut = 0n, draw = 0n, repay = 0n, inputs = [], ext, blindings = {} }) {
   if ((collIn && repay) || (draw && collOut)) throw new Error('Combine at most one payment in and one payout per step.');
   for (const v of [collIn, collOut, draw, repay]) if (v < 0n || v > MAX_AMOUNT) throw new Error('Amount out of range.');
   const owner = ownerPk(sk);
@@ -48,6 +48,7 @@ export function buildPosition({ tree, sk, collAsset, usdgAsset, mark, ltvBps, ra
   const newDebtScaled = oldDebt + drawScaled - repayScaled;
   if (newColl < 0n) throw new Error('That is more collateral than the position holds.');
   if (newDebtScaled < 0n) throw new Error('That repays more than the position owes.');
+  if ((newColl || newDebtScaled) && (!old || collOut) && newColl < minColl) throw new Error('A position must keep at least the minimum collateral for this asset.');
   if ((draw || collOut) && newDebtScaled * rateIndex * HEALTH_SCALE > newColl * mark * BigInt(ltvBps)) {
     throw new Error('This would exceed the loan-to-value limit at the current price.');
   }
@@ -71,7 +72,7 @@ export function buildPosition({ tree, sk, collAsset, usdgAsset, mark, ltvBps, ra
   const pub = {
     root, extDataHash: positionExtHash(ext), collAsset, usdgAsset, inAsset, mark, ltvBps: BigInt(ltvBps), rateIndex,
     oldLeaf, newLeaf, collIn, collOut, draw, repay, drawScaled, repayScaled, inputNullifiers, outputCommitments: outputs.map((o) => o.commitment),
-    operatorPk, operatorEph: op.eph, operatorCipher: op.cipher,
+    operatorPk, operatorEph: op.eph, operatorCipher: op.cipher, minColl,
   };
   const witness = {
     root: str(root), ext_data_hash: str(pub.extDataHash), coll_asset: str(collAsset), usdg_asset: str(usdgAsset), in_asset: str(inAsset),
@@ -81,7 +82,7 @@ export function buildPosition({ tree, sk, collAsset, usdgAsset, mark, ltvBps, ra
     sk: str(sk), old_coll: str(oldColl), old_debt_scaled: str(oldDebt), old_blinding: str(oldBlinding), new_blinding: str(newBlinding),
     in_amounts: ins.map((n) => str(n.amount)), in_blindings: ins.map((n) => str(n.blinding)),
     in_path_depths: paths.map((p) => p.depth), in_path_indices: paths.map((p) => str(p.index)), in_path_siblings: paths.map((p) => p.siblings.map(str)),
-    operator_pk: operatorPk.map(str), operator_eph: op.eph.map(str), operator_cipher: op.cipher.map(str),
+    operator_pk: operatorPk.map(str), operator_eph: op.eph.map(str), operator_cipher: op.cipher.map(str), min_coll: str(minColl),
     out_blindings: outBlindings.map(str), change: str(change), operator_r: str(op.r),
   };
   const position = closed ? null : { asset: collAsset, collateral: newColl, debtScaled: newDebtScaled, blinding: newBlinding };

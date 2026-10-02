@@ -1,18 +1,23 @@
 // Vercel Cron, every 15 minutes (hourly off-hours): the desk operator. It is the testnet stand-in
 // for the TEE health-prover and liquidation sequencer, and holds DESK_OPERATOR_SK. Each run:
 //   1. replays CreditDesk events and opens every live slot with the operator key
-//   2. proves the epoch (circuits/health_epoch) at the pinned marks and attests it on-chain
-//   3. for each class with breached slots, prices the sale at the venue (salePrice), proves sealed
-//      batches (circuits/liquidate) at that uniform price and liquidates them
+//   2. proves the epoch (circuits/health_epoch) at the current pinned marks
+//   3. for each class with breached slots, prices the sale at the venue (salePrice) and proves sealed
+//      batches (circuits/liquidate) at that uniform price
+//   4. attests and liquidates in one transaction (attestAndLiquidate, audit M-1); if a batch would
+//      revert, attests alone and sends the batches one by one so the epoch still lands
+//   5. evicts idle positions without debt (circuits/evict, audit H-1), a few per run
 // Nothing is stored off-chain; the indexer mirrors Attested / Liquidated events.
 // Fallback when Functions are too slow or down: node scripts/ops/desk.mjs
 import { parseAbi, parseAbiItem } from 'viem';
 import { abis, cachedProver, cronAuthorized, deployment, keeper, publicClient, secret, sendFromKeeper, revertName, json } from '../_lib/server.js';
+import { deploymentReady } from '../_lib/server.js';
 import { QUOTER } from '../_lib/fees.js';
 import { createProver } from '../../src/lib/zk/prover.js';
-import { buildHealth, planLiquidations, replaySlots, CLASSES } from '../../src/lib/zk/desk.js';
+import { buildEvict, buildHealth, planLiquidations, replaySlots, CLASSES } from '../../src/lib/zk/desk.js';
 import healthCircuit from '../../src/lib/zk/artifacts/health_epoch.json' with { type: 'json' };
 import liquidateCircuit from '../../src/lib/zk/artifacts/liquidate.json' with { type: 'json' };
+import evictCircuit from '../../src/lib/zk/artifacts/evict.json' with { type: 'json' };
 
 const EVENTS = {
   operator: parseAbiItem('event OperatorNote(uint8 indexed slot, address asset, uint256[2] eph, uint256[4] cipher)'),
@@ -22,6 +27,7 @@ const AMM = parseAbi(['function quote(address) view returns (uint256)']);
 const VENUE = parseAbi(['function feeOf(address) view returns (uint24)']);
 const RANGE = 50_000n;
 const MIN_KEEPER_WEI = 5n * 10n ** 14n; // 0.0005 ETH ≈ 10 epochs
+const MAX_EVICTIONS = 4; // per run: each is a proof and a transaction
 const desk = { address: deployment.desk, abi: abis.desk };
 const read = (address, abi, functionName, args = []) => publicClient.readContract({ address, abi, functionName, args });
 
@@ -85,9 +91,11 @@ export async function runDesk({ operatorSk, prove, log = () => {} }) {
   const t0 = Date.now();
   const { proof } = await prove('health_epoch', h.witness);
   const marks = [...cls.map((c) => c.mark), ...Array(CLASSES - cls.length).fill(0n)];
-  const attest = await submit('attest', [{ proof, marks, rateIndex: index, sumValue: h.public.sumValue, sumDebt: h.public.sumDebt, breachCommit: h.public.breachCommit }]);
-  const report = { live, breached: h.breached, sumValue: h.public.sumValue, sumDebt: h.public.sumDebt, proveMs: Date.now() - t0, attest, batches: [] };
+  const health = { proof, marks, rateIndex: index, sumValue: h.public.sumValue, sumDebt: h.public.sumDebt, breachCommit: h.public.breachCommit };
+  const report = { live, breached: h.breached, sumValue: h.public.sumValue, sumDebt: h.public.sumDebt, proveMs: Date.now() - t0, batches: [], evicted: [] };
 
+  // Sealed batches for the breached set this epoch commits to, proven before anything is sent.
+  const batches = [];
   for (const c of cls) {
     const breached = positions.filter((p, slot) => p && p.asset === c.asset && (h.bitmap >> BigInt(slot)) & 1n);
     if (!breached.length) continue;
@@ -95,34 +103,65 @@ export async function runDesk({ operatorSk, prove, log = () => {} }) {
     try {
       price = await salePrice(c.address, breached.reduce((t, p) => t + p.collateral, 0n));
     } catch (error) {
-      // A pricing failure skips this class only; the epoch is already attested.
+      // A pricing failure skips this class only; the epoch still lands.
       report.batches.push({ asset: c.address, error: revertName(error) });
       continue;
     }
-    const batches = planLiquidations({ positions, bitmap: h.bitmap, salt: h.salt, asset: c.asset, mark: c.mark, price, liqBps: c.liqBps, rateIndex: index, marketOpen });
-    for (const b of batches) {
+    for (const b of planLiquidations({ positions, bitmap: h.bitmap, salt: h.salt, asset: c.asset, mark: c.mark, price, liqBps: c.liqBps, rateIndex: index, marketOpen })) {
       const p = b.public;
       log(`batch ${c.address}: slots ${p.slots.slice(0, b.rows.length)}`);
-      try {
-        const { proof: bp } = await prove('liquidate', b.witness);
-        const tx = await submit('liquidate', [{
+      const { proof: bp } = await prove('liquidate', b.witness);
+      batches.push({
+        asset: c.address, slots: p.slots.slice(0, b.rows.length),
+        args: {
           proof: bp, collAsset: c.address, mark: p.mark, price: p.price, rateIndex: p.rateIndex, slots: p.slots,
           oldLeaves: p.oldLeaves, newLeaves: p.newLeaves, encSold: p.encSold, encRepaid: p.encRepaid,
           totalSold: p.totalSold, totalValue: p.totalValue, totalRepay: p.totalRepay, totalRepaidScaled: p.totalRepaidScaled, totalWrittenOff: p.totalWrittenOff,
-        }]);
-        report.batches.push({ asset: c.address, slots: p.slots.slice(0, b.rows.length), ...tx });
-      } catch (error) {
-        report.batches.push({ asset: c.address, error: revertName(error) });
+        },
+      });
+    }
+  }
+
+  // One transaction: nothing can replace the breached set between the epoch and its liquidations.
+  try {
+    report.attest = await submit(batches.length ? 'attestAndLiquidate' : 'attest', batches.length ? [health, batches.map((b) => b.args)] : [health]);
+    report.batches.push(...batches.map((b) => ({ asset: b.asset, slots: b.slots, tx: report.attest.hash })));
+  } catch (error) {
+    if (!batches.length) throw error;
+    // A batch would revert (e.g. the venue moved): land the epoch, then each batch on its own.
+    report.atomicError = revertName(error);
+    report.attest = await submit('attest', [health]);
+    for (const b of batches) {
+      try {
+        report.batches.push({ asset: b.asset, slots: b.slots, ...(await submit('liquidate', [b.args])) });
+      } catch (e) {
+        report.batches.push({ asset: b.asset, error: revertName(e) });
       }
+    }
+  }
+
+  // Audit H-1: free the slots of positions without debt that nobody touched for EVICT_AFTER.
+  const [evictAfter, now] = await Promise.all([read(deployment.desk, abis.desk, 'EVICT_AFTER'), publicClient.getBlock({ blockTag: 'latest' }).then((b) => b.timestamp)]);
+  for (const [slot, p] of positions.entries()) {
+    if (!p || p.debtScaled !== 0n || report.evicted.length >= MAX_EVICTIONS) continue;
+    if (now < (await read(deployment.desk, abis.desk, 'touchedAt', [BigInt(slot)])) + evictAfter) continue;
+    try {
+      const e = buildEvict(p);
+      const { proof: ep } = await prove('evict', e.witness);
+      const tx = await submit('evict', [{ proof: ep, slot, asset: '0x' + p.asset.toString(16).padStart(40, '0'), collateral: p.collateral, commitment: e.public.commitment }]);
+      report.evicted.push({ slot, ...tx });
+    } catch (error) {
+      report.evicted.push({ slot, error: revertName(error) });
     }
   }
   return report;
 }
 
-const prove = cachedProver(createProver, { health_epoch: healthCircuit, liquidate: liquidateCircuit });
+const prove = cachedProver(createProver, { health_epoch: healthCircuit, liquidate: liquidateCircuit, evict: evictCircuit });
 
 export default async function handler(req, res) {
   if (!cronAuthorized(req)) return json(res, 401, { error: 'unauthorized' });
+  if (!deploymentReady) return json(res, 200, { skipped: 'network still on v1 contracts' });
   if (!keeper || !secret('DESK_OPERATOR_SK')) return json(res, 503, { error: 'desk_operator_unavailable' });
   // Epochs are 15 minutes in market hours and hourly off-hours.
   const open = await read(deployment.marker, abis.marker, 'marketOpen');

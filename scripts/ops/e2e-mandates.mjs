@@ -45,6 +45,15 @@ const L = async (m, id) => { await m.client.sync(); return m.client.ledgers().fi
 const M = async (m, id, commit) => (m.client.mandates(await L(m, id))).find((x) => x.commit === commit);
 const now = Math.floor(Date.now() / 1000);
 
+// Relay fees (vouchers) come from the Owner's personal private balance: top it up when low.
+await owner.client.sync();
+if (owner.client.balance(deployment.usdg) < 3000_000000n) {
+  await step('Owner tops up 5000 tUSDG privately (relay fees)', async () => {
+    await owner.client.deposit(deployment.usdg, 5000_000000n);
+    await new Promise((r) => setTimeout(r, (deployment.standbySeconds + 15) * 1000));
+    for (let i = 0; i < 8; i++) { await tick(); await owner.client.sync(); if (owner.client.balance(deployment.usdg) >= 3000_000000n) return; await new Promise((r) => setTimeout(r, 15000)); }
+  });
+}
 // Payment steps pay their relay voucher from the acting member's personal private balance.
 await payer.client.sync();
 for (let i = 0; i < 3 && payer.client.balance(deployment.usdg) < 1000_000000n; i++) { await step('Owner sends the Payer 400 tUSDG privately for relay fees', () => owner.client.send({ amount: 400_000000n, to: addr(payer) })); await payer.client.sync(); }

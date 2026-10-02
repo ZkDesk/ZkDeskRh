@@ -57,3 +57,5 @@ fn main(
         assert(lte(cap, dual_threshold) | (role == OWNER));
     }
 }
+
+mod tests;

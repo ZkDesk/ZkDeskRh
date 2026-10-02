@@ -104,3 +104,5 @@ fn main(
     assert_eq(payment, output_commitments[1]);
     assert_eq(receipt_of(ledger_id, k, payment), receipt_leaf);
 }
+
+mod tests;

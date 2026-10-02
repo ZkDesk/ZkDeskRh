@@ -6,7 +6,7 @@ export const FIELD = 21888242871839275222246405745257275088548364400416034343698
 export const DOM_OWNER = 0x5a4b442e6f776e6572n; // "ZKD.owner"
 export const DOM_NK = 0x5a4b442e6e6bn; // "ZKD.nk"
 export const DOM_POSITION = 0x5a4b442e706f73n; // "ZKD.pos"
-export const MAX_DEPTH = 20;
+export const MAX_DEPTH = 32;
 export const MAX_AMOUNT = (1n << 100n) - 1n;
 
 export const hash2 = (a, b) => poseidon2([a, b]);
@@ -31,6 +31,9 @@ export const toHex = (x) => '0x' + BigInt(x).toString(16).padStart(64, '0');
 export const DOM_LIQ = 0x5a4b442e6c6971n; // "ZKD.liq"
 export const liquidatedBlinding = (blinding) => poseidon2([DOM_LIQ, blinding]);
 export const liquidationPad = (blinding, i) => poseidon3([DOM_LIQ, blinding, BigInt(i)]);
+// An evicted position's collateral note (circuits/lib evicted_blinding; circuits/evict).
+export const DOM_EVICT = 0x5a4b442e6576696374n; // "ZKD.evict"
+export const evictedBlinding = (blinding) => poseidon2([DOM_EVICT, blinding]);
 
 // Treasury ledgers (circuits/lib ledger_id / roles_commit / policy_hash; circuits/ledger intent).
 export const DOM_LEDGER = 0x5a4b442e6c6564676572n; // "ZKD.ledger"
