@@ -3,8 +3,9 @@
 // treasury's Payer. Owner deposits -> sends the agent 800 -> agent sends and withdraws -> Owner
 // creates a treasury with the agent as Payer (approval above 50) -> agent pays 20 -> agent's 80 becomes
 // a request -> Owner approves -> agent completes -> Owner gives the agent a 25/month mandate -> agent
-// pays it once (a second pay is refused) -> agent proves the receipt and it verifies -> the agent's
-// per-transaction limit refuses 600.
+// pays it once (a second pay is refused) -> agent proves the receipt and it verifies -> payment links:
+// the agent pays the Owner's link (own balance, then from the treasury) and the Owner pays the agent's
+// link -> the agent's per-transaction limit refuses 600.
 // Usage (testnet or a local fork with the site served by serve.mjs-style server and DB_SCHEMA set):
 //   RPC_URL_SERVER=<rpc> node scripts/ops/e2e-agent.mjs <siteUrl>
 import { readFileSync } from 'node:fs';
@@ -24,6 +25,7 @@ const { deriveKeys, keyRequest, zkAddress, parseZkAddress } = await import('../.
 const { createClient } = await import('../../src/lib/zk/client.js');
 const { createProver } = await import('../../src/lib/zk/prover.js');
 const { createTransport } = await import('../../src/lib/zk/transport.js');
+const { paymentLink, readPaymentLink } = await import('../../src/lib/zk/request-link.js');
 const { default: tickHandler } = await import('../../api/cron/tick.js');
 
 const account = privateKeyToAccount(process.env.DEPLOYER_PRIVATE_KEY);
@@ -101,6 +103,13 @@ const [receipt] = await step('Agent lists its receipts', () => agent.receipts())
 check(receipt?.amount === '25', 'the payment carries a receipt');
 const record = await step('Agent proves the receipt (amount disclosed)', () => agent.proveReceipt(receipt.id, { discloseAmount: true }).then((r) => r.proof.amount));
 check(await agent.verifyReceipt(await agent.proveReceipt(receipt.id, { discloseAmount: true })), 'the receipt verifies on-chain');
+const ownerLink = (amount) => paymentLink(site, { to: ownerZk, amount, memo: 'e2e invoice', network: 'testnet' }).toString();
+check((await step("Agent pays the Owner's 3 tUSDG link from its balance", () => agent.payLink(ownerLink('3')))).confirmed, 'link paid');
+check((await step('Agent pays an open-amount link from the treasury (5)', () => agent.payLink(ownerLink(''), { amount: '5', treasury: id }))).confirmed, 'link paid from the treasury');
+const asking = await step('Agent creates a link asking for 4', () => agent.requestLink({ amount: '4', memo: 'agent invoice' }));
+const before = Number((await agent.balance()).usdg);
+await step("Owner pays the agent's link", () => { const r = readPaymentLink(new URL(asking).searchParams); return owner.send({ amount: BigInt(Math.round(Number(r.amount) * 1e6)), to: parseZkAddress(r.to) }); });
+check(Math.abs(Number((await agent.balance()).usdg) - before - 4) < 1e-9, 'the agent received exactly 4');
 await refused('600 above the agent limit', () => agent.pay(id, { to: ownerZk, amount: '600' }), /above this agent's limit/);
 console.log(`Agent balance now ${(await agent.balance()).usdg} tUSDG. Agent e2e passed. (${record})`);
 process.exit(0);

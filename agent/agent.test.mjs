@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { agentKeys, deriveKeys, passkeyKeys, zkAddress, parseZkAddress } from '../src/lib/zk/keys.js';
 import { createHandler, TOOLS } from './mcp.mjs';
 import { createAgent, newSeed } from './index.mjs';
+import { paymentLink, readPaymentLink } from '../src/lib/zk/request-link.js';
 
 // Keys: deterministic, one account per chain, never the passkey or signature account of the same bytes.
 const seed = '0x' + '5a'.repeat(32);
@@ -29,6 +30,23 @@ await assert.rejects(agent.send({ to: agent.address, amount: '0' }), /greater th
 await assert.rejects(agent.send({ to: agent.address, amount: '1e3' }), /greater than zero/);
 await assert.rejects(agent.send({ to: 'zkd:1234', amount: '1' }), /Not a ZKdesk private address/);
 await assert.rejects(agent.withdraw({ to: '0x123', amount: '1' }), /Not a 0x address/);
+
+// Payment request links: the dashboard's format, created and read by the agent, checked before paying.
+const zkTo = zkAddress(agentKeys('0x' + '11'.repeat(32), 4663));
+assert.deepEqual(readPaymentLink(paymentLink('https://zkdesk.tech', { to: zkTo, amount: '7.25', memo: 'Invoice 7', network: 'mainnet' }).searchParams), { to: zkTo, amount: '7.25', memo: 'Invoice 7', network: 'mainnet' });
+assert.equal(readPaymentLink(new URLSearchParams('pay=zkd:12')), null);
+assert.equal(readPaymentLink(new URLSearchParams(`pay=${zkTo}&amount=-1`)).amount, '', 'a bad amount leaves it to the payer');
+const own = await agent.requestLink({ amount: '12.5', memo: 'Invoice 8' });
+assert.match(own, /^https:\/\/zkdesk\.tech\/dashboard\?view=treasury&pay=zkd%3A/);
+assert.deepEqual(agent.readLink(own), { to: agent.address, amount: '12.5', memo: 'Invoice 8', network: 'mainnet' });
+const link = (q) => `https://zkdesk.tech/dashboard?view=treasury&pay=${zkTo}&network=mainnet${q}`;
+assert.throws(() => agent.readLink(link('').replace('mainnet', 'testnet')), /for testnet; this agent is on mainnet/);
+assert.throws(() => agent.readLink('pay me'), /Not a link/);
+assert.throws(() => agent.readLink('https://zkdesk.tech/dashboard?amount=5'), /not a ZKdesk payment request/);
+await assert.rejects(agent.payLink(link('&amount=12.5'), { amount: '10' }), /asks for 12.5 USDG, not 10/);
+await assert.rejects(agent.payLink(link('')), /leaves the amount to the payer/);
+await assert.rejects(agent.payLink(link('&amount=60')), /above this agent's limit of 50 USDG/);
+await assert.rejects(agent.requestLink({ amount: 'ten' }), /greater than zero/);
 
 // MCP handler with a stand-in agent.
 const calls = [];
@@ -56,6 +74,7 @@ for (const [args, why] of [[{ to: 'zkd:x' }, /Missing argument "amount"/], [{ to
   assert.equal(r.isError, true);
   assert.match(r.content[0].text, why);
 }
+assert.match((await call('zkdesk_request_link', { memo: 'x'.repeat(61) })).result.content[0].text, /longer than 60/);
 assert.equal((await call('zkdesk_nope', {})).error.code, -32602);
 assert.equal((await handle({ jsonrpc: '2.0', id: 10, method: 'resources/list' })).error.code, -32601);
 assert.equal((await handle({ id: 11, method: 'ping' })).error.code, -32600);
@@ -84,4 +103,4 @@ assert.equal(lines.find((l) => l.id === 1).result.serverInfo.name, 'zkdesk');
 assert.equal(JSON.parse(lines.find((l) => l.id === 2).result.content[0].text).address, zkAddress(k));
 assert.equal(lines.find((l) => l.id === null).error.code, -32700);
 
-console.log('agent checks passed: agent keys, SDK input guards and per-transaction limit, MCP initialize/tools/list/tools/call, argument validation, serialized spends, stdio session');
+console.log('agent checks passed: agent keys, SDK input guards and per-transaction limit, payment request links, MCP initialize/tools/list/tools/call, argument validation, serialized spends, stdio session');

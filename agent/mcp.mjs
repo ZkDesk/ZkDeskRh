@@ -29,6 +29,8 @@ export const TOOLS = [
   tool('zkdesk_complete', 'Send a treasury transfer this agent requested, after the Owner approved it.', { treasury: TREASURY, request: str('Request id from zkdesk_requests') }, ['treasury', 'request'], (a, x) => a.complete(x.treasury, x.request)),
   tool('zkdesk_mandates', 'Payment mandates of a treasury: recipient, cap per period, expiry, status and whether this period is paid.', { treasury: TREASURY }, ['treasury'], (a, x) => a.mandates(x.treasury), true),
   tool('zkdesk_pay_mandate', 'Pay the current period of a mandate, up to its cap.', { treasury: TREASURY, mandate: str('Mandate id from zkdesk_mandates'), amount: AMOUNT }, ['treasury', 'mandate', 'amount'], (a, x) => a.payMandate(x.treasury, x.mandate, x.amount)),
+  tool('zkdesk_pay_link', "Pay a ZKdesk payment request link (…/dashboard?pay=zkd:…). Pays from the agent's own balance, or from a treasury if one is given. Give an amount only if the link leaves it to the payer.", { link: str('The payment request link'), amount: AMOUNT, treasury: str('Optional: pay from this treasury (0x… id from zkdesk_treasuries)') }, ['link'], (a, x) => a.payLink(x.link, { amount: x.amount, treasury: x.treasury })),
+  tool('zkdesk_request_link', 'Create a payment request link (and nothing else) that lets anyone pay the agent, or one of its treasuries, privately. Share it to get paid.', { amount: { ...AMOUNT, description: 'Optional USDG amount; leave out to let the payer choose' }, memo: str('Optional note shown to the payer (up to 60 characters)', { maxLength: 60 }), treasury: str('Optional: request payment into this treasury') }, [], (a, x) => a.requestLink(x).then((link) => ({ link })), true),
   tool('zkdesk_receipts', 'Payments the agent received under mandates; each can be proven with zkdesk_prove_receipt.', {}, [], (a) => a.receipts(), true),
   tool('zkdesk_prove_receipt', 'A zero-knowledge receipt for one received payment, for one verifier, disclosing the amount only if asked.', { id: str('Receipt id from zkdesk_receipts'), verifier: str('Who the proof is for: a 0x address (default: anyone)'), disclose_amount: { type: 'boolean', description: 'Include the amount' } }, ['id'], (a, x) => a.proveReceipt(x.id, { verifier: x.verifier || '0', discloseAmount: Boolean(x.disclose_amount) }), true),
   tool('zkdesk_verify_receipt', 'Check a ZKdesk payment receipt record against the chain. Needs no keys.', { record: { type: 'object', description: 'The receipt record JSON' } }, ['record'], (a, x) => a.verifyReceipt(x.record).then((valid) => ({ valid })), true),
@@ -45,6 +47,7 @@ function checkArgs(t, args) {
     const type = Array.isArray(v) ? 'array' : typeof v;
     if (type !== p.type) throw new Error(`Argument "${k}" must be a ${p.type}.`);
     if (p.pattern && !new RegExp(p.pattern).test(v)) throw new Error(`Argument "${k}" is not valid: ${p.description}.`);
+    if (p.maxLength && v.length > p.maxLength) throw new Error(`Argument "${k}" is longer than ${p.maxLength} characters.`);
   }
 }
 
@@ -62,7 +65,7 @@ export function createHandler(getAgent) {
       return reply({
         protocolVersion: VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : VERSIONS[0],
         capabilities: { tools: {} },
-        serverInfo: { name: 'zkdesk', version: '3.7.0' },
+        serverInfo: { name: 'zkdesk', version: '3.8.0' },
         instructions: 'ZKdesk private payments on Robinhood Chain. Amounts are USDG decimal strings. Every payment is a zero-knowledge proof generated locally (about 10 to 60 seconds) and relayed; no wallet or gas is needed. Payments above the treasury Owner\'s threshold become approval requests.',
       });
     }

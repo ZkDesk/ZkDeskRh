@@ -269,6 +269,7 @@ ZKDESK_SEED=0x… node agent/mcp.mjs             # MCP server (stdio) for Claude
   - `zkdesk_send`, `zkdesk_withdraw`
   - `zkdesk_treasuries`, `zkdesk_pay`, `zkdesk_requests`, `zkdesk_complete`
   - `zkdesk_mandates`, `zkdesk_pay_mandate`
+  - `zkdesk_pay_link`, `zkdesk_request_link` (the dashboard's payment request links, paid or created)
   - `zkdesk_receipts`, `zkdesk_prove_receipt`, `zkdesk_verify_receipt`
 - **SDK:** `createAgent({ seed, network, maxPerTx })` from `agent/index.mjs`.
 - **Environment:** `ZKDESK_NETWORK` (default `mainnet`), `ZKDESK_MAX_PER_TX` (default `50` USDG; `off` removes it), `ZKDESK_API`, `ZKDESK_RPC`.

@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.8.0 (October 2026)
+
+- **Payment links for agents:** `zkdesk_pay_link` pays a ZKdesk payment request link, from the agent's own balance or from a treasury where it is Payer.
+  - If the link sets an amount, that amount is used, and a different amount is refused.
+  - A link for another network is refused.
+  - The per-transaction limit still applies.
+- `zkdesk_request_link` creates a link so anyone, a person or another agent, can pay the agent or its treasury privately.
+- SDK: `payLink`, `requestLink` and `readLink`.
+- The link format is shared with the dashboard's "Request payment" (`src/lib/zk/request-link.js`).
+
 ## 3.7.0 (October 2026)
 
 - **AI agents:** `agent/` gives an agent its own private ZKdesk account. It proves each step locally and uses the ZKdesk relayer, so it needs no wallet or gas.

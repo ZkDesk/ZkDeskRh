@@ -5,6 +5,7 @@ import './dashboard.css';
 import { ZMark } from '../brand/identity.jsx';
 import { SoundToggle } from '../InteractionSound.jsx';
 import qrcode from 'qrcode-generator';
+import { paymentLink, readPaymentLink } from '../lib/zk/request-link.js';
 
 const TESTNET = adapter.mode === 'testnet'; // the live adapter (mainnet or testnet); false in the demo
 // Live-only styles load as their own chunk, so the demo CSS bundle stays byte-identical.
@@ -120,23 +121,15 @@ function exportRecord(record) {
  * the link carries the recipient's private address, an optional amount and an optional note. */
 const AMOUNT = /^\d{1,9}(\.\d{1,6})?$/;
 function requestLink({ to, amount, memo }) {
-  const url = new URL('/dashboard', window.location.origin);
-  url.searchParams.set('view', 'treasury');
-  url.searchParams.set('pay', to);
-  if (amount) url.searchParams.set('amount', amount);
-  if (memo) url.searchParams.set('memo', memo);
-  url.searchParams.set('network', NET.mainnet ? 'mainnet' : 'testnet');
+  const url = paymentLink(window.location.origin, { to, amount, memo, network: NET.mainnet ? 'mainnet' : 'testnet' });
   const mode = new URLSearchParams(window.location.search).get('mode'); // a ?mode= override travels with the link
   if (mode) url.searchParams.set('mode', mode);
   return url.toString();
 }
 function readRequest() {
   if (!TESTNET) return null;
-  const params = new URLSearchParams(window.location.search);
-  const to = params.get('pay')?.trim() ?? '';
-  if (!/^zkd:[0-9a-f]{128}$/i.test(to)) return null;
-  const amount = AMOUNT.test(params.get('amount') ?? '') && Number(params.get('amount')) > 0 ? params.get('amount') : '';
-  return { to, amount, memo: (params.get('memo') ?? '').slice(0, 60) };
+  const r = readPaymentLink(new URLSearchParams(window.location.search));
+  return r && { to: r.to, amount: r.amount, memo: r.memo };
 }
 /** A QR code drawn as one SVG path (no images, so the page CSP is unchanged). */
 function QrCode({ text, size = 200 }) {

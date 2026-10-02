@@ -25,9 +25,9 @@ export async function createAgent({ seed, network = 'mainnet', api = 'https://zk
   if (!['mainnet', 'testnet'].includes(network)) throw new Error('network must be "mainnet" or "testnet".');
   if (globalThis.ZKDESK_NETWORK && globalThis.ZKDESK_NETWORK !== network) throw new Error(`This process already uses ${globalThis.ZKDESK_NETWORK}; one network per process.`);
   globalThis.ZKDESK_NETWORK = network;
-  const [config, { agentKeys, zkAddress, parseZkAddress }, zk, { createProver }, { createTransport }, { currentPeriod, KINDS }] = await Promise.all([
+  const [config, { agentKeys, zkAddress, parseZkAddress }, zk, { createProver }, { createTransport }, { currentPeriod, KINDS }, { paymentLink, readPaymentLink }] = await Promise.all([
     import('../src/lib/chain/config.js'), import('../src/lib/zk/keys.js'), import('../src/lib/zk/client.js'),
-    import('../src/lib/zk/prover.js'), import('../src/lib/zk/transport.js'), import('../src/lib/zk/mandate.js'),
+    import('../src/lib/zk/prover.js'), import('../src/lib/zk/transport.js'), import('../src/lib/zk/mandate.js'), import('../src/lib/zk/request-link.js'),
   ]);
   const { chain, deployment, deploymentReady, apiBase } = config;
   if (!deploymentReady) throw new Error(`ZKdesk ${network} still runs older contracts. Use ${network === 'mainnet' ? 'testnet' : 'mainnet'}.`);
@@ -66,6 +66,27 @@ export async function createAgent({ seed, network = 'mainnet', api = 'https://zk
     if (!role) throw new Error(`This agent is ${L.roles.join(', ')} in "${L.name}" and cannot move its funds.`);
     return role;
   };
+  const send = async ({ to, amount }) => done(await client.send({ amount: amountOf(amount), to: zkTo(to) }));
+  async function pay(treasuryId, { to, amount }) {
+    const L = await treasury(treasuryId);
+    const raw = amountOf(amount);
+    const dest = isAddress(to ?? '') ? { recipient: to } : { to: zkTo(to) };
+    const r = await client.ledgerAct(L, mover(L), { action: 'transfer', amount: raw, ...dest });
+    if (r?.requested) return { requested: true, message: `Above ${fmt(L.config.dualThreshold)} USDG: sent to the treasury Owner for approval. Complete it once approved.` };
+    return done(r);
+  }
+  function readLink(link) {
+    let url;
+    try {
+      url = new URL(String(link).trim());
+    } catch {
+      throw new Error(`Not a link: "${link}".`);
+    }
+    const r = readPaymentLink(url.searchParams);
+    if (!r) throw new Error('This link is not a ZKdesk payment request (it has no valid pay= address).');
+    if (r.network && r.network !== network) throw new Error(`This link is for ${r.network}; this agent is on ${network}.`);
+    return r;
+  }
 
   return {
     network, client,
@@ -76,9 +97,7 @@ export async function createAgent({ seed, network = 'mainnet', api = 'https://zk
       return { usdg: fmt(client.balance(USDG)), pending: fmt(client.balance(USDG, 'pending')), network };
     },
     /** Private USDG transfer to a zkd: address (relay fee paid from the agent's balance). */
-    async send({ to, amount }) {
-      return done(await client.send({ amount: amountOf(amount), to: zkTo(to) }));
-    },
+    send,
     /** USDG out of the private pool to a public 0x address. */
     async withdraw({ to, amount }) {
       if (!isAddress(to ?? '')) throw new Error(`Not a 0x address: "${to}".`);
@@ -93,13 +112,26 @@ export async function createAgent({ seed, network = 'mainnet', api = 'https://zk
       }));
     },
     /** Pays from a treasury to a zkd: or 0x address. Above the Owner's threshold it becomes a request. */
-    async pay(treasuryId, { to, amount }) {
-      const L = await treasury(treasuryId);
-      const raw = amountOf(amount);
-      const dest = isAddress(to ?? '') ? { recipient: to } : { to: zkTo(to) };
-      const r = await client.ledgerAct(L, mover(L), { action: 'transfer', amount: raw, ...dest });
-      if (r?.requested) return { requested: true, message: `Above ${fmt(L.config.dualThreshold)} USDG: sent to the treasury Owner for approval. Complete it once approved.` };
-      return done(r);
+    pay,
+    /** What a payment request link asks for, without paying it: { to, amount, memo, network }. */
+    readLink: (link) => readLink(link),
+    /**
+     * Pays a payment request link from the agent's own balance, or from a treasury where it can move
+     * funds. amount is needed only when the link leaves it to the payer; otherwise it must match.
+     */
+    async payLink(link, { amount, treasury: treasuryId } = {}) {
+      const r = readLink(link);
+      if (r.amount && amount && usdg(amount) !== usdg(r.amount)) throw new Error(`The link asks for ${r.amount} USDG, not ${amount}.`);
+      const want = r.amount || amount;
+      if (!want) throw new Error('This link leaves the amount to the payer: give an amount.');
+      const result = treasuryId ? await pay(treasuryId, { to: r.to, amount: want }) : await send({ to: r.to, amount: want });
+      return { ...result, amount: want, to: r.to, memo: r.memo || null };
+    },
+    /** A payment request link to the agent, or to a treasury it holds a role in. Nothing is posted. */
+    async requestLink({ amount = '', memo = '', treasury: treasuryId } = {}) {
+      if (amount) usdg(amount);
+      const to = treasuryId ? zkAddress(await treasury(treasuryId)) : zkAddress(keys);
+      return paymentLink(api, { to, amount, memo, network }).toString();
     },
     /** Approval requests of a treasury (amounts in USDG). */
     async requests(treasuryId) {
