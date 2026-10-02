@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { hash2, publicAmount, FIELD } from './notes.js';
 import { decryptNote, encryptNote, NOTE_CIPHERTEXT_BYTES } from './crypto.js';
-import { canonicalSignature, deriveKeys } from './keys.js';
+import { canonicalSignature, deriveKeys, passkeyKeys, seedWords, wordsSeed } from './keys.js';
 import { G, mul, operatorDecrypt, operatorEncrypt, operatorPublicKey } from './grumpkin.js';
 import { applyLiquidation, buildHealth, isBreached } from './desk.js';
 import { liquidatedBlinding, liquidationPad, positionCommitment, ownerPk } from './notes.js';
@@ -84,4 +84,20 @@ const config = { name: 'Ops treasury', owner: a.owner, treasurer: b.owner, payer
 assert.deepEqual(decryptConfig(encryptConfig(config, lk.encPub), lk.encSecret), config);
 assert.deepEqual(heldRoles(config, a.owner), ['Owner', 'Payer']);
 assert.notEqual(lk.owner, ownerPk(0xabcn), 'ledger notes live outside the personal owner domain');
-console.log('zk primitives passed: poseidon vector, public amount, key derivation, note encryption, grumpkin + operator encryption, liquidation replay, health witness, ledger key shares/config/roles.');
+// Passkey keys: same seed, same keys; the chain and the "passkey" label separate them.
+{
+  const seed = '0x' + '7f'.repeat(32);
+  assert.equal(passkeyKeys(seed, 4663).sk, passkeyKeys(seed, 4663).sk, 'deterministic');
+  assert.notEqual(passkeyKeys(seed, 4663).sk, passkeyKeys(seed, 46630).sk, 'mainnet and testnet keys differ');
+  assert.notEqual(passkeyKeys(seed, 4663).sk, deriveKeys(seed).sk, 'passkey keys differ from signature keys');
+  // Recovery words: BIP-39 English vectors (Trezor), and the round trip back to the same keys.
+  assert.equal(seedWords('0x' + '00'.repeat(32)).join(' '), 'abandon '.repeat(23) + 'art');
+  const words = 'legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title';
+  assert.equal(seedWords(seed).join(' '), words);
+  assert.equal(wordsSeed(`  ${words.toUpperCase().replaceAll(' ', '\n ')} `), seed, 'case and spacing do not matter');
+  assert.equal(passkeyKeys(wordsSeed(words), 4663).owner, passkeyKeys(seed, 4663).owner);
+  assert.equal(wordsSeed(words.replace(/title$/, 'wave')), null, 'a wrong checksum word is rejected');
+  assert.equal(wordsSeed(words.replace(/^legal/, 'legall')), null, 'an unknown word is rejected');
+  assert.equal(wordsSeed('legal winner'), null, 'too few words are rejected');
+}
+console.log('zk primitives passed: poseidon vector, public amount, key derivation (signature and passkey, recovery words), note encryption, grumpkin + operator encryption, liquidation replay, health witness, ledger key shares/config/roles.');

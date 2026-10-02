@@ -202,6 +202,9 @@ assert.equal(proofs.length, 0);
 balance = 10n ** 13n;
 await assert.rejects(runDesk({ operatorSk: 123456789n, prove: async () => ({ proof: '0x01' }) }), /keeper_low_balance/);
 balance = 10n ** 18n;
+// An off-hours epoch runs only at the top of the hour; when it does, it needs a fresh, matching snapshot.
+deskReads(zeroLeaves);
+snapHash = undefined;
 reads.marketOpen = false;
 r = await call(desk, authed);
 assert.equal(r.status, 200);

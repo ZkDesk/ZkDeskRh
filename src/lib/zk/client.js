@@ -130,6 +130,7 @@ export function createClient({ publicClient, walletClient = null, address = null
    * short; on mainnet a short wallet is refused and the approval is for this amount only. to: {owner, encPub} of another private account or a treasury (default: yourself).
    */
   async function deposit(asset, amount, to = { owner: keys.owner, encPub: keys.encPub }) {
+    if (!address) throw new Error('Connect MetaMask to add funds.');
     const token = { address: asset, abi: big(asset) === USDG ? abis.usdg : abis.stock };
     const balance = await read(asset, token.abi, 'balanceOf', [address]);
     if (balance < amount && MAINNET) throw new Error('Your wallet does not hold enough of this token for that deposit.');
@@ -521,6 +522,9 @@ export function createClient({ publicClient, walletClient = null, address = null
     redeem: (shares) => convert('redeem', shares),
     balance: (asset, st = 'unspent') => balanceOf(notes(), big(asset), st),
     market, get state() { return state; },
+    owner: keys.owner,
+    /** The wallet that funds deposits; a passkey account links one only when it adds funds. */
+    setAddress: (a) => { address = a; },
   };
 }
 

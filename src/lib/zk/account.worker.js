@@ -1,9 +1,9 @@
-// The private account runs here, off the page: keys (derived from the wallet signature), the client
+// The private account runs here, off the page: keys (from the wallet signature or a passkey), the client
 // (note sync, witnesses, ciphertexts) and the prover. The page only receives public-shaped data:
 // notes and positions it displays anyway, and treasuries with their secrets stripped (referenced
 // back by id). Wallet transactions (faucet, approve, deposit) are asked of the page, where the
-// wallet lives. Terminating the worker (wallet change) wipes the keys.
-import { deriveKeys } from './keys.js';
+// wallet lives. Terminating the worker (wallet change, lock) wipes the keys.
+import { deriveKeys, passkeyKeys } from './keys.js';
 import { createClient } from './client.js';
 import { createProver } from './prover.js';
 import { mailbox, relay } from './transport.js';
@@ -40,15 +40,22 @@ const strip = (l) => l && { ...Object.fromEntries(Object.entries(l).filter(([k])
 const unstrip = (x) => (x && typeof x === 'object' && x.__ledger ? client.ledgers().find((l) => l.owner === x.owner) : x);
 
 const api = {
-  /** Derives the keys here; returns only the public address parts. */
-  init(signature, address) {
-    const keys = deriveKeys(signature);
+  /**
+   * Derives the keys here from {signature} or {passkey} (a passkey seed); returns only the public
+   * address parts. address: the wallet that funds deposits (null for a passkey until one is linked).
+   */
+  init({ signature, passkey }, address) {
+    const keys = passkey ? passkeyKeys(passkey, publicClient.chain.id) : deriveKeys(signature);
     client = createClient({
       publicClient, address, keys, prove, relay, requests: mailbox,
       walletClient: { writeContract: (args) => askPage('writeContract', args) },
       onStatus: (message) => self.postMessage({ type: 'status', message }),
     });
     return { owner: keys.owner, encPub: keys.encPub };
+  },
+  /** Whether a passkey seed opens this account (a person may hold several passkeys). */
+  isMine(passkey) {
+    return passkeyKeys(passkey, publicClient.chain.id).owner === client?.owner;
   },
   /** Everything the dashboard shows, for the personal account or one treasury (by id). */
   async snapshot(workspace) {

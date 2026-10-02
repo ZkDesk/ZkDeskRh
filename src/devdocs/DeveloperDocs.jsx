@@ -93,7 +93,7 @@ export default function DeveloperDocs() {
           <ol className="zd-steps">
             <li><strong>Choose a network.</strong> Open the dashboard and pick <em>Mainnet</em> or <em>Testnet</em> in the top bar. Mainnet uses real USDG and stock tokens; testnet uses free test assets.</li>
             <li><strong>Connect a wallet.</strong> Any browser wallet that exposes an externally owned account works (for example MetaMask). The dashboard asks the wallet to add or switch to the selected Robinhood Chain network.</li>
-            <li><strong>Unlock your private notes.</strong> Sign the ZKdesk key request. It is a typed-data signature: it costs no gas and never leaves your device. Your keys are derived from it (see <a href="#keys">Accounts and keys</a>).</li>
+            <li><strong>Unlock your private notes.</strong> Sign the ZKdesk key request. It is a typed-data signature: it costs no gas and never leaves your device. Your keys are derived from it (see <a href="#keys">Accounts and keys</a>). Or choose <em>Use a passkey</em> to unlock with Face ID, Touch ID, Windows Hello or a security key instead; save the 24-word recovery key it shows when you create it. A passkey account needs the wallet only to add funds.</li>
             <li><strong>Add funds.</strong> Approve the token and confirm the private deposit in your wallet. After a 60-second screening standby the deposit is cleared automatically and becomes spendable.</li>
             <li><strong>Use the workspace.</strong> Send privately, supply to the lending pool, open credit, set up a treasury or create payment mandates. Each action generates a proof locally, typically in 20 to 80 seconds; keep the page open until it confirms.</li>
           </ol>
@@ -126,20 +126,24 @@ export default function DeveloperDocs() {
         </Section>
 
         <Section id="keys" eyebrow="Core concepts" title="Accounts and keys">
-          <p>ZKdesk keys are derived deterministically from one wallet signature, so nothing needs to be stored or backed up beyond the wallet itself. Signing the same request again restores the same keys.</p>
+          <p>ZKdesk keys are derived deterministically from one wallet signature or from a passkey, so nothing is stored. Signing the same request again, or unlocking the same passkey, restores the same keys.</p>
           <Code label="Key request (EIP-712, signed with eth_signTypedData_v4)">{`domain:  { name: "ZKDesk", version: "1", chainId }
 type:    KeyRequest { purpose: string }
 message: "Unlock my ZKDesk private notes. This signature never
           leaves this device and costs no gas."`}</Code>
           <Table head={['Key', 'Derivation', 'Purpose']} rows={[
-            ['Spend key', 'HKDF-SHA256(signature, "spend"), reduced into the BN254 field', 'Proves ownership inside circuits; never leaves the proving worker'],
+            ['Spend key', 'HKDF-SHA256(seed, "spend"), reduced into the BN254 field', 'Proves ownership inside circuits; never leaves the proving worker'],
             ['Owner key', 'Derived from the spend key', 'Public owner identifier committed into notes'],
             ['Nullifier key', 'Derived from the spend key', 'Makes each spent note produce a unique, unlinkable nullifier'],
-            ['Encryption key', 'HKDF-SHA256(signature, "encrypt"), X25519', 'Decrypts notes and positions addressed to you'],
+            ['Encryption key', 'HKDF-SHA256(seed, "encrypt"), X25519', 'Decrypts notes and positions addressed to you'],
           ]} />
+          <p>The seed is the wallet signature (HKDF salt <C>ZKDesk key v1</C>) or a passkey's 32-byte WebAuthn PRF output for the input <C>ZKDesk passkey v1</C> (HKDF salt <C>ZKDesk passkey v1 &lt;chainId&gt;</C>, so one passkey holds separate mainnet and testnet accounts, both different from any signature account).</p>
           <ul>
-            <li>Keys live only in the account worker and are wiped when the wallet account or chain changes.</li>
-            <li>Only externally owned accounts are supported. Smart-contract wallets cannot produce the deterministic signature the derivation relies on.</li>
+            <li>Keys live only in the account worker. A wallet account is wiped when the wallet account or chain changes; a passkey account is wiped when the page closes or the network is switched.</li>
+            <li>A passkey account needs no wallet to send, withdraw, borrow or run a treasury: those steps are relayed and paid from notes. MetaMask is asked for only to add funds, and only as the source of the deposit.</li>
+            <li>The passkey seed is shown once at creation as a 24-word recovery key (BIP-39 English, the seed plus an 8-bit checksum) and can be shown again from Settings after the passkey confirms. It restores the account without the passkey. ZKdesk stores neither.</li>
+            <li>A passkey belongs to the site's domain: it unlocks ZKdesk only on the domain where it was created. The recovery key works anywhere.</li>
+            <li>Smart-contract wallets cannot produce the deterministic signature the wallet path relies on. They can use a passkey account and receive withdrawals; depositing from a smart wallet is not supported yet.</li>
             <li>A private address combines the owner key and the encryption key: <C>zkd:</C> followed by both, encoded.</li>
           </ul>
         </Section>

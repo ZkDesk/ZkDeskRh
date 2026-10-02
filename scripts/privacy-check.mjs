@@ -48,7 +48,7 @@ for (const file of [...walk('src/lib', ['.js']), ...walk('src/dashboard/adapters
 }
 // 5. Keys stay in the account worker: the page never derives keys or builds a client.
 for (const file of walk('src/dashboard', ['.js', '.jsx'])) {
-  if (/\b(deriveKeys|createClient)\s*\(/.test(readFileSync(file, 'utf8'))) failures.push(`${file}: derives keys or builds a client on the page (keys belong in lib/zk/account.worker.js)`);
+  if (/\b(deriveKeys|passkeyKeys|seedKeys|createClient)\s*\(/.test(readFileSync(file, 'utf8'))) failures.push(`${file}: derives keys or builds a client on the page (keys belong in lib/zk/account.worker.js)`);
 }
 for (const file of walk('dist', ['.js', '.html'])) {
   if (SECRETS.test(readFileSync(file, 'utf8'))) failures.push(`${file}: built bundle contains a server secret name`);

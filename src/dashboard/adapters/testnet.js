@@ -3,11 +3,13 @@
 // Workspaces: your personal account, or a treasury ledger you hold roles in (its balances, actions
 // and the role selector then follow the ledger; credit stays personal).
 // Keys never reach this page: the account worker (lib/zk/account.worker.js) derives them from the
-// wallet signature and holds them with the client and prover; it is terminated on wallet change.
+// wallet signature or a passkey seed and holds them with the client and prover. A wallet account is
+// terminated on wallet change; a passkey account only uses the wallet to fund deposits.
 import { isAddress, parseUnits } from 'viem';
 import { abis, apiBase, deployment, MAINNET, mainnetReady, testnetReady, minRelayFee, network, NETWORK_NAME, payableFee, stocks, USD_SYMBOL } from '../../lib/chain/config.js';
-import { connectWallet, onWalletChange, publicClient } from '../../lib/chain/wallet.js';
-import { keyRequest } from '../../lib/zk/keys.js';
+import { connectWallet, hasWallet, onWalletChange, publicClient } from '../../lib/chain/wallet.js';
+import { createPasskey, passkeySupported, unlockPasskey } from '../../lib/chain/passkey.js';
+import { keyRequest, seedWords, wordsSeed } from '../../lib/zk/keys.js';
 import { debtOf, friendly, valueOf } from '../../lib/zk/client.js';
 import { balanceOf } from '../../lib/zk/wallet.js';
 import { relay } from '../../lib/zk/transport.js';
@@ -31,7 +33,7 @@ export function parseZkAddress(value) {
   return { owner: BigInt('0x' + m[1]), encPub: Uint8Array.from(m[2].match(/../g).map((b) => parseInt(b, 16))) };
 }
 
-let session = null; // { address, pub: {owner, encPub}, worker, client (proxy), workspace, snap }
+let session = null; // { wallet: {address, walletClient}, passkey: bool, credential (passkey id) | null, pub: {owner, encPub}, worker, client (proxy), workspace, snap }
 let notice = null; // one-shot toast text for the next state (e.g. "sent for approval")
 let requestsById = new Map(); // approval requests of the active treasury, by id
 let listener = null;
@@ -74,8 +76,8 @@ const vaultValue = (shares) => (shares ? publicClient.readContract({ address: de
 const hexId = (id) => '0x' + id.toString(16).padStart(64, '0');
 const activeLedger = () => session?.snap?.ledger ?? null;
 
-/** Starts the account worker. Calls are messages; wallet transactions are asked of this page. */
-function startAccount(walletClient, address) {
+/** Starts the account worker. Calls are messages; wallet transactions are asked of this page (wallet: {address, walletClient}). */
+function startAccount(wallet) {
   const worker = new Worker(new URL('../../lib/zk/account.worker.js', import.meta.url), { type: 'module', name: network });
   let seq = 0;
   const waiting = new Map();
@@ -83,7 +85,7 @@ function startAccount(walletClient, address) {
     if (data.type === 'status') return statusHandler(data.message);
     if (data.type === 'wallet') {
       try {
-        worker.postMessage({ type: 'walletResult', id: data.id, result: await walletClient[data.method]({ account: address, ...data.args }) });
+        worker.postMessage({ type: 'walletResult', id: data.id, result: await wallet.walletClient[data.method]({ account: wallet.address, ...data.args }) });
       } catch (error) {
         worker.postMessage({ type: 'walletResult', id: data.id, error: error.shortMessage || error.message });
       }
@@ -186,7 +188,7 @@ async function refresh() {
     role: roles[0],
     cash: usd(balance(deployment.usdg)), vault: usd(vault), freeStock: usd(freeStock), positions, activity, mandates,
     meta: {
-      mode: 'testnet', connected: true, address: session.address, zkAddress: zkAddress(L ?? session.pub), personalZkAddress: zkAddress(session.pub),
+      mode: 'testnet', connected: true, address: session.wallet.address, keySource: session.passkey ? 'passkey' : 'wallet', zkAddress: zkAddress(L ?? session.pub), personalZkAddress: zkAddress(session.pub),
       roles, workspace: L ? hexId(L.owner) : 'personal', workspaceName: L ? L.name : null,
       workspaces: ledgers.map((l) => ({ id: hexId(l.owner), name: l.name, roles: l.roles })),
       requests: requests.filter((r) => r.status !== 'Expired').map((r) => ({
@@ -205,15 +207,40 @@ async function refresh() {
   }));
 }
 
+/** Opens the account from {signature} or {passkey} (a seed); wallet funds deposits ({} until linked). */
+async function open(source, wallet = {}, credential = null) {
+  session?.worker.terminate();
+  session = null;
+  const funding = { address: wallet.address ?? null, walletClient: wallet.walletClient ?? null };
+  const { worker, client } = startAccount(funding);
+  const pub = await client.init(source, funding.address); // keys are derived inside the worker
+  session = { wallet: funding, passkey: Boolean(source.passkey), credential, pub, worker, client, workspace: null, snap: null, last: null, misses: 0 };
+  return refresh();
+}
+
 async function connect() {
   const { address, walletClient } = await connectWallet();
   const signature = await walletClient.signTypedData({ account: address, ...keyRequest(publicClient.chain.id) });
-  session?.worker.terminate();
-  const { worker, client } = startAccount(walletClient, address);
-  const pub = await client.init(signature, address); // keys are derived inside the worker
-  session = { address, pub, worker, client, workspace: null, snap: null, last: null, misses: 0 };
-  return refresh();
+  return open({ signature }, { address, walletClient });
 }
+
+/** A passkey account adds funds from MetaMask: linked at each deposit, so it is always the current account. */
+async function linkWallet() {
+  statusHandler('Connect MetaMask to fund this deposit…');
+  const { address, walletClient } = await connectWallet();
+  Object.assign(session.wallet, { address, walletClient });
+  await session.client.setAddress(address);
+}
+
+const live = (fn) => async (...args) => {
+  try {
+    return await fn(...args);
+  } catch (error) {
+    const message = error?.name === 'NotAllowedError' ? 'The passkey request was cancelled or timed out.' : friendly(error.shortMessage || error.message);
+    if (!session) emit(offline(message));
+    throw new Error(message);
+  }
+};
 
 const positionOf = (state, id) => state.positions.find((p) => p.id === id)?.raw;
 
@@ -230,6 +257,7 @@ function validate(state, type, values) {
   const zkOrBlank = (key) => { if (values[key]?.trim() && !parseZkAddress(values[key])) errors[key] = 'Enter a ZKdesk address (zkd:…) or leave blank for yourself.'; };
   if (ledger && ['allocate', 'deallocate', 'deposit'].includes(type) && !['Owner', 'Treasurer'].includes(state.role)) return { general: `${state.role} cannot ${type === 'deposit' ? 'add funds' : type} in this treasury.` };
   if (ledger && ['send', 'withdraw'].includes(type) && !['Owner', 'Treasurer', 'Payer'].includes(state.role)) return { general: 'The Auditor role can view the treasury but cannot move funds.' };
+  if (type === 'deposit' && !m.address && !hasWallet()) return { general: 'Funds are added from a wallet: install MetaMask to deposit. You can already receive private payments at your ZKdesk address.' };
   switch (type) {
     case 'deposit': {
       const cap = values.asset === 'USDG' ? FAUCET_CAP.USDG : FAUCET_CAP.STOCK;
@@ -322,6 +350,7 @@ function validate(state, type, values) {
 
 async function submit(state, type, values) {
   const { client } = session;
+  if (type === 'deposit' && session.passkey) await linkWallet();
   const L = activeLedger();
   const member = (v) => (v?.trim() ? parseZkAddress(v) : undefined);
   if (type === 'ledger') {
@@ -385,9 +414,28 @@ export default {
   net: { mainnet: MAINNET, network, mainnetReady, testnetReady, usd: USD_SYMBOL, name: NETWORK_NAME, t: T, label: MAINNET ? 'Mainnet' : 'Testnet' },
   load: () => offline(),
   connect: () => connect().catch((error) => { const message = friendly(error.shortMessage || error.message); emit(offline(message)); throw new Error(message); }),
+  /** Passkey accounts: a seed (32 bytes, hex) stays on this page only until the worker opens it. */
+  passkey: {
+    supported: passkeySupported,
+    /** A new passkey; returns its seed so the recovery key is shown before the account opens. */
+    create: live(createPasskey),
+    unlock: live(async () => { const { seed, id } = await unlockPasskey(); return open({ passkey: seed }, {}, id); }),
+    /** Opens the account the seed belongs to (after create, or from the recovery words). */
+    open: live(({ seed, id = null }) => open({ passkey: seed }, {}, id)),
+    words: seedWords,
+    fromWords: wordsSeed,
+    /** The recovery words of the open passkey account (asks the passkey again; never kept). */
+    recovery: live(async () => {
+      if (!session?.passkey) throw new Error('Unlock with your passkey first.');
+      const { seed } = await unlockPasskey(session.credential);
+      if (!(await session.client.isMine(seed))) throw new Error('That passkey belongs to a different ZKdesk account.');
+      return seedWords(seed);
+    }),
+  },
   subscribe(callback) {
     listener = callback;
-    const off = onWalletChange(() => { session?.worker.terminate(); session = null; emit(offline('Wallet changed. Connect again to unlock your notes.')); });
+    // A passkey account does not depend on the wallet: the next deposit links the current one.
+    const off = onWalletChange(() => { if (session?.passkey) return; session?.worker.terminate(); session = null; emit(offline('Wallet changed. Connect again to unlock your notes.')); });
     const timer = setInterval(() => { if (session) refresh().catch(() => {}); }, 20_000);
     return () => { listener = null; off(); clearInterval(timer); };
   },

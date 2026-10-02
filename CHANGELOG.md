@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.6.0 (October 2026)
+
+- **Passkey accounts:** unlock the dashboard with Face ID, Touch ID, Windows Hello or a security key instead of a MetaMask signature. The keys come from the passkey's WebAuthn PRF output (separate mainnet and testnet keys, different from any signature account), stay in the account worker, and are the same on every device the passkey syncs to. Sending, withdrawing, credit and treasuries need no wallet; MetaMask is asked for only to fund a deposit.
+- **Recovery key:** creating a passkey shows its seed as 24 words (BIP-39 English) that must be confirmed before the account opens; Settings shows them again after the passkey confirms, and "Use recovery key" restores the account without the passkey. Nothing is stored.
+- **Tests:** a cron test no longer fails when it runs at the top of the hour (it reused a stale snapshot in the mock).
+
 ## 3.5.0 (October 2026)
 
 - **Credit health gauge:** each borrowing position on the Credit tab shows its live health against the liquidation threshold (Safe, Watch, At risk, Liquidatable), the current price and the price at which it would be liquidated, with how far the price can fall. A warning above the positions names any position close to or below its threshold. Computed in the browser from your private notes and the pinned marks; nothing new is revealed.

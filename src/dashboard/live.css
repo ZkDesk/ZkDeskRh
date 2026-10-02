@@ -25,9 +25,23 @@
 .desk-app .desk-role-list small{font-size:10px;color:#8a919b}
 .desk-app .desk-role-list [role=option].selected strong{color:#0071e3}
 .desk-app .desk-role-list [role=option]>svg{color:#0071e3;flex-shrink:0}
+/* Unlock choices and the passkey recovery key. */
+.desk-app .desk-connect-callout{align-items:center}
+.desk-app .desk-connect-callout>p{flex:1}
+.desk-app .desk-connect-actions{display:flex;gap:8px;flex-wrap:wrap;flex-shrink:0}
+.desk-app .desk-passkey-actions{flex-wrap:wrap}
+.desk-app .desk-passkey-actions>.desk-button:first-child{margin-right:auto}
+.desk-app .desk-recovery-words{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:0 0 16px;padding:0;list-style:none}
+.desk-app .desk-recovery-words li{display:flex;align-items:baseline;gap:7px;padding:8px 10px;border:1px solid #e5ecf4;border-radius:8px;background:#fafcfe;font-size:12px;color:#1f2329;overflow-wrap:anywhere}
+.desk-app .desk-recovery-words li>span{font-size:9px;color:#9aa1ab;font-variant-numeric:tabular-nums;min-width:14px}
+.desk-app .desk-recovery-input{width:100%;border:1px solid #e0e7ef;border-radius:9px;padding:10px 12px;font:inherit;font-size:13px;line-height:1.6;color:#5f7288;background:#fcfdff;resize:vertical}
+.desk-app .desk-recovery-input:focus{border-color:#91bde8;box-shadow:0 0 0 3px #0071e308;outline:none}
 @keyframes desk-role-in{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}
 @media(prefers-reduced-motion:reduce){.desk-app .desk-role-list{animation:none}.desk-app .desk-role-pill>svg{transition:none}}
 @media(max-width:600px){
+  .desk-app .desk-connect-callout{flex-wrap:wrap}
+  .desk-app .desk-connect-actions{width:100%;padding-left:28px}
+  .desk-app .desk-recovery-words{grid-template-columns:repeat(2,minmax(0,1fr))}
   .desk-app .desk-breadcrumb{font-size:0;gap:0}
   .desk-app .desk-breadcrumb>span{display:none}
   .desk-app .desk-breadcrumb strong{font-size:11px}
