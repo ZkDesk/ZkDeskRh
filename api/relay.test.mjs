@@ -11,7 +11,7 @@ const { rotate } = await import('./cron/pulls.js');
 const { RELAY_GAS } = await import('./_lib/fees.js');
 const { deployment } = await import('../src/lib/chain/config.js');
 const { relayer } = await import('./_lib/server.js');
-const { CONFIG_BYTES, KEY_SHARE_BYTES, MANDATE_BYTES, NOTE_CIPHERTEXT_BYTES, POSITION_CIPHERTEXT_BYTES } = await import('../src/lib/zk/crypto.js');
+const { CONFIG_BYTES, KEY_SHARE_BYTES, MANDATE_BYTES, NOTE_CIPHERTEXT_BYTES, NOTE_MEMO_CIPHERTEXT_BYTES, POSITION_CIPHERTEXT_BYTES } = await import('../src/lib/zk/crypto.js');
 
 const call = (fn, req) => new Promise((resolve) => {
   const res = { statusCode: 200, setHeader() {}, end(b) { resolve({ status: this.statusCode, body: JSON.parse(b) }); } };
@@ -48,6 +48,7 @@ assert.deepEqual(t.fee, { asset: deployment.usdg.toLowerCase(), amount: 1n });
 assert.equal(parseRelayRequest({ ...transact(), kind: undefined }).kind, 'transfer', 'no kind is a plain transact');
 assert.equal(parseRelayRequest(transact({}, { recipient: '0x000000000000000000000000000000000000dEaD', extAmount: '-5' })).kind, 'withdraw');
 rejects(transact({}, { extAmount: '5' }), /own wallet/, 'deposits are not relayed');
+rejects(transact({}, { encryptedOutput1: bytes(NOTE_MEMO_CIPHERTEXT_BYTES) }), /note ciphertext/, 'a personal transfer carries no memo note');
 rejects(transact({}, { relayer: '0x000000000000000000000000000000000000dEaD' }), /this relayer/, 'fee goes to this relayer');
 rejects(transact({}, { converter: '0x000000000000000000000000000000000000dEaD' }), /converter/, 'unknown converter');
 rejects(transact({ asset: '0x000000000000000000000000000000000000dEaD' }), /asset/, 'unknown asset');
@@ -85,6 +86,10 @@ assert.deepEqual(parseRelayRequest(ledger).spends.slice(0, 2), [51n, 52n]);
   const other = { ...ledger, proof: { ...ledger.proof, inputNullifiers: ['53', '54'] } };
   const key = (r) => parseRelayRequest(r).serial[0];
   assert.deepEqual(parseRelayRequest(ledger).spends, [51n, 52n], 'notes only; the accumulator is a separate claim');
+  // v3.18: a transfer's change note may record who was paid; nothing else may be longer.
+  assert.equal(parseRelayRequest({ ...ledger, ext: { ...ledger.ext, encryptedOutput1: bytes(NOTE_MEMO_CIPHERTEXT_BYTES) } }).kind, 'ledger_transfer');
+  rejects({ ...ledger, ext: { ...ledger.ext, encryptedOutput2: bytes(NOTE_MEMO_CIPHERTEXT_BYTES) } }, /note ciphertext/, 'only the change note');
+  rejects({ ...ledger, proof: { ...ledger.proof, action: 0 }, ext: { ...ledger.ext, extAmount: '-1', encryptedOutput1: bytes(NOTE_MEMO_CIPHERTEXT_BYTES) } }, /note ciphertext/, 'not on a convert');
   assert.equal(key(other), key(ledger), 'same ledger and accumulator');
   assert.equal(key({ ...other, proof: { ...other.proof, budgetOld: '1' } }), key(ledger), 'one key per treasury');
   assert.notEqual(key({ ...other, proof: { ...other.proof, ledgerId: '8' } }), key(ledger), 'fresh ledgers do not share a claim');

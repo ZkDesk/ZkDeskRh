@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.18.0 (October 2026)
+
+- **Agent spending report:** see what your AI agent paid from a treasury. Each payment shows when, how much, to whom and who made it, plus what the agent has spent this period against its budget.
+  - **Dashboard:** in *Treasury → AI agent*. Switch to *All payments* to include the Owner's, the Treasurer's, approved payments and mandate pulls. *Export CSV* downloads the list.
+  - **Agents:** `agent.spending(treasury)` in the SDK and `zkdesk_spending` in MCP, so an agent can report on itself and you can ask your own assistant.
+  - **Where each part comes from:**
+    - Amounts and who made each payment come from the chain: the treasury's private spending record rises with every payment the agent makes on its own, and with nothing else.
+    - An unshield's recipient is the public address in the transaction.
+    - A private payment's recipient is written into the treasury's own encrypted change note (members only), with the payment note's blinding, so members check it against the payment's on-chain commitment. Only a recipient that does not check is shown as recorded by the paying app.
+    - A payment by an earlier Payer (before the role changed hands) is shown as such.
+  - Private payments made before 3.18.0 show no recipient. No contract change.
+  - **Upgrade every treasury member's app or agent to 3.18.0:** an older version cannot open the change notes 3.18 writes, so it would show too little treasury balance. Notes now open forward-compatibly, so later additions will not need this again.
+  - Treasury members can now see who each private treasury payment went to, as they already saw the amounts. That includes a removed member or agent, which keeps the viewing key until re-keying exists.
+  - **Fixes (found by the review):** the report reads each transaction's call only when it is the ledger's own call for that payment (a contract wrapping it cannot plant a recipient or an "approved" label); it scans the pool once per refresh and caches chain reads; CSV amounts are exact decimals.
+
 ## 3.17.0 (October 2026)
 
 - **Limits for AI agents, enforced on-chain (contract set v3.4):** a treasury Owner can give the agent that pays from the treasury (its Payer) a list of up to 8 allowed recipients (`zkd:` or 0x addresses) and a budget per day, week or 30 days. The payment proof enforces both. An agent payment to anyone else, or over the budget, cannot be proven, so the chain never accepts it, even if the agent's key leaks or its SDK is modified. Before, the agent's recipient list and daily cap were checks on the agent's own machine only.

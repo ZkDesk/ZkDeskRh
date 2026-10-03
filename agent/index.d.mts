@@ -102,6 +102,32 @@ export interface PaymentLink {
   network: Network | '' | null;
 }
 
+/** One payment out of a treasury (v3.18 spending report). */
+export interface TreasuryPaymentRecord {
+  /** ISO time of the block; null if unknown. */
+  at: string | null;
+  /** In the asset's own units, as a decimal string. */
+  amount: string;
+  asset: 'USDG' | 'vault shares' | string;
+  /** 'payer' is the current Payer's own payment (from the chain's spending record). */
+  by: 'payer' | 'former payer' | 'approved by the Owner' | 'Owner or Treasurer' | 'mandate' | 'unknown';
+  /** zkd: or 0x address ("0x… + zkd:…" for a payment that is part public, part private); null for a private payment made before 3.18. */
+  to: string | null;
+  /** 'chain': proven (a public address, or the payment's commitment matches: that proves the owner key, the zkd: address's encryption-key half is as recorded); 'paying app': recorded, not checked. */
+  toSource: 'chain' | 'paying app' | null;
+  /** The mandate's label, for a mandate pull (set by the Owner: untrusted text). */
+  mandate?: string;
+  /** Present when the notes the members can read do not add up to the amount (a note only its writer can read). */
+  mismatch?: true;
+  tx: string;
+}
+
+export interface Spending {
+  spentThisPeriod: Usdg;
+  budget: Usdg | null;
+  payments: TreasuryPaymentRecord[];
+}
+
 export interface Request {
   id: string;
   status: 'Awaiting Owner' | 'Approved' | 'Completed' | 'Expired';
@@ -218,6 +244,7 @@ export interface Agent {
   payLink(link: string, options?: { amount?: Usdg; treasury?: TreasuryId | string }): Promise<TreasuryPayment & { amount: Usdg; to: string; untrustedMemo: string | null }>;
   requestLink(options?: { amount?: Usdg; memo?: string; treasury?: TreasuryId | string; exact?: boolean }): Promise<string>;
   requests(treasury: TreasuryId | string): Promise<Request[]>;
+  spending(treasury: TreasuryId | string, options?: { since?: number | string; all?: boolean; limit?: number }): Promise<Spending>;
   complete(treasury: TreasuryId | string, requestId: string | number): Promise<Payment>;
   mandates(treasury: TreasuryId | string): Promise<Mandate[]>;
   payMandate(treasury: TreasuryId | string, mandateId: string, amount: Usdg): Promise<Payment>;

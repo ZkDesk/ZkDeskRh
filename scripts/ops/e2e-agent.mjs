@@ -13,7 +13,7 @@
 // v3.4 Payer scope: the Owner gives the agent an allow list and a daily budget; listed payments within
 // it go through, an over-budget or off-list payment is refused, and the prover cannot make a proof for
 // one even with the SDK's checks off; an Owner-approved payment is outside the scope; lifting the scope
-// resets it.
+// resets it. The spending report lists each payment with who made it (from the chain) and its recipient.
 // Usage (testnet or a local fork with the site served by serve.mjs-style server and DB_SCHEMA set):
 //   RPC_URL_SERVER=<rpc> node scripts/ops/e2e-agent.mjs <siteUrl>
 import { readFileSync } from 'node:fs';
@@ -201,6 +201,15 @@ check((await agent.waitForPayment({ amount: '7', timeoutSeconds: 3 })).pending !
   const ok = (await agent.requests(id)).find((r) => r.status === 'Approved' && r.mine);
   check((await step('Agent completes the approved payment', () => agent.complete(id, ok.id))).confirmed, 'an Owner-approved payment is outside the scope');
   check((await limits()).spentThisPeriod === '25', 'and does not count toward the budget');
+  // v3.18: the spending report attributes each payment from the chain and names its recipient.
+  const report = await step('Agent reads its spending report', () => agent.spending(id, { all: true }));
+  const mine = report.payments.filter((p) => p.by === 'payer');
+  check(report.spentThisPeriod === '25' && report.budget === '30', 'the period total and budget');
+  check(mine.some((p) => p.amount === '20' && p.to === ownerZk && p.toSource === 'chain'), "the 20 to the Owner's zkd: (proven against the payment's commitment)");
+  check(mine.some((p) => p.amount === '5' && p.to?.toLowerCase() === account.address.toLowerCase() && p.toSource === 'chain'), 'the 5 unshield to the public address');
+  check(report.payments.some((p) => p.by === 'approved by the Owner' && p.amount === '60' && p.to === agent.address), "the approved 60 is not the agent's own");
+  check(report.payments.some((p) => p.by === 'mandate' && p.amount === '25'), 'the mandate pull');
+  check(!mine.some((p) => p.amount === '60' || p.amount === '80'), "approved payments are never counted as the agent's");
   await step('Owner lifts the scope', () => owner.updateLedger(L(), { scope: { allowTo: [], budget: 0n } }));
   check((await limits()) === null, 'no limits left');
   check((await step('Agent pays itself 1 (no list now)', () => agent.pay(id, { to: agent.address, amount: '1' }))).confirmed, 'paid');

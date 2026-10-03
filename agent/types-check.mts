@@ -23,6 +23,10 @@ else if (!merged.reached) merged.stopped?.toUpperCase();
 const posted = await agent.fetchPaid({ url: 'https://api.example/q', maxPrice: '1', method: 'POST', body: { q: 1 } });
 if (posted.paid) posted.paid.tx.toUpperCase();
 const [t] = await agent.treasuries();
+const report = await agent.spending(t.id, { since: '2026-10-01', all: true });
+for (const p of report.payments) if (p.by === 'payer' && p.to) p.to.toUpperCase();
+// @ts-expect-error since is a date or unix seconds
+await agent.spending(t.id, { since: true });
 if (t.payerLimits?.leftThisPeriod) t.payerLimits.leftThisPeriod.toUpperCase();
 // @ts-expect-error payerLimits may be null
 t.payerLimits.budget;

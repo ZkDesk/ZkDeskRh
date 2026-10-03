@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { applyAction, distributionPercentages, initialState, receiptDisclosure, totals, validateAction } from './model.js';
+import { applyAction, csvCell, distributionPercentages, initialState, receiptDisclosure, totals, validateAction } from './model.js';
 
 // Money must remain consistent as capital moves through credit and treasury.
 let state = initialState();
@@ -81,4 +81,12 @@ assert.deepEqual(distributionPercentages([123750, 81000, 60000]), [47, 30, 23]);
 assert.deepEqual(distributionPercentages([1, 1, 1]), [34, 33, 33]);
 assert.deepEqual(distributionPercentages([0, 0, 0]), [0, 0, 0]);
 assert.deepEqual(distributionPercentages([0, 1, 0]), [0, 100, 0]);
+// The spending report's CSV export: quoted, quotes doubled, formulas neutralized.
+assert.equal(csvCell('a"b'), '"a""b"');
+assert.equal(csvCell('=HYPERLINK("x")'), `"'=HYPERLINK(""x"")"`);
+assert.equal(csvCell('+1'), `"'+1"`);
+assert.equal(csvCell('-0.5'), `"'-0.5"`);
+assert.equal(csvCell('@SUM(A1)'), `"'@SUM(A1)"`);
+assert.equal(csvCell(null), '""');
+assert.equal(csvCell('zkd:0a'), '"zkd:0a"');
 console.log('Dashboard model checks passed: accounting, role authorization, mandate bounds, invalid inputs, and selective receipt disclosure.');

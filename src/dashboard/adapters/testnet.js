@@ -5,8 +5,8 @@
 // Keys never reach this page: the account worker (lib/zk/account.worker.js) derives them from the
 // wallet signature or a passkey seed and holds them with the client and prover. A wallet account is
 // terminated on wallet change; a passkey account only uses the wallet to fund deposits.
-import { isAddress, parseUnits } from 'viem';
-import { abis, apiBase, deployment, MAINNET, mainnetReady, testnetReady, minRelayFee, network, NETWORK_NAME, payableFee, stocks, USD_SYMBOL } from '../../lib/chain/config.js';
+import { formatUnits, isAddress, parseUnits } from 'viem';
+import { abis, apiBase, deployment, explorerTx, MAINNET, mainnetReady, testnetReady, minRelayFee, network, NETWORK_NAME, payableFee, stocks, USD_SYMBOL } from '../../lib/chain/config.js';
 import { connectWallet, hasWallet, onWalletChange, publicClient } from '../../lib/chain/wallet.js';
 import { createPasskey, passkeySupported, unlockPasskey } from '../../lib/chain/passkey.js';
 import { keyRequest, parseZkAddress, seedWords, wordsSeed, zkAddress } from '../../lib/zk/keys.js';
@@ -23,6 +23,27 @@ import { initialState } from '../model.js';
 const ALLOW_MAX = 8;
 const BUDGET_PERIODS = { day: 86_400n, week: 604_800n, month: 2_592_000n };
 const allowLines = (text) => String(text ?? '').split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+// v3.18 spending report: client.ledgerPayments rows, as the AI agent panel and its CSV show them.
+const BY = { payer: 'Payer (the agent)', 'former payer': 'A former Payer', approved: 'Approved by the Owner', member: 'Owner or Treasurer', mandate: 'Mandate', unknown: 'Unknown' };
+function paymentsView(report) {
+  if (!report) return null;
+  const unit = (asset) => {
+    if (asset === BigInt(deployment.usdg)) return ['USDG', 6];
+    if (deployment.vault && asset === BigInt(deployment.vault)) return ['vault shares', 12];
+    const s = Object.keys(stocks).find((k) => BigInt(stocks[k].token) === asset);
+    return [s ?? 'tokens', 18];
+  };
+  return {
+    rows: report.rows.map((r) => {
+      const [symbol, decimals] = r.asset === undefined ? ['units (asset unknown)', 0] : unit(r.asset);
+      return {
+        at: r.at ? new Date(r.at * 1000).toISOString() : null, amount: Number(r.amount) / 10 ** decimals, amountText: formatUnits(r.amount, decimals), symbol,
+        by: BY[r.by] ?? r.by, agent: r.by === 'payer' || r.requestedByPayer, to: r.to ?? '', toSource: r.toSource, mandate: r.mandate ?? '', mismatch: r.mismatch, tx: r.tx, link: explorerTx(r.tx),
+      };
+    }),
+    spent: Number(report.period.spent) / 1e6, budget: report.period.budget ? Number(report.period.budget) / 1e6 : null,
+  };
+}
 function payerScopeView(L, t) {
   const c = L.config;
   if (!payerScoped(c)) return null;
@@ -212,7 +233,7 @@ async function refresh() {
         // Who holds the Payer role: the Owner's own key (no agent), the ZKdesk scheduler, or another key (an agent or person).
         payer: L.config.payer === L.config.owner ? 'owner' : parseZkAddress(deployment.scheduler ?? '')?.owner === L.config.payer ? 'scheduler' : `0x${L.config.payer.toString(16).padStart(64, '0').slice(0, 8)}…`,
         limit: limit && limit[0] ? { max: Number(limit[0]), days: Number(limit[1]) / 86_400, used: t < Number(limit[2]) + Number(limit[1]) ? Number(limit[3]) : 0 } : null, allocCap: usd(L.config.allocCap), dualThreshold: usd(L.config.dualThreshold), attested: L.attested && { epoch: L.attested.epoch, liabilities: usd(L.attested.liabilities) },
-        scope: payerScopeView(L, t) },
+        scope: payerScopeView(L, t), payments: paymentsView(snap.payments) },
       pending: usd(balance(deployment.usdg, 'pending')), stockBalances, shares: shares.toString(),
       // Personal USDG notes worth merging (each pays more than one merge fee): client.combine.
       combinable: L ? 0 : notes.filter((n) => n.status === 'unspent' && n.asset === BigInt(deployment.usdg) && n.amount > m.fee).length,

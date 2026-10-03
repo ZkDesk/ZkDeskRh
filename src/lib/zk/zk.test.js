@@ -7,9 +7,10 @@ import { G, mul, operatorDecrypt, operatorEncrypt, operatorPublicKey } from './g
 import { applyLiquidation, buildHealth, isBreached } from './desk.js';
 import { liquidatedBlinding, liquidationPad, positionCommitment, ownerPk } from './notes.js';
 import { decryptConfig, decryptKeyShare, encryptConfig, encryptKeyShare } from './crypto.js';
-import { ACTIONS, buildLedger, budgetWindow, heldRoles, ledgerKeys, openBudget, payerScoped, payerSpent } from './ledger.js';
+import { ACTIONS, buildLedger, budgetWindow, heldRoles, ledgerKeys, openBudget, payerDeltas, payerScoped, payerSpent } from './ledger.js';
 import { buildMandateAuth, MANDATE_ACTIONS } from './mandate.js';
-import { allowHash, policyHash } from './notes.js';
+import { allowHash, budgetCommit, budgetPad, policyHash } from './notes.js';
+import { NOTE_MEMO_CIPHERTEXT_BYTES } from './crypto.js';
 import { LeanIMT } from '@zk-kit/lean-imt';
 
 // Same circomlib vector as circuits/lib and contracts/test.
@@ -138,5 +139,114 @@ assert.notEqual(lk.owner, ownerPk(0xabcn), 'ledger notes live outside the person
   assert.equal(wordsSeed(words.replace(/title$/, 'wave')), null, 'a wrong checksum word is rejected');
   assert.equal(wordsSeed(words.replace(/^legal/, 'legall')), null, 'an unknown word is rejected');
   assert.equal(wordsSeed('legal winner'), null, 'too few words are rejected');
+}
+// v3.18 spending report: the change note may carry who was paid; both sizes open.
+{
+  const n = { asset: 0xa55e7n, amount: 5n, blinding: 9n };
+  assert.deepEqual(decryptNote(encryptNote(n, a.encPub), a.encSecret), n, 'a note without memo');
+  const toZk = decryptNote(encryptNote(n, a.encPub, { owner: b.owner, encPub: b.encPub }), a.encSecret);
+  assert.deepEqual([toZk.amount, toZk.memo.owner, [...toZk.memo.encPub]], [5n, b.owner, [...b.encPub]]);
+  const vendor = '0x' + '3c'.repeat(20);
+  const ct = encryptNote(n, a.encPub, vendor);
+  assert.equal((ct.length - 2) / 2, NOTE_MEMO_CIPHERTEXT_BYTES);
+  assert.equal(decryptNote(ct, a.encSecret).memo, vendor);
+  assert.equal(decryptNote(ct, b.encSecret), null, 'only the ledger key opens it');
+
+  // Attribution from the spending record: +60 (Payer), +0 (Owner), +50 (Payer), reset, +10, next window +5.
+  const lsk = 0xabcn;
+  const L = ledgerKeys(lsk);
+  let i = 0;
+  const note = (window, spent) => { const nonce = BigInt(++i); return { commit: budgetCommit(L.owner, window, spent, budgetPad(lsk, nonce, 2)), nonce, ct: [window + budgetPad(lsk, nonce, 0), spent + budgetPad(lsk, nonce, 1)], tx: `t${i}` }; };
+  const history = [note(0n, 60n), note(0n, 60n), note(0n, 110n), { commit: 0n, nonce: 0n, ct: [0n, 0n] }, note(0n, 10n), note(1n, 5n)];
+  assert.deepEqual(payerDeltas(lsk, history).map((x) => [x.note.tx, x.delta]), [['t1', 60n], ['t2', 0n], ['t3', 50n], ['t4', 10n], ['t5', 5n]]);
+  assert.deepEqual(payerDeltas(0xdefn, history), [], 'another key opens none');
+}
+// The report rows (src/lib/zk/report.js): attribution, proven and recorded recipients, decoy calls, a
+// rotated Payer, an approved request, an unshield.
+{
+  const { paymentRows, verifiedCall } = await import('./report.js');
+  const { encryptConfig } = await import('./crypto.js');
+  const { noteCommitment } = await import('./notes.js');
+  const { zkAddress } = await import('./keys.js');
+  const lsk = 0x5eedn;
+  const K = ledgerKeys(lsk);
+  const USD = 0xa55e7n;
+  const LEDGER = '0x' + '1e'.repeat(20);
+  const [P, Q, B, C] = [deriveKeys('0x' + '01'.repeat(65)), deriveKeys('0x' + '02'.repeat(65)), deriveKeys('0x' + '03'.repeat(65)), deriveKeys('0x' + '04'.repeat(65))];
+  const cfg = (payer) => ({ name: 'T', owner: a.owner, treasurer: b.owner, payer: payer.owner, auditor: b.owner, rolesSalt: 1n, allocCap: 5n, dualThreshold: 100n, policySalt: 2n });
+  const events = [];
+  const notes = [];
+  const cts = new Map();
+  const calls = new Map();
+  let spent = 0n;
+  let bal = { amount: 1000n, blinding: 11n };
+  let i = 0;
+  const config = (payer) => events.push({ id: K.owner, name: 'LedgerConfig', config: encryptConfig(cfg(payer), K.encPub) });
+  // One transfer: the ledger's note in, change out, an accumulator note; byPayer raises it. pub: the part
+  // unshielded to `unshield` (default: all of it when unshield is set). hidden: spend a note the other
+  // members never saw (a Payer that posted an unreadable change ciphertext earlier).
+  function transfer({ amount, to, unshield, pub = unshield ? amount : 0n, byPayer = false, cosign = 0n, memo = 'real', decoy = false, hidden = null, noCall = false, fakeEmpty = false }) {
+    const tx = `t${++i}`;
+    const nonce = BigInt(1000 + i);
+    const input = hidden ?? bal;
+    if (!hidden) notes.push({ asset: USD, amount: input.amount, blinding: input.blinding, spentIn: tx });
+    const change = { asset: USD, amount: input.amount - amount, blinding: BigInt(50 + i) };
+    const blind2 = BigInt(90 + i);
+    const priv = amount - pub;
+    const out2 = noteCommitment({ asset: USD, amount: priv, owner: priv > 0n ? to.owner : K.owner, blinding: blind2 });
+    const m = priv === 0n && unshield ? unshield : memo === 'real' ? { owner: to.owner, encPub: to.encPub, blinding: blind2 } : memo === 'lie' ? { owner: C.owner, encPub: C.encPub, blinding: blind2 } : undefined;
+    const changeCommitment = noteCommitment({ ...change, owner: K.owner });
+    // Output 2: the payment, or, for a pure unshield, the ledger's own empty note (the app's shape).
+    const second = priv === 0n && !fakeEmpty ? [{ commitment: out2, ciphertext: encryptNote({ asset: USD, amount: 0n, blinding: blind2 }, K.encPub) }] : [];
+    cts.set(tx, [{ commitment: changeCommitment, ciphertext: encryptNote(change, K.encPub, m) }, ...second]);
+    if (!hidden) bal = { amount: change.amount, blinding: change.blinding };
+    if (byPayer) spent += amount;
+    const commit = budgetCommit(K.owner, 0n, spent, budgetPad(lsk, nonce, 2));
+    events.push({ id: K.owner, name: 'BudgetNote', commit, nonce, ct: [budgetPad(lsk, nonce, 0), spent + budgetPad(lsk, nonce, 1)], tx, block: BigInt(i) });
+    if (!noCall) calls.set(tx, { to: decoy ? '0x' + 'de'.repeat(20) : LEDGER, args: [{ ledgerId: K.owner, asset: USD, inputNullifiers: [nonce, 0n], budgetNew: commit, cosignIntent: cosign, outputCommitments: [changeCommitment, out2] }, { recipient: unshield ?? '0x0000000000000000000000000000000000000000', extAmount: -pub }] });
+    return tx;
+  }
+  config(P);
+  transfer({ amount: 60n, to: B, byPayer: true }); // t1: the first Payer pays B (proven)
+  transfer({ amount: 100n, unshield: '0x' + '3c'.repeat(20) }); // t2: the Owner unshields to a vendor
+  transfer({ amount: 200n, to: B, cosign: 77n }); // t3: an approved transfer the Payer asked for
+  transfer({ amount: 5n, to: B, byPayer: true, decoy: true }); // t4: read through a decoy contract call
+  transfer({ amount: 7n, to: B, byPayer: true, memo: 'lie' }); // t5: the memo names someone else
+  config(Q);
+  transfer({ amount: 10n, to: B, byPayer: true, memo: 'none' }); // t6: the new Payer, an old-style note
+  // t7: from a note only it can read, the Payer unshields 1 to a vendor and pays B 500: the record's 501 is
+  // the amount, the 500 is still shown, and the unreadable note is flagged.
+  transfer({ amount: 501n, to: B, unshield: '0x' + '3c'.repeat(20), pub: 1n, byPayer: true, hidden: { amount: 1000n, blinding: 7777n } });
+  transfer({ amount: 3n, to: B, noCall: true }); // t8: a member payment whose call cannot be read
+  // t9: a member unshields 100 and, from a note only it can read, sends 1000 privately elsewhere: the
+  // readable notes show only the 100, so output 2 must be the ledger's empty note for the row to be complete.
+  transfer({ amount: 100n, unshield: '0x' + '3c'.repeat(20), hidden: { amount: 100n, blinding: 8888n }, fakeEmpty: true });
+  const rows = paymentRows({ ledger: { ...K, config: cfg(Q) }, events, notes, ciphertextsByTx: cts, calls, intentsFrom: new Map([[77n, Q.owner]]), ledgerAddress: LEDGER });
+  const view = rows.map((r) => [r.tx, r.by, r.amount, r.toSource]);
+  assert.deepEqual(view, [
+    ['t1', 'former payer', 60n, 'chain'], ['t2', 'member', 100n, 'chain'], ['t3', 'approved', 200n, 'chain'],
+    ['t4', 'former payer', 5n, 'paying app'], ['t5', 'former payer', 7n, 'paying app'], ['t6', 'payer', 10n, null],
+    ['t7', 'payer', 501n, 'chain'], ['t8', 'unknown', 3n, 'paying app'], ['t9', 'member', 100n, null],
+  ]);
+  assert.equal(rows[8].to, `${'0x' + '3c'.repeat(20)} + a private recipient`, 'a possibly hidden private part is named');
+  assert.equal(rows[8].mismatch, true);
+  assert.equal(rows[1].mismatch, false, 'an honest unshield stays complete');
+  assert.equal(rows[6].to, `${'0x' + '3c'.repeat(20)} + ${zkAddress(B)}`, 'both parts of a mixed payment');
+  assert.equal(rows[6].mismatch, true, 'an unreadable input is flagged');
+  assert.equal(rows[0].mismatch, false);
+  assert.equal(rows[0].toOwner, B.owner);
+  assert.equal(rows[0].to, zkAddress(B));
+  assert.equal(rows[1].to, '0x' + '3c'.repeat(20));
+  assert.equal(rows[2].requestedByPayer, true, 'the current Payer asked for the approved one');
+  assert.equal(rows[4].to, zkAddress(C), 'a false memo is shown, but only as recorded');
+  assert.equal(verifiedCall(calls.get('t4'), events.find((e) => e.tx === 't4'), LEDGER), null, 'a call not sent to the ledger is ignored');
+  assert.equal(verifiedCall({ ...calls.get('t1'), args: [{ ...calls.get('t1').args[0], budgetNew: 1n }, calls.get('t1').args[1]] }, events.find((e) => e.tx === 't1'), LEDGER), null, 'nor one for another accumulator');
+  // A memo key at or above the field (it would alias a smaller key in a commitment), or an address above
+  // 160 bits, is dropped; the note still opens.
+  const n1 = { asset: USD, amount: 1n, blinding: 2n };
+  assert.equal(decryptNote(encryptNote(n1, K.encPub, '0x' + 'ff'.repeat(20)), K.encSecret).memo, '0x' + 'ff'.repeat(20));
+  assert.deepEqual(decryptNote(encryptNote(n1, K.encPub, '0x' + 'ff'.repeat(21)), K.encSecret), n1);
+  const { FIELD: P_ } = await import('./notes.js');
+  assert.deepEqual(decryptNote(encryptNote(n1, K.encPub, { owner: B.owner + P_, encPub: B.encPub, blinding: 1n }), K.encSecret), n1);
 }
 console.log('zk primitives passed: poseidon vector, public amount, key derivation (signature and passkey, recovery words), note encryption, grumpkin + operator encryption, liquidation replay, health witness, ledger key shares/config/roles, Payer scope and spending accumulator.');

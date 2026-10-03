@@ -69,6 +69,7 @@ const api = {
       receipts: L ? [] : client.receipts(),
       mandates: L ? client.mandates(L) : [],
       requests: L ? await client.ledgerRequests(L).catch(() => []) : [],
+      payments: L ? await client.ledgerPayments(L).catch(() => null) : null,
     };
   },
   async sync() {

@@ -387,6 +387,44 @@ export async function createAgent({
       const to = treasuryId ? zkAddress(await treasury(treasuryId)) : zkAddress(keys);
       return paymentLink(api, { to, amount: asked, memo, network }).toString();
     },
+    /**
+     * What was paid from a treasury, newest first (v3.18): by default the current Payer's (the agent's)
+     * own payments and the ones it asked the Owner to approve; all: true adds everyone's and mandate
+     * pulls. The Payer's amounts and who paid come from the chain (others' from the notes members can
+     * read; mismatch flags a gap); toSource says where the recipient comes from
+     * ('chain', 'paying app' or null). since: unix seconds or an ISO date (YYYY-MM-DD[THH:MM[:SS]][Z]);
+     * limit: at most this many (default 50, at most 500).
+     */
+    async spending(treasuryId, { since, all = false, limit = 50 } = {}) {
+      let from = 0;
+      if (since !== undefined && since !== null && since !== '') {
+        if (typeof since === 'number' && Number.isInteger(since) && since >= 0) from = since;
+        else if (typeof since === 'string' && /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/.test(since)
+          && new Date(Date.UTC(...since.slice(0, 10).split('-').map((x, i) => Number(x) - (i === 1 ? 1 : 0)))).toISOString().startsWith(since.slice(0, 10))) from = Math.floor(Date.parse(since) / 1000); // a real calendar date
+        else from = NaN;
+        if (!Number.isFinite(from) || from > Date.now() / 1000 + 86_400) throw new Error(`since must be unix seconds or an ISO date such as "2026-10-01" (got "${since}").`);
+      }
+      const n = Number.isFinite(Number(limit)) ? Math.min(Math.max(Math.floor(Number(limit)), 1), 500) : 50;
+      const L = await treasury(treasuryId); // after the argument checks: they need no network
+      const { rows, period } = await client.ledgerPayments(L, { since: from });
+      const unit = (asset) => {
+        if (asset === undefined) return ['unknown asset (base units)', 0];
+        if (asset === BigInt(USDG)) return ['USDG', 6];
+        if (config.deployment.vault && asset === BigInt(config.deployment.vault)) return ['vault shares', 12];
+        return [Object.keys(config.stocks).find((k) => BigInt(config.stocks[k].token) === asset) ?? 'tokens', 18];
+      };
+      const BY = { payer: 'payer', 'former payer': 'former payer', approved: 'approved by the Owner', member: 'Owner or Treasurer', mandate: 'mandate', unknown: 'unknown' };
+      return {
+        spentThisPeriod: fmt(period.spent), budget: period.budget ? fmt(period.budget) : null,
+        payments: rows.filter((r) => all || r.by === 'payer' || r.requestedByPayer).slice(0, n).map((r) => {
+          const [asset, decimals] = unit(r.asset);
+          return {
+            at: r.at ? new Date(r.at * 1000).toISOString() : null, amount: formatUnits(r.amount, decimals), asset, by: BY[r.by] ?? r.by,
+            to: r.to, toSource: r.toSource, ...(r.mandate ? { mandate: r.mandate } : {}), ...(r.mismatch ? { mismatch: true } : {}), tx: config.explorerTx(r.tx),
+          };
+        }),
+      };
+    },
     /** Approval requests of a treasury (amounts in USDG). */
     async requests(treasuryId) {
       const L = await treasury(treasuryId);

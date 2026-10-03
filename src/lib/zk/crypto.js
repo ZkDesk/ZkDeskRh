@@ -1,7 +1,7 @@
 // Payload encryption: X25519 ECDH + XChaCha20-Poly1305. Ciphertexts are posted on-chain in
 // events; only the recipient's encryption key can open them.
 // Layout: ephPub(32) | viewTag(1) | nonce(24) | sealed(plaintext | tag 16)
-//   note     plaintext: asset 20 | amount 16 | blinding 32
+//   note     plaintext: asset 20 | amount 16 | blinding 32 [| memo: kind 1 | to 32 | toEncPub 32 | toBlinding 32]
 //   position plaintext: asset 20 | collateral 16 | debtScaled 16 | blinding 32
 import { x25519 } from '@noble/curves/ed25519.js';
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
@@ -10,12 +10,18 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils.js';
 
 const enc = new TextEncoder();
+const FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n; // notes.js FIELD (no import cycle)
 const OVERHEAD = 32 + 1 + 24 + 16;
 const NOTE_FIELDS = [['asset', 20], ['amount', 16], ['blinding', 32]];
+// v3.18: a treasury transfer's change note also records who was paid, readable by the treasury's
+// members only. kind 1: a ZKDesk owner key, its encryption key and the payment note's blinding, so members
+// can check the payment's on-chain commitment; kind 2: a 0x address.
+const NOTE_MEMO_FIELDS = [...NOTE_FIELDS, ['memoKind', 1], ['memoTo', 32], ['memoPub', 32], ['memoBlinding', 32]];
 const POSITION_FIELDS = [['asset', 20], ['collateral', 16], ['debtScaled', 16], ['blinding', 32]];
 const size = (fields) => fields.reduce((s, [, n]) => s + n, 0);
 export const NOTE_CIPHERTEXT_BYTES = OVERHEAD + size(NOTE_FIELDS);
 export const POSITION_CIPHERTEXT_BYTES = OVERHEAD + size(POSITION_FIELDS);
+export const NOTE_MEMO_CIPHERTEXT_BYTES = OVERHEAD + size(NOTE_MEMO_FIELDS);
 
 const toBytes = (x, n) => hexToBytes(BigInt(x).toString(16).padStart(n * 2, '0'));
 const toBig = (b) => BigInt('0x' + bytesToHex(b));
@@ -35,9 +41,10 @@ function seal(fields, value, recipientEncPub) {
   return '0x' + bytesToHex(new Uint8Array([...x25519.getPublicKey(eph), tag, ...nonce, ...sealed]));
 }
 
-function open(fields, ciphertextHex, encSecret) {
+/** atLeast: also open a longer payload and read its leading fields (a later version may append more). */
+function open(fields, ciphertextHex, encSecret, { atLeast = false } = {}) {
   const c = hexToBytes(ciphertextHex.replace(/^0x/, ''));
-  if (c.length !== OVERHEAD + size(fields)) return null;
+  if (atLeast ? c.length < OVERHEAD + size(fields) : c.length !== OVERHEAD + size(fields)) return null;
   const { key, tag } = shared(encSecret, c.slice(0, 32));
   if (c[32] !== tag) return null; // view tag: skips ~255/256 foreign payloads without AEAD work
   try {
@@ -51,10 +58,32 @@ function open(fields, ciphertextHex, encSecret) {
   }
 }
 
-/** note: {asset, amount, blinding}. Returns 0x-hex ciphertext. */
-export const encryptNote = (note, recipientEncPub) => seal(NOTE_FIELDS, note, recipientEncPub);
-/** Returns {asset, amount, blinding} or null if the note is not ours. */
-export const decryptNote = (ciphertextHex, encSecret) => open(NOTE_FIELDS, ciphertextHex, encSecret);
+/**
+ * note: {asset, amount, blinding}. memo (optional): who a treasury transfer paid, {owner, encPub,
+ * blinding} (the payment note's) or a 0x address string. Returns 0x-hex ciphertext.
+ */
+export function encryptNote(note, recipientEncPub, memo) {
+  if (!memo) return seal(NOTE_FIELDS, note, recipientEncPub);
+  const m = typeof memo === 'string'
+    ? { memoKind: 2n, memoTo: BigInt(memo), memoPub: 0n, memoBlinding: 0n }
+    : { memoKind: 1n, memoTo: memo.owner, memoPub: BigInt('0x' + (bytesToHex(memo.encPub) || '0')), memoBlinding: memo.blinding ?? 0n };
+  return seal(NOTE_MEMO_FIELDS, { ...note, ...m }, recipientEncPub);
+}
+/**
+ * Returns {asset, amount, blinding[, memo]} or null if the note is not ours. memo: {owner, encPub,
+ * blinding} or a 0x address. A longer note from a later version opens with the fields known here.
+ */
+export function decryptNote(ciphertextHex, encSecret) {
+  const plain = open(NOTE_FIELDS, ciphertextHex, encSecret);
+  if (plain) return plain;
+  const m = open(NOTE_MEMO_FIELDS, ciphertextHex, encSecret, { atLeast: true });
+  if (!m) return null;
+  const { memoKind, memoTo, memoPub, memoBlinding, ...note } = m;
+  // A memo key at or above the field would alias a smaller one in a commitment: dropped.
+  const memo = memoKind === 1n && memoTo < FIELD && memoBlinding < FIELD ? { owner: memoTo, encPub: toBytes(memoPub, 32), blinding: memoBlinding }
+    : memoKind === 2n && memoTo < 1n << 160n ? '0x' + memoTo.toString(16).padStart(40, '0') : undefined;
+  return memo ? { ...note, memo } : note;
+}
 /** position: {asset, collateral, debtScaled, blinding}. Encrypted to the owner's own key. */
 export const encryptPosition = (position, encPub) => seal(POSITION_FIELDS, position, encPub);
 export const decryptPosition = (ciphertextHex, encSecret) => open(POSITION_FIELDS, ciphertextHex, encSecret);

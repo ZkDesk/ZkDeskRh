@@ -55,6 +55,10 @@ await assert.rejects((await import('../src/lib/zk/client.js')).verifyReceipt({ c
 }
 assert.equal(agent.address, zkAddress(k));
 await assert.rejects(createAgent({ seed, network: 'testnet' }), /one network per process/);
+// v3.18 spending report: since is unix seconds or an ISO date, checked before any network read.
+for (const bad of ['1', '-1', 'Oct 1', '2026/10/01', '2026-02-30', '2026-13-01', true, -5, 1.5, Date.now()]) {
+  await assert.rejects(agent.spending('0x' + '11'.repeat(32), { since: bad }), /since must be unix seconds or an ISO date/, `since ${bad}`);
+}
 await assert.rejects(agent.send({ to: agent.address, amount: '50.000001' }), /above this agent's limit of 50 USDG/);
 await assert.rejects(agent.send({ to: agent.address, amount: '0' }), /greater than zero/);
 await assert.rejects(agent.send({ to: agent.address, amount: '1e3' }), /greater than zero/);

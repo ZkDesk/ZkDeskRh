@@ -20,7 +20,7 @@ import { concatHex, encodeAbiParameters, isAddress, isHex, keccak256, toHex, ver
 import { mailboxMessages } from '../src/lib/zk/ledger.js';
 import { abis, db, deployment, deploymentReady, publicClient, relayer, sendFromRelayer, revertName, json } from './_lib/server.js';
 import { RELAY_GAS, relayFees } from './_lib/fees.js';
-import { CONFIG_BYTES, KEY_SHARE_BYTES, MANDATE_BYTES, NOTE_CIPHERTEXT_BYTES, POSITION_CIPHERTEXT_BYTES } from '../src/lib/zk/crypto.js';
+import { CONFIG_BYTES, KEY_SHARE_BYTES, MANDATE_BYTES, NOTE_CIPHERTEXT_BYTES, NOTE_MEMO_CIPHERTEXT_BYTES, POSITION_CIPHERTEXT_BYTES } from '../src/lib/zk/crypto.js';
 
 /** User relays stop below this, leaving gas for transactions in flight. */
 export const RELAYER_FLOOR_WEI = 2n * 10n ** 15n; // 0.002 ETH
@@ -36,8 +36,11 @@ const same = (a, b) => a?.toLowerCase() === b?.toLowerCase();
 function checkProofBytes(proof) {
   if (!isHex(proof) || bytesLen(proof) > MAX_PROOF_BYTES) throw new Error('Bad proof bytes.');
 }
-function checkNotes(e) {
-  for (const c of [e.encryptedOutput1, e.encryptedOutput2]) if (bytesLen(c) !== NOTE_CIPHERTEXT_BYTES) throw new Error('Bad note ciphertext.');
+/** memo: a treasury transfer's change note (output 1) may also carry who was paid (v3.18). */
+function checkNotes(e, { memo = false } = {}) {
+  const first = bytesLen(e.encryptedOutput1);
+  if (first !== NOTE_CIPHERTEXT_BYTES && !(memo && first === NOTE_MEMO_CIPHERTEXT_BYTES)) throw new Error('Bad note ciphertext.');
+  if (bytesLen(e.encryptedOutput2) !== NOTE_CIPHERTEXT_BYTES) throw new Error('Bad note ciphertext.');
 }
 
 function parseTransact(p, e) {
@@ -93,7 +96,7 @@ const ledgerTarget = (functionName) => ({ address: deployment.ledger, abi: abis.
 
 function parseLedger(p, e) {
   checkProofBytes(p.proof);
-  checkNotes(e);
+  checkNotes(e, { memo: Number(p.action) === 2 });
   if (!isAddress(e.recipient) || !ASSETS.has(p.asset?.toLowerCase()) || !ASSETS.has(p.outAsset?.toLowerCase())) throw new Error('Bad address or asset.');
   const action = Number(p.action);
   if (!LEDGER_KINDS[action]) throw new Error('Bad ledger action.');

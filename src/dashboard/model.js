@@ -148,3 +148,6 @@ export function applyAction(state, type, values) {
   next.activity.unshift({ id: `activity-${uid}`, at, ...entry });
   return next;
 }
+
+/** One CSV cell: quoted, and text a spreadsheet would run as a formula (a mandate label) starts with a '. */
+export const csvCell = (v) => `"${String(v ?? '').replace(/^([=+\-@\t\r])/, "'$1").replaceAll('"', '""')}"`;

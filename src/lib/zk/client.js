@@ -1,14 +1,15 @@
 // One private-account client for the dashboard and ops scripts. It reads chain state, picks notes,
 // builds witnesses and ciphertexts, then hands proofs to injected `prove(kind, witness)` and
 // `relay(body)` (browser: worker + fetch; Node: bb.js + in-process handler).
-import { getAddress, maxUint256, toHex, zeroAddress } from 'viem';
+import { decodeFunctionData, getAddress, maxUint256, toHex, zeroAddress } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { abis, deployment, explorerTx, MAINNET, minRelayFee, NETWORK_NAME, payableFee, stocks, USD_SYMBOL } from '../chain/config.js';
 import { encryptConfig, encryptKeyShare, encryptMandate, encryptNote, encryptPosition, openRequest, sealRequest, textToField } from './crypto.js';
 import { buildMandateAuth, buildPull, buildReceipt, currentPeriod, KINDS, MANDATE_ACTIONS, PERIODS, rawForUsdg } from './mandate.js';
-import { ACTIONS, AUTH, authExtHash, buildAttest, buildLedger, buildRoleAuth, ledgerKeys, mailboxMessages, rolesOf, scopeOf } from './ledger.js';
+import { ACTIONS, AUTH, authExtHash, buildAttest, buildLedger, buildRoleAuth, ledgerKeys, mailboxMessages, payerSpent, rolesOf, scopeOf } from './ledger.js';
 import { ALLOW_SLOTS, allowHash, mandateCommit, MAX_AMOUNT, policyHash, randomField } from './notes.js';
 import { buildTransact } from './transact.js';
+import { paymentRows } from './report.js';
 import { buildPosition, debtOf, maxDebt, valueOf } from './position.js';
 import { balanceOf, freeSlot, ledgerMandates, myLedgers, myNotes, myPositions, myReceipts, syncPool } from './wallet.js';
 
@@ -451,7 +452,10 @@ export function createClient({ publicClient, walletClient = null, address = null
     if (!memo.inputs) {
       const draft = buildLedger({ ...base, ext: empty });
       const [o1, o2] = draft.outputs;
-      memo.ext = { ...empty, encryptedOutput1: encryptNote(o1, ledger.encPub), encryptedOutput2: encryptNote(o2, to?.encPub ?? ledger.encPub) };
+      // A transfer's change note also records who was paid, for the members' spending report (v3.18).
+      // With the payment note's blinding, members can check the recipient against its on-chain commitment.
+      const paidTo = action === 'allocate' || action === 'deallocate' ? undefined : to ? { owner: to.owner, encPub: to.encPub, blinding: o2.blinding } : recipient ?? undefined;
+      memo.ext = { ...empty, encryptedOutput1: encryptNote(o1, ledger.encPub, paidTo), encryptedOutput2: encryptNote(o2, to?.encPub ?? ledger.encPub) };
       memo.blindings = { outputs: draft.outputs.map((o) => o.blinding), dummies: draft.dummies };
       memo.inputs = args.inputs.map((n) => n.commitment);
     }
@@ -560,6 +564,67 @@ export function createClient({ publicClient, walletClient = null, address = null
       return submitLedger(rebuilt.built, request.ext);
     };
     return againWhenBusy(once); // approved transfers also move the spending accumulator
+  }
+
+  // ---- Treasury spending report (v3.18) ----
+  // Chain reads behind the report, cached: a mined transaction and a block time never change. A failed
+  // read is retried after a minute, not on every refresh.
+  const cached = (map, key, read) => {
+    const hit = map.get(key);
+    if (hit && (hit.value !== null || Date.now() - hit.at < 60_000)) return hit.value;
+    return read().catch(() => null).then((value) => { map.set(key, { value, at: Date.now() }); return value; });
+  };
+  const callCache = new Map();
+  const timeCache = new Map();
+  const callOf = (hash) => cached(callCache, hash, async () => {
+    const t = await publicClient.getTransaction({ hash });
+    // Input that is not an act() call (a contract wrapping it) never will be: cached as such, not retried.
+    let args = null;
+    try { args = decodeFunctionData({ abi: abis.ledger, data: t.input }).args; } catch { /* not the ledger's own call */ }
+    return { to: t.to, args };
+  });
+  const timeOf = (block) => cached(timeCache, block, async () => Number((await publicClient.getBlock({ blockNumber: block })).timestamp));
+  /** Runs fn over items a few at a time (public RPCs throttle bursts). */
+  async function inBatches(items, fn, size = 8) {
+    const out = [];
+    for (let i = 0; i < items.length; i += size) out.push(...(await Promise.all(items.slice(i, i + size).map(fn))));
+    return out;
+  }
+
+  /**
+   * Payments out of a treasury, newest first (src/lib/zk/report.js paymentRows), each with its time
+   * (unix seconds). since: only payments from then on. period: what the current Payer spent in this
+   * budget window, and the budget.
+   */
+  async function ledgerPayments(ledger, { since = 0 } = {}) {
+    ledger = current(ledger);
+    const events = state.ledgerEvents.filter((e) => e.id === ledger.owner);
+    const pulls = state.pulls.filter((p) => p.ledgerId === ledger.owner);
+    const transfers = events.filter((e) => e.name === 'BudgetNote' && e.commit);
+    const blocks = [...new Set([...transfers, ...pulls].map((e) => e.block))];
+    const times = new Map(await inBatches(blocks, async (b) => [b, await timeOf(b)]));
+    const recent = (e) => (times.get(e.block) ?? Infinity) >= since;
+    // Calls are read only for the payments in range (an unreadable one is shown as 'unknown').
+    const calls = new Map(await inBatches(transfers.filter(recent).map((e) => e.tx), async (tx) => [tx, await callOf(tx)]));
+    const ciphertextsByTx = new Map();
+    for (const c of state.ciphertexts) ciphertextsByTx.set(c.tx, [...(ciphertextsByTx.get(c.tx) ?? []), c]);
+    // Who asked for each approved transfer (approval mailbox requests open with the ledger's request key).
+    const intentsFrom = new Map();
+    if (requests) {
+      for (const row of await requests.list(hexId(ledger.owner)).catch(() => [])) {
+        const r = openRequest(row.ciphertext, ledger.requestKey);
+        if (r?.intent !== undefined) intentsFrom.set(r.intent, r.from);
+      }
+    }
+    const rows = paymentRows({
+      ledger, events, notes: ledgerNotes(ledger), ciphertextsByTx, pulls, mandates: ledgerMandates(state, ledger), calls, intentsFrom, ledgerAddress: deployment.ledger,
+    }).filter(recent);
+    for (const r of rows) r.at = times.get(r.block) ?? null;
+    const scope = scopeOf(ledger.config);
+    return {
+      rows: rows.reverse(),
+      period: { spent: (() => { try { return ledger.budget ? payerSpent(ledger, BigInt(Math.floor(Date.now() / 1000))) : 0n; } catch { return 0n; } })(), budget: scope.budget, budgetPeriod: scope.budgetPeriod },
+    };
   }
 
   /** Treasury statement: the ledger's assets cover `liabilities` (USDG base units). Publishes only that. */
@@ -675,7 +740,7 @@ export function createClient({ publicClient, walletClient = null, address = null
 
   return {
     sync, notes, positions, deposit, send, combine, credit, deskHealth,
-    ledgers, ledgerNotes, createLedger, updateLedger, ledgerAct, ledgerAttest, ledgerRequests, approveRequest, completeRequest, setTransferLimit,
+    ledgers, ledgerNotes, createLedger, updateLedger, ledgerAct, ledgerAttest, ledgerRequests, ledgerPayments, approveRequest, completeRequest, setTransferLimit,
     mandates, createMandate, manageMandate, payMandate, receipts, proveReceipt,
     ledgerBalance: (ledger, asset, st = 'unspent') => balanceOf(ledgerNotes(ledger), big(asset), st),
     lend: (amount) => convert('lend', amount),

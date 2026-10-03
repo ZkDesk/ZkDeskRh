@@ -65,6 +65,25 @@ export function openBudget(lsk, note) {
   const blinding = budgetPad(lsk, note.nonce, 2);
   return budgetCommit(ledgerId(lsk), window, spent, blinding) === note.commit ? { commit: note.commit, window, spent, blinding } : null;
 }
+/**
+ * The Payer's share of each treasury transfer, from the ledger's BudgetNotes in chain order (v3.18
+ * spending report): delta is the amount the Payer's spending record rose by, so > 0 means the Payer
+ * made that transfer on its own, and 0 means the Owner or Treasurer made it, or the Owner approved it. A
+ * reset note (roles or policy changed) starts again from zero; a new window starts from its own amount.
+ */
+export function payerDeltas(lsk, notes) {
+  let prev = { window: 0n, spent: 0n };
+  const out = [];
+  for (const e of notes) {
+    const b = openBudget(lsk, e);
+    if (!b) continue;
+    if (!e.commit) { prev = { window: 0n, spent: 0n }; continue; }
+    out.push({ note: e, delta: b.window === prev.window ? b.spent - prev.spent : b.spent });
+    prev = b;
+  }
+  return out;
+}
+
 /** What the Payer has spent in the budget window of time t (0 after a rollover). */
 export const payerSpent = (ledger, t) => {
   const b = ledger.budget;
