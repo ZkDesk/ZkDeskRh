@@ -111,12 +111,13 @@ export const newSeed = () => '0x' + Buffer.from(crypto.getRandomValues(new Uint8
  * Guards (USDG strings; null or 'off' disables): maxPerTx, maxPerDay (rolling 24 h, fees included,
  * kept in stateDir), maxFee (per relay step). allowTo: if set, the only zkd:/0x recipients the agent
  * may pay (mandates excepted: their recipients are fixed when the mandate is created). treasuries: if set,
- * the only treasury ids the agent acts in.
+ * the only treasury ids the agent acts in. askApproval (default true): false refuses a treasury payment
+ * above the per-payment limit (the Owner's approval threshold) instead of asking the Owner to approve it.
  */
 export async function createAgent({
   seed, network = 'mainnet', api = 'https://zkdesk.tech', rpc, onStatus = () => {},
   maxPerTx = null, maxPerDay = null, maxFee = null, allowTo = null, treasuries: allowTreasuries = null, stateDir = join(homedir(), '.zkdesk'),
-  allowHttp = false,
+  allowHttp = false, askApproval = true,
 }) {
   if (!SEED.test(seed ?? '')) throw new Error('The agent seed must be 32 bytes of hex (0x + 64 characters). Make one with: node agent/cli.mjs keygen');
   if (!['mainnet', 'testnet'].includes(network)) throw new Error('network must be "mainnet" or "testnet".');
@@ -180,7 +181,10 @@ export async function createAgent({
       client.setFeeCeiling({ fee, voucherPrice });
       const sentBefore = client.relaysSent;
       try {
-        return await step(raw);
+        const result = await step(raw);
+        // A request sends nothing yet; completing it once approved counts it (complete()).
+        if (result?.requested && client.relaysSent === sentBefore) day.add(-total, at);
+        return result;
       } catch (error) {
         if (client.relaysSent === sentBefore) day.add(-total, at);
         throw error;
@@ -255,6 +259,9 @@ export async function createAgent({
   async function pay(treasuryId, { to, amount }) {
     const L = await treasury(treasuryId);
     await notEnded(L);
+    if (!askApproval && mover(L) !== 'Owner' && usdg(amount) > L.config.dualThreshold) {
+      throw new Error(`${amount} USDG is above this treasury's per-payment limit of ${fmt(L.config.dualThreshold)} USDG, and this agent is set not to ask for approval (ZKDESK_ASK_APPROVAL=0). Nothing was paid.`);
+    }
     const dest = isAddress(to ?? '') ? { recipient: to } : { to: zkTo(to) };
     // Above the threshold an agent that is also the Owner approves first: a second voucher.
     const vouchers = L.roles.includes('Owner') && usdg(amount) > L.config.dualThreshold ? 2 : 1;
@@ -372,7 +379,7 @@ export async function createAgent({
       const now = list.some((l) => payerScoped(l.config)) ? await client.chainTime().catch(() => BigInt(Math.floor(Date.now() / 1000))) : 0n;
       return list.map((l) => ({
         id: hexId(l.owner), name: l.name, roles: l.roles, ownerKey: hexId(l.config.owner), address: zkAddress(l),
-        usdg: fmt(client.ledgerBalance(l, USDG)), ownerApprovalAbove: fmt(l.config.dualThreshold), payerLimits: payerLimits(l, now),
+        usdg: fmt(client.ledgerBalance(l, USDG)), ownerApprovalAbove: fmt(l.config.dualThreshold), perPaymentLimit: fmt(l.config.dualThreshold), payerLimits: payerLimits(l, now),
       }));
     },
     /** Pays from a treasury to a zkd: or 0x address. Above the Owner's threshold it becomes a request. */
@@ -457,8 +464,22 @@ export async function createAgent({
       if (r.status !== 'Approved') throw new Error(`Request ${requestId} is ${r.status}, not Approved.`);
       if (!ownRequests().has(String(r.intent))) throw new Error(`Request ${requestId} was not made by this agent, so it will not send it.`);
       await notEnded(L);
-      day.check((await client.quoteFee(USDG)).fee * 2n);
-      return done(await client.completeRequest(L, r));
+      return serial(async () => {
+        const { fee, voucherPrice } = await client.quoteFee(USDG);
+        const total = (r.asset === BigInt(USDG) ? r.amount : 0n) + fee * voucherPrice * 2n; // the transfer and its spare voucher
+        day.check(total);
+        const at = day.add(total);
+        client.setFeeCeiling({ fee, voucherPrice });
+        const sentBefore = client.relaysSent;
+        try {
+          return done(await client.completeRequest(L, r));
+        } catch (error) {
+          if (client.relaysSent === sentBefore) day.add(-total, at);
+          throw error;
+        } finally {
+          client.setFeeCeiling(null);
+        }
+      });
     },
     /** Payment mandates of a treasury: recipient, cap per period, expiry, status. label is set by the Owner. */
     async mandates(treasuryId) {

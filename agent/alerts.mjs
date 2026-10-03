@@ -99,7 +99,8 @@ export function decide(view, state, { name = 'Treasury', all = false, dashboard 
     for (const r of view.requests) {
       if (seenRequests.has(r.id)) continue;
       seenRequests.add(r.id);
-      if (requestsLearned && r.status === 'Awaiting Owner') add(`req:${r.id}`, 'approval', `approval requested: ${r.amount} ${r.asset ?? 'USDG'} to ${short(r.to)}. Check the full recipient in the dashboard before approving.${link}`);
+      // Already marked declined: still reported (anyone holding the keys can mark it, so it is unverified).
+      if (requestsLearned && ['Awaiting Owner', 'Declined'].includes(r.status)) add(`req:${r.id}`, 'approval', `approval requested: ${r.amount} ${r.asset ?? 'USDG'} to ${short(r.to)}${r.status === 'Declined' ? ' (already marked declined; unverified)' : ''}. Check the full recipient in the dashboard before approving.${link}`);
     }
     requestsLearned = true;
   }

@@ -5,7 +5,8 @@
 // Guards on this machine ("off" removes one): ZKDESK_MAX_PER_TX (USDG per payment, default 50),
 // ZKDESK_MAX_PER_DAY (rolling 24 h, fees included, default 100), ZKDESK_MAX_FEE (per relay step,
 // default 2), ZKDESK_ALLOW_TO (comma-separated zkd:/0x recipients; unset = any),
-// ZKDESK_TREASURIES (comma-separated treasury ids; unset = any where the agent can move funds).
+// ZKDESK_TREASURIES (comma-separated treasury ids; unset = any where the agent can move funds),
+// ZKDESK_ASK_APPROVAL (0: refuse a treasury payment above the per-payment limit instead of asking).
 // The protocol is newline-delimited JSON-RPC 2.0 on stdin/stdout (MCP stdio transport, tools only).
 import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
@@ -27,10 +28,10 @@ export const TOOLS = [
   tool('zkdesk_send', 'Send USDG privately from the agent\'s own balance to a zkd: address. A relay fee is taken from the balance.', { to: str('Recipient ZKdesk private address (zkd:…)'), amount: AMOUNT }, ['to', 'amount'], (a, x) => a.send(x)),
   tool('zkdesk_withdraw', 'Withdraw USDG from the agent\'s private balance to a public 0x address.', { to: str('Recipient 0x address'), amount: AMOUNT }, ['to', 'amount'], (a, x) => a.withdraw(x)),
   tool('zkdesk_combine', "Merge the agent's USDG notes into one (or until one holds target). A payment can spend at most two notes, so combine when a payment says it spans more notes, or when zkdesk_balance shows many notes. Each merge pays one relay fee; at most 20 per call.", { target: { ...AMOUNT, description: 'Optional: stop once one note holds this much USDG' } }, [], (a, x) => a.combine({ target: x.target })),
-  tool('zkdesk_treasuries', 'Treasuries where the agent holds a role, with their USDG balance, the amount above which the Owner must approve, and the Owner\'s limits on the agent as Payer (allowed recipients, budget per period, spent and left this period, when its access ends; enforced on-chain).', {}, [], (a) => a.treasuries(), true),
-  tool('zkdesk_pay', 'Pay USDG from a treasury the agent can move funds in. Above the Owner\'s approval threshold it becomes a request instead; check it with zkdesk_requests and send it with zkdesk_complete once approved.', { treasury: TREASURY, to: TO, amount: AMOUNT }, ['treasury', 'to', 'amount'], (a, x) => a.pay(x.treasury, x)),
+  tool('zkdesk_treasuries', 'Treasuries where the agent holds a role, with their USDG balance, the amount above which the Owner must approve, and the Owner\'s limits on the agent as Payer (allowed recipients, budget per period, spent and left this period, when its access ends; enforced on-chain) and perPaymentLimit, the most it pays in one payment without the Owner\'s approval.', {}, [], (a) => a.treasuries(), true),
+  tool('zkdesk_pay', 'Pay USDG from a treasury the agent can move funds in. Above the treasury\'s per-payment limit (perPaymentLimit in zkdesk_treasuries) it becomes a request for the Owner instead, unless this agent is set not to ask; check it with zkdesk_requests (Approved, Declined or Awaiting Owner) and send it with zkdesk_complete once approved.', { treasury: TREASURY, to: TO, amount: AMOUNT }, ['treasury', 'to', 'amount'], (a, x) => a.pay(x.treasury, x)),
   tool('zkdesk_spending', 'What was paid from a treasury, newest first: the agent\'s own payments as its Payer (amount, asset, recipient, date, transaction) and its spending this budget period against the budget. all: true also lists the Owner\'s, Treasurer\'s, Owner-approved payments and mandate pulls. The agent\'s amounts and who paid come from the chain (mismatch flags a payment whose notes members cannot all read); toSource says whether the recipient is proven on-chain (chain) or was recorded by the paying app.', { treasury: TREASURY, since: str('Only payments from this date on (ISO date, e.g. "2026-10-01")', { pattern: '^\\d{4}-\\d{2}-\\d{2}' }), all: { type: 'boolean', description: 'Include payments made by others' }, limit: { type: 'number', description: 'At most this many (default 50, at most 500)' } }, ['treasury'], (a, x) => a.spending(x.treasury, { since: x.since, all: Boolean(x.all), limit: x.limit }), true),
-  tool('zkdesk_requests', 'Approval requests of a treasury and their status (Awaiting Owner, Approved, Completed, Expired).', { treasury: TREASURY }, ['treasury'], (a, x) => a.requests(x.treasury), true),
+  tool('zkdesk_requests', 'Approval requests of a treasury and their status (Awaiting Owner, Approved, Declined (unverified: the Owner can still approve it), Completed, Expired).', { treasury: TREASURY }, ['treasury'], (a, x) => a.requests(x.treasury), true),
   tool('zkdesk_complete', 'Send a treasury transfer this agent requested, after the Owner approved it.', { treasury: TREASURY, request: str('Request id from zkdesk_requests') }, ['treasury', 'request'], (a, x) => a.complete(x.treasury, x.request)),
   tool('zkdesk_mandates', 'Payment mandates of a treasury: recipient, cap per period, expiry, status and whether this period is paid.', { treasury: TREASURY }, ['treasury'], (a, x) => a.mandates(x.treasury), true),
   tool('zkdesk_pay_mandate', 'Pay the current period of a mandate, up to its cap.', { treasury: TREASURY, mandate: str('Mandate id from zkdesk_mandates'), amount: AMOUNT }, ['treasury', 'mandate', 'amount'], (a, x) => a.payMandate(x.treasury, x.mandate, x.amount)),
@@ -109,7 +110,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const getAgent = () => (agent ??= import('./index.mjs').then(({ createAgent }) => createAgent({
     seed: process.env.ZKDESK_SEED, network: process.env.ZKDESK_NETWORK || 'mainnet', api: process.env.ZKDESK_API || undefined, rpc: process.env.ZKDESK_RPC || undefined,
     maxPerTx: process.env.ZKDESK_MAX_PER_TX || '50', maxPerDay: process.env.ZKDESK_MAX_PER_DAY || '100', maxFee: process.env.ZKDESK_MAX_FEE || '2',
-    allowTo: process.env.ZKDESK_ALLOW_TO || null, treasuries: process.env.ZKDESK_TREASURIES || null, allowHttp: process.env.ZKDESK_ALLOW_HTTP === '1',
+    allowTo: process.env.ZKDESK_ALLOW_TO || null, treasuries: process.env.ZKDESK_TREASURIES || null, allowHttp: process.env.ZKDESK_ALLOW_HTTP === '1', askApproval: process.env.ZKDESK_ASK_APPROVAL !== '0',
     onStatus: (m) => console.error(m),
   })).catch((error) => { agent = null; throw error; }));
   const handle = createHandler(getAgent);

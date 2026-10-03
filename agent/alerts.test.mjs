@@ -119,6 +119,9 @@ assert.equal(alerts.length, 0, 'not again after the outage');
 assert.equal(alerts.length, 0, 'not again when it drops out of the list and comes back');
 [alerts, state] = run(view({ requests: [{ id: '3', status: 'Awaiting Owner', amount: '2.5', asset: 'SPY', to: '0xdef' }] }), state);
 assert.match(alerts[0].text, /approval requested: 2\.5 SPY to 0xdef/, 'in the request asset');
+// A request first seen already marked declined is still reported (anyone holding the keys can mark it).
+[alerts, state] = run(view({ requests: [req, { id: '4', status: 'Declined', amount: '9', to: '0xd' }] }), state);
+assert.match(alerts[0].text, /approval requested: 9 USDG to 0xd \(already marked declined; unverified\)/);
 // A first run that could not read the mailbox learns the first list it reads, without alerting it.
 {
   let [a, st] = run(view({ requests: null }), null);

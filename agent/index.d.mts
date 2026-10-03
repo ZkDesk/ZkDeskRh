@@ -35,6 +35,8 @@ export interface AgentOptions {
   stateDir?: string;
   /** Local tests only: lets fetchPaid use http:// and private hosts. */
   allowHttp?: boolean;
+  /** false: refuse a treasury payment above the per-payment limit instead of asking the Owner (default true). */
+  askApproval?: boolean;
 }
 
 /** A payment checked against the chain, or one the relay did not confirm. */
@@ -73,6 +75,8 @@ export interface Treasury {
   address: ZkAddress;
   usdg: Usdg;
   ownerApprovalAbove: Usdg;
+  /** The same amount: the most the agent pays in one payment without the Owner's approval. */
+  perPaymentLimit: Usdg;
   /** The Owner's limits on the Payer, enforced on-chain by the proof; null when there are none. */
   payerLimits: PayerLimits | null;
 }
@@ -137,7 +141,7 @@ export interface Spending {
 
 export interface Request {
   id: string;
-  status: 'Awaiting Owner' | 'Approved' | 'Completed' | 'Expired';
+  status: 'Awaiting Owner' | 'Approved' | 'Declined' | 'Completed' | 'Expired';
   mine: boolean;
   amount: Usdg;
   to: ZkAddress | HexAddress;

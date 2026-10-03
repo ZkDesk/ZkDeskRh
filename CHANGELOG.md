@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.22.0 (October 2026)
+
+- **The agent's per-payment limit, made clear:** the treasury's approval threshold is the most your agent can pay in one payment without you, enforced by the proof. The dashboard and the agent's tools now say so: *Per payment: up to X USDG without your approval* in *Treasury → AI agent*, and `perPaymentLimit` in `zkdesk_treasuries` (the same value as `ownerApprovalAbove`).
+- **Decline a request:** approval requests now have *Decline* next to *Approve* (Owner). Members and the agent on 3.22 or later see the request as *Declined (unverified)*, and the agent won't send it unless you approve it anyway. A decline is a note in the treasury's private mailbox. Anyone holding the treasury's keys (a member, the agent, or someone with the viewing key) could post one, so it shows as *Declined (unverified)*: you can still *Approve anyway*, the alert watcher still reports the request, and only your proof on-chain can approve.
+- **The agent's daily guard:** a payment that becomes a request no longer counts toward `ZKDESK_MAX_PER_DAY` until the agent sends it after your approval.
+- **An agent that never asks:** with `ZKDESK_ASK_APPROVAL=0` (SDK `askApproval: false`), the agent refuses a treasury payment above the limit itself instead of sending you a request. The default is unchanged.
+- No contract change. A hard on-chain cap that even you can't approve past is planned for a later contract release.
+
 ## 3.21.0 (October 2026)
 
 - **Move a treasury to new keys:** *Settings → Move to new keys* (Owner only). Use it when an agent's key may have leaked, or when you remove an agent or member. Before, a removed agent lost its role but could still read the treasury. Now you move everything to a fresh treasury that only the members you name can open. Someone holding only the old keys keeps the history up to the move, sees the old treasury empty out, and cannot read the new treasury.

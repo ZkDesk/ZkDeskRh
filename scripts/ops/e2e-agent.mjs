@@ -235,6 +235,22 @@ check((await agent.waitForPayment({ amount: '7', timeoutSeconds: 3 })).pending !
   const ok = (await agent.requests(id)).find((r) => r.status === 'Approved' && r.mine);
   check((await step('Agent completes the approved payment', () => agent.complete(id, ok.id))).confirmed, 'an Owner-approved payment is outside the scope');
   check((await limits()).spentThisPeriod === '25', 'and does not count toward the budget');
+  // 3.22: the per-payment limit. The Owner declines a request; an agent set not to ask refuses itself.
+  check((await agent.treasuries()).find((t) => t.id === id).perPaymentLimit === '50', 'the agent reads its per-payment limit');
+  const dayBefore = (await agent.balance()).spentLast24h;
+  check((await step('Agent asks for 70', () => agent.pay(id, { to: agent.address, amount: '70' }))).requested === true, 'a request');
+  check((await agent.balance()).spentLast24h === dayBefore, 'a request does not use up the daily limit');
+  await step('Owner declines it', async () => {
+    await owner.sync();
+    const r = (await owner.ledgerRequests(L())).find((x) => x.status === 'Awaiting Owner');
+    await owner.declineRequest(L(), r);
+    return r.id;
+  });
+  const no = (await agent.requests(id)).find((r) => r.amount === '70');
+  check(no?.status === 'Declined', 'the agent sees it declined');
+  await refused('completing a declined request', () => agent.complete(id, no.id), /is Declined, not Approved/);
+  const quiet = await createAgent({ seed: agentSeed, network: 'testnet', api: site, rpc: RPC, maxPerTx: '500', askApproval: false, stateDir: mkdtemp(pjoin(tmp(), 'zkd-a4-')) });
+  await refused('a payment above the limit by an agent set not to ask', () => quiet.pay(id, { to: ownerZk, amount: '51' }), /per-payment limit of 50 USDG.*not to ask/);
   // v3.18: the spending report attributes each payment from the chain and names its recipient.
   const report = await step('Agent reads its spending report', () => agent.spending(id, { all: true }));
   const mine = report.payments.filter((p) => p.by === 'payer');

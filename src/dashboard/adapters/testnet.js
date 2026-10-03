@@ -324,7 +324,7 @@ function validate(state, type, values) {
   const errors = {};
   const m = state.meta;
   const amount = Number(values.amount);
-  const needAmount = !['close', 'open', 'ledger', 'roles', 'mandate', 'pause', 'resume', 'revoke', 'approve', 'complete', 'combine', 'agent', 'unagent', 'rekey'].includes(type);
+  const needAmount = !['close', 'open', 'ledger', 'roles', 'mandate', 'pause', 'resume', 'revoke', 'approve', 'complete', 'combine', 'agent', 'unagent', 'rekey', 'decline'].includes(type);
   if (needAmount && !(Number.isFinite(amount) && amount > 0 && amount <= 1e9)) errors.amount = 'Enter an amount greater than zero.';
   const position = state.positions.find((p) => p.id === values.id);
   const ledger = m.ledger;
@@ -403,10 +403,11 @@ function validate(state, type, values) {
     case 'attest':
       if (!ledger) errors.general = 'Treasury statements are made from a treasury workspace.';
       break;
-    case 'approve': case 'complete': {
+    case 'approve': case 'decline': case 'complete': {
       const r = requestsById.get(values.id);
       if (!r) errors.general = 'This request is no longer available.';
-      else if (type === 'approve' && (state.role !== 'Owner' || r.status !== 'Awaiting Owner')) errors.general = 'Only the Owner can approve a request that is awaiting approval.';
+      else if (type === 'approve' && (state.role !== 'Owner' || !['Awaiting Owner', 'Declined'].includes(r.status))) errors.general = 'Only the Owner can approve a request that is awaiting approval.';
+      else if (type === 'decline' && (state.role !== 'Owner' || r.status !== 'Awaiting Owner')) errors.general = 'Only the Owner can decline a request that is awaiting approval.';
       else if (type === 'complete' && (!r.mine || r.status !== 'Approved')) errors.general = 'Only the member who asked can complete an approved request.';
       break;
     }
@@ -538,6 +539,11 @@ async function submit(state, type, values) {
         return r;
       }
       case 'approve': return client.approveRequest(L, requestsById.get(values.id));
+      case 'decline': {
+        await client.declineRequest(L, requestsById.get(values.id));
+        notice = 'Declined. Members and the agent see the request as declined; nothing was sent.';
+        return;
+      }
       case 'complete': return client.completeRequest(L, requestsById.get(values.id));
       case 'attest': return client.ledgerAttest(L, usdg6(values.amount));
       case 'mandate': return client.createMandate(L, state.role, {

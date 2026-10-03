@@ -569,15 +569,19 @@ export function createClient({ publicClient, walletClient = null, address = null
   async function ledgerRequests(ledger) {
     if (!requests) return [];
     const rows = await requests.list(hexId(ledger.owner));
+    const opened = rows.map((row) => ({ row, r: openRequest(row.ciphertext, ledger.requestKey) })).filter(({ r }) => r?.v === 1);
+    // Declined (3.22): a sealed note in the mailbox, readable by members only. Anyone holding the treasury's
+    // keys (a member, the agent, a viewing key) can post one, so it is unverified: the Owner can still
+    // approve, and the Owner's proof on-chain wins over any decline.
+    const declined = new Set(opened.filter(({ r }) => r.kind === 'decline').map(({ r }) => String(r.intent)));
     const out = [];
-    for (const row of rows) {
-      const r = openRequest(row.ciphertext, ledger.requestKey);
-      if (!r || r.v !== 1) continue;
+    for (const { row, r } of opened) {
+      if (r.kind === 'decline') continue;
       const rebuilt = rebuildRequest(ledger, r, keys.sk, false, BigInt(Math.floor(Date.now() / 1000)));
       if (!rebuilt) continue;
       const spent = rebuilt.inputs.some((n) => n.status === 'spent');
       const approved = ledger.approved.has(r.intent);
-      const statusText = spent ? (approved ? 'Completed' : 'Expired') : approved ? 'Approved' : 'Awaiting Owner';
+      const statusText = spent ? (approved ? 'Completed' : 'Expired') : approved ? 'Approved' : declined.has(String(r.intent)) ? 'Declined' : 'Awaiting Owner';
       out.push({ ...r, id: row.id, status: statusText, mine: r.from === keys.owner });
     }
     return out;
@@ -590,6 +594,14 @@ export function createClient({ publicClient, walletClient = null, address = null
    */
   const setTransferLimit = (ledger, maxTransfers, periodSeconds) =>
     relayAuth({ ledger, config: ledger.config, action: AUTH.setLimit, newValue: BigInt(maxTransfers) | (BigInt(periodSeconds) << 64n) });
+
+  /** Owner: decline a request awaiting approval (3.22). Members then see it as Declined; nothing is sent. */
+  async function declineRequest(ledger, request) {
+    const L = current(ledger);
+    if (!L.roles?.includes('Owner')) throw new Error('Only the treasury Owner can decline a request.');
+    if (L.approved.has(request.intent)) throw new Error('This request is already approved.');
+    await postRequest(L, sealRequest({ v: 1, kind: 'decline', intent: request.intent }, L.requestKey));
+  }
 
   /** Owner: approve the exact transfer in a request. */
   const approveRequest = (ledger, request) => relayAuth({ ledger, config: ledger.config, action: AUTH.approve, newValue: request.intent });
@@ -944,7 +956,7 @@ export function createClient({ publicClient, walletClient = null, address = null
 
   return {
     sync, notes, positions, deposit, send, combine, credit, deskHealth,
-    ledgers, viewLedger, ledgerNotes, createLedger, updateLedger, ledgerAct, ledgerAttest, ledgerRequests, ledgerPayments, approveRequest, completeRequest, setTransferLimit,
+    ledgers, viewLedger, ledgerNotes, createLedger, updateLedger, ledgerAct, ledgerAttest, ledgerRequests, ledgerPayments, approveRequest, declineRequest, completeRequest, setTransferLimit,
     mandates, createMandate, manageMandate, payMandate, receipts, proveReceipt, rekeyLedger, rekeyPreview, movedTo,
     ledgerBalance: (ledger, asset, st = 'unspent') => balanceOf(ledgerNotes(ledger), big(asset), st),
     lend: (amount) => convert('lend', amount),
