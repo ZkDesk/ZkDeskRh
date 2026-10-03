@@ -10,6 +10,7 @@ import { ACTIONS, AUTH, authExtHash, buildAttest, buildLedger, buildRoleAuth, le
 import { ALLOW_SLOTS, allowHash, mandateCommit, MAX_AMOUNT, policyHash, randomField } from './notes.js';
 import { buildTransact } from './transact.js';
 import { paymentRows } from './report.js';
+import { carriedMandate, cutBytes, liveMandate, moveSummary, nextMove, rekeySalt, rekeySecret } from './rekey.js';
 import { buildPosition, debtOf, maxDebt, valueOf } from './position.js';
 import { balanceOf, freeSlot, ledgerFromSecret, ledgerMandates, myLedgers, myNotes, myPositions, myReceipts, syncPool } from './wallet.js';
 
@@ -327,6 +328,16 @@ export function createClient({ publicClient, walletClient = null, address = null
   const limitedPayerAlone = (c) => {
     if (payerScoped(c) && c.payer !== c.owner && c.payer === c.treasurer) throw new Error("A Payer with limits cannot also be the Treasurer: the Treasurer's payments are outside the Payer's limits.");
   };
+  // One key share per member key; a second address for the same key must carry the same encryption key
+  // (otherwise that key's share, maybe yours, would go to someone else).
+  const sameBytes = (a, b) => a?.length === b?.length && a.every((x, i) => x === b[i]);
+  function sameKeys(members) {
+    const seen = new Map();
+    for (const m of members) {
+      if (seen.has(m.owner) && !sameBytes(seen.get(m.owner).encPub, m.encPub)) throw new Error('Two of these addresses have the same key but different encryption keys. Check each member address.');
+      seen.set(m.owner, m);
+    }
+  }
   const shareTo = (lsk, members) => [...new Map(members.map((m) => [m.owner, m])).values()].map((m) => encryptKeyShare(lsk, m.encPub));
 
   /**
@@ -365,11 +376,12 @@ export function createClient({ publicClient, walletClient = null, address = null
    * default yourself). allocCap / dualThreshold in USDG base units. scope: the Payer's allow list and
    * budget (payerScope). Returns the ledger id.
    */
-  async function createLedger({ name, treasurer, payer, auditor, allocCap, dualThreshold, scope }) {
+  const createLedger = (args) => createLedgerWith(randomField(), args);
+  async function createLedgerWith(lsk, { name, treasurer, payer, auditor, allocCap, dualThreshold, scope }) {
     await sync();
     const self = { owner: keys.owner, encPub: keys.encPub };
     const members = [self, treasurer ?? self, payer ?? self, auditor ?? self];
-    const lsk = randomField();
+    sameKeys(members);
     const ledger = ledgerKeys(lsk);
     const config = { name, owner: self.owner, treasurer: members[1].owner, payer: members[2].owner, auditor: members[3].owner, rolesSalt: randomField(), allocCap, dualThreshold, policySalt: randomField(), ...(await payerScope(scope)) };
     limitedPayerAlone(config);
@@ -384,6 +396,7 @@ export function createClient({ publicClient, walletClient = null, address = null
    * `until` keeps the current end). Either change resets what the Payer has spent in the current window.
    */
   async function updateLedger(ledger, { treasurer, payer, auditor, allocCap = ledger.config.allocCap, dualThreshold = ledger.config.dualThreshold, scope }) {
+    sameKeys([{ owner: keys.owner, encPub: keys.encPub }, treasurer, payer, auditor].filter(Boolean)); // before anything is sent
     let current = ledger.config;
     // The policy first, then the roles: a new Payer (an agent) never holds the role before its scope
     // and threshold apply. An unchanged scope keeps its window start; any policy or roles change still
@@ -453,7 +466,7 @@ export function createClient({ publicClient, walletClient = null, address = null
    */
   const viewLedger = (lsk) => ledgerFromSecret(state, BigInt(lsk));
 
-  async function ledgerActOnce(ledger, role, { action, amount, asset = deployment.usdg, to = null, recipient = null }, memo = {}) {
+  async function ledgerActOnce(ledger, role, { action, amount, asset = deployment.usdg, to = null, recipient = null, record = true }, memo = {}) {
     await sync();
     ledger = current(ledger);
     // A retry never pays twice: if the notes an earlier attempt spent are gone, that attempt (or another
@@ -479,7 +492,7 @@ export function createClient({ publicClient, walletClient = null, address = null
       const [o1, o2] = draft.outputs;
       // A transfer's change note also records who was paid, for the members' spending report (v3.18).
       // With the payment note's blinding, members can check the recipient against its on-chain commitment.
-      const paidTo = action === 'allocate' || action === 'deallocate' ? undefined : to ? { owner: to.owner, encPub: to.encPub, blinding: o2.blinding } : recipient ?? undefined;
+      const paidTo = action === 'allocate' || action === 'deallocate' ? undefined : !record ? null : to ? { owner: to.owner, encPub: to.encPub, blinding: o2.blinding } : recipient ?? undefined;
       memo.ext = { ...empty, encryptedOutput1: encryptNote(o1, ledger.encPub, paidTo), encryptedOutput2: encryptNote(o2, to?.encPub ?? ledger.encPub) };
       memo.blindings = { outputs: draft.outputs.map((o) => o.blinding), dummies: draft.dummies };
       memo.inputs = args.inputs.map((n) => n.commitment);
@@ -755,6 +768,154 @@ export function createClient({ publicClient, walletClient = null, address = null
     });
   }
 
+  // ---- Moving a treasury to new keys (3.21) ----
+  // The new treasury's keys come from your own key and the old treasury's id (rekey.js): they never leave
+  // this client, and running the move again continues it.
+  const rekeyKeys = (ledger) => ledgerKeys(rekeySecret(keys.sk, ledger.owner));
+  // The Payer's allow list as payerScope takes it (zkd: entries carry their encryption key).
+  const allowOf = (c) => (c.allow ?? []).flatMap((x, i) => (!x ? [] : [c.allowPubs?.[i] ? { owner: x, encPub: c.allowPubs[i] } : x < 1n << 160n ? getAddress('0x' + x.toString(16).padStart(40, '0')) : { owner: x, encPub: null }]));
+  // Only a treasury this client knows and you own (never an object the caller made up).
+  function ownedLedger(ledger) {
+    const L = ledgers().find((l) => l.owner === BigInt(ledger?.owner ?? -1));
+    if (!L?.roles.includes('Owner')) throw new Error('Only the treasury Owner can move it to new keys.');
+    return L;
+  }
+  // What one relayed step costs (its voucher), in USDG base units; a USDG note below it is not worth moving.
+  const stepCost = async () => { const info = await relayInfo(); return quote(info, deployment.usdg) * BigInt(info.voucherPrice ?? 2); };
+  const dustBelow = (cost) => (asset) => (asset === big(deployment.usdg) ? cost : 1n);
+  const limitOf = async (id) => { const [max, period] = await read(deployment.ledger, abis.ledger, 'limits', [id]); return { max: BigInt(max), period: BigInt(period) }; };
+
+  /** The treasury `ledger` moved to (its id), when you own it and the move has started; else null. */
+  function movedTo(ledger) {
+    const L = ledgers().find((l) => l.owner === BigInt(ledger?.owner ?? -1));
+    if (!L?.roles.includes('Owner')) return null;
+    const id = rekeyKeys(L).owner;
+    return ledgers().some((l) => l.owner === id) ? id : null;
+  }
+
+  /**
+   * What moving `ledger` involves now, for the review (Owner only): per asset moves and dust left behind,
+   * notes still clearing, the mandates that can still pay (each one carried only if you choose it), the
+   * governance steps left, what one step costs and your personal USDG balance that pays for them.
+   */
+  async function rekeyPreview(ledger) {
+    const L = ownedLedger(ledger);
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    const cost = await stepCost().catch(() => null);
+    const target = movedTo(L);
+    const nextL = target && ledgers().find((l) => l.owner === target);
+    const [was, there] = await Promise.all([limitOf(L.owner), target ? limitOf(target) : null]);
+    const c = L.config;
+    return {
+      ...moveSummary(ledgerNotes(L), { minOf: dustBelow(cost ?? 0n) }), movedTo: target,
+      mandates: mandates(L).filter((m) => liveMandate(m, now)).map((m) => ({
+        commit: m.commit, label: m.label, recipient: m.recipient, recipientEncPub: m.recipientEncPub, asset: m.asset, cap: m.cap, period: m.period,
+        paused: m.status === 'Paused', carryable: Boolean(carriedMandate(m, now, 0n)),
+        ...(() => {
+          const copy = nextL && mandates(nextL).find((x) => x.salt === rekeySalt(keys.sk, L.owner, m.commit));
+          return { continued: Boolean(copy), needsPause: m.status === 'Paused' && copy?.status === 'Active' };
+        })(),
+      })),
+      governance: (c.treasurer !== keys.owner || c.payer !== keys.owner ? 1 : 0) + (target ? 0 : 1) + (was.max ? (there?.max ? 1 : 2) : 0),
+      stepCost: cost, personal: balanceOf(notes(), big(deployment.usdg), 'unspent'),
+      agentEnd: c.payerUntil ?? 0n, payer: c.payer === keys.owner ? null : c.payer,
+    };
+  }
+
+  /**
+   * Owner: moves `ledger` to a new treasury with new keys and the members you name ({owner, encPub};
+   * omitted or your own = you), with the same policy, Payer limits and payments-without-approval limit.
+   * until: the new agent's access end (unix seconds, 0 = none; omitted = the current one). carry: the
+   * commits of the mandates to continue there (the others are revoked; none by default, so a mandate a
+   * leaked key planted never follows). maxMoves: at most this many transfers in this run (what you
+   * reviewed). Steps, each skipped when already done: the old roles back to you (first, so a leaked key
+   * can do nothing more there), the new treasury, its limit, lifting the old limit (the moves count toward
+   * it), the mandates (before any funds, so a paused one is never payable), then every note worth moving,
+   * without recording the new treasury in the old one's notes. Returns the new treasury's id. Run it again
+   * to continue an interrupted move or to move later arrivals.
+   */
+  async function rekeyLedger(ledger, { treasurer, payer, auditor, until, carry = [], maxMoves = 250 } = {}) {
+    await sync();
+    let old = ownedLedger(ledger);
+    const self = { owner: keys.owner, encPub: keys.encPub };
+    [treasurer, payer, auditor] = [treasurer, payer, auditor].map((m) => (m && m.owner !== keys.owner ? m : undefined));
+    const target = rekeyKeys(old);
+    const now = await chainTime();
+    const c = old.config;
+    let next = ledgers().find((l) => l.owner === target.owner);
+    let end = 0n;
+    if (!next) {
+      // Checked before anything is sent.
+      end = payer ? (until === undefined ? c.payerUntil ?? 0n : BigInt(until)) : 0n;
+      if (end !== 0n && end <= now) throw new Error("The agent's access end has passed. Choose when the new agent's access ends.");
+      limitedPayerAlone({ ...c, owner: keys.owner, treasurer: (treasurer ?? self).owner, payer: (payer ?? self).owner, payerUntil: end });
+      sameKeys([self, treasurer, payer, auditor].filter(Boolean));
+    }
+
+    if (old.config.treasurer !== keys.owner || old.config.payer !== keys.owner) {
+      status("Taking back the old treasury's roles…");
+      await updateLedger(old, { treasurer: self, payer: self });
+      await sync();
+      old = ownedLedger(old);
+    }
+
+    if (!next) {
+      status('Creating the new treasury…');
+      await createLedgerWith(target.lsk, {
+        name: `${cutBytes(c.name.replace(/ \(new keys\)$/, ''), 20)} (new keys)`, treasurer, payer, auditor, allocCap: c.allocCap, dualThreshold: c.dualThreshold,
+        scope: payer ? { allowTo: allowOf(c), budget: c.budget ?? 0n, budgetPeriod: c.budget ? c.budgetPeriod ?? 0n : 0n, until: end } : {},
+      });
+      await sync();
+      next = ledgers().find((l) => l.owner === target.owner);
+      if (!next) throw new Error('The new treasury was created but cannot be read yet. Run Move to new keys again in a moment to continue.');
+    }
+
+    const was = await limitOf(old.owner);
+    if (was.max) {
+      if (!(await limitOf(next.owner)).max) {
+        status('Setting the payment limit on the new treasury…');
+        await setTransferLimit(next, was.max, was.period);
+      }
+      status('Lifting the old payment limit for the move…');
+      await setTransferLimit(old, 0n, 0n);
+    }
+
+    const chosen = new Set(carry.map((x) => BigInt(x)));
+    const copyOf = (m) => mandates(next).find((x) => x.salt === rekeySalt(keys.sk, old.owner, m.commit));
+    for (const m of mandates(old).filter((x) => liveMandate(x, now))) {
+      let copy = copyOf(m);
+      const carried = !copy && chosen.has(m.commit) ? carriedMandate(m, now, rekeySalt(keys.sk, old.owner, m.commit)) : null;
+      if (carried) {
+        status(`Carrying over the mandate${m.label ? ` "${m.label}"` : ''}…`);
+        await relayMandateAuth(next, 'Owner', MANDATE_ACTIONS.commit, carried, encryptMandate(carried, next.encPub));
+        await sync();
+        copy = copyOf(m) ?? { ...carried, status: 'Active' };
+      }
+      if (copy && m.status === 'Paused' && copy.status === 'Active') await relayMandateAuth(next, 'Owner', MANDATE_ACTIONS.pause, copy);
+      status('Revoking the old mandate…');
+      await relayMandateAuth(old, 'Owner', MANDATE_ACTIONS.revoke, m);
+    }
+
+    const minOf = dustBelow(await stepCost());
+    const failed = new Map();
+    const planned = Math.min(moveSummary(ledgerNotes(old), { minOf }).txs, maxMoves);
+    for (let done = 0; done < maxMoves; ) {
+      await sync();
+      old = ownedLedger(old);
+      const move = nextMove(ledgerNotes(old), { skip: new Set(failed.keys()), minOf });
+      if (!move) break;
+      status(`Moving funds to the new treasury (${done + 1} of ${Math.max(planned, done + 1)})…`);
+      try {
+        await ledgerAct(old, 'Owner', { action: 'transfer', asset: '0x' + move.asset.toString(16).padStart(40, '0'), amount: move.amount, to: { owner: next.owner, encPub: next.encPub }, record: false });
+        done++;
+      } catch (error) {
+        failed.set(move.asset, error?.message ?? String(error));
+      }
+    }
+    if (failed.size) throw new Error(`Some funds could not be moved yet (${[...failed.values()][0]}). Run Move to new keys again to retry; the rest has moved.`);
+    return next.owner;
+  }
+
   /** Payments you received under mandates (personal notes). */
   const receipts = () => myReceipts(state, notes());
 
@@ -784,7 +945,7 @@ export function createClient({ publicClient, walletClient = null, address = null
   return {
     sync, notes, positions, deposit, send, combine, credit, deskHealth,
     ledgers, viewLedger, ledgerNotes, createLedger, updateLedger, ledgerAct, ledgerAttest, ledgerRequests, ledgerPayments, approveRequest, completeRequest, setTransferLimit,
-    mandates, createMandate, manageMandate, payMandate, receipts, proveReceipt,
+    mandates, createMandate, manageMandate, payMandate, receipts, proveReceipt, rekeyLedger, rekeyPreview, movedTo,
     ledgerBalance: (ledger, asset, st = 'unspent') => balanceOf(ledgerNotes(ledger), big(asset), st),
     lend: (amount) => convert('lend', amount),
     redeem: (shares) => convert('redeem', shares),

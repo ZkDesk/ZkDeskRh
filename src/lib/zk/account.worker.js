@@ -80,6 +80,7 @@ const api = {
       mandates: L ? client.mandates(L) : [],
       requests: L ? await client.ledgerRequests(L).catch(() => []) : [],
       payments: L ? await client.ledgerPayments(L).catch(() => null) : null,
+      rekey: L?.roles.includes('Owner') ? await client.rekeyPreview(L).catch(() => null) : null,
     };
   },
   async sync() {

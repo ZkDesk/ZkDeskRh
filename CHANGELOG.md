@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.21.0 (October 2026)
+
+- **Move a treasury to new keys:** *Settings → Move to new keys* (Owner only). Use it when an agent's key may have leaked, or when you remove an agent or member. Before, a removed agent lost its role but could still read the treasury. Now you move everything to a fresh treasury that only the members you name can open. Someone holding only the old keys keeps the history up to the move, sees the old treasury empty out, and cannot read the new treasury.
+  - **How it works:** a treasury's keys are its identity, so new keys mean a new treasury, and the funds move across as ordinary private transfers. No contract change.
+  - **What the app does, in order:**
+    - gives the old treasury's Treasurer and Payer roles back to you, so a leaked key can do nothing more there;
+    - creates the new treasury with the same approval threshold, allocation cap and payments-without-approval limit, plus, if you name an agent, its recipients and budget with the access end you choose (the ZKdesk scheduler stays the Payer where it was);
+    - continues only the mandates you tick (none by default, so one a leaked key planted never follows), from the period after the last one paid, and revokes all the old ones;
+    - moves every note (USDG, vault shares, stock tokens). The move doesn't record the new treasury in the old one's notes, and leaves behind any USDG note worth less than the fee to move it.
+  - **It can resume:** the new keys are derived from your own key and the old treasury, so the agent can't work them out. If the move stops halfway, run it again and it continues. Funds that reach the old address later appear there with *Move remaining funds*.
+  - **Not carried over:** pending approval requests (the agent asks again), solvency statements, and the agent's spending for the current period (its budget starts from zero).
+  - **Fees:** each step pays a relay fee from your personal balance. The review shows the total, and checks your balance covers it, before you confirm.
+  - **Afterwards:** share the new `zkd:` address and tell your other members, point the agent's `ZKDESK_TREASURIES` at the new treasury if you set it, and copy the new viewing key for the alert watcher. Named the wrong member? Move the new treasury again.
+
 ## 3.20.0 (October 2026)
 
 - **Agent access that expires (contract set v3.5):** when you add or change a treasury's agent, choose when its access ends: in 1 hour, 24 hours, 7 days, 30 days, or on a date. After that time, the agent can't make any payment, including one you approved, and can't pay mandates. The proofs enforce this, so it stops even if you are offline, the agent's key leaks or its SDK is modified.

@@ -16,6 +16,7 @@ import { relay } from '../../lib/zk/transport.js';
 import { healthBps } from '../../lib/zk/desk.js';
 import { currentPeriod, KINDS, PERIODS } from '../../lib/zk/mandate.js';
 import { payerEnded, payerScoped, payerSpent } from '../../lib/zk/ledger.js';
+import { rekeyStepCount } from '../../lib/zk/rekey-steps.js';
 import { periodKey } from '../model.js';
 import { initialState } from '../model.js';
 
@@ -53,6 +54,19 @@ function paymentsView(report) {
     spent: Number(report.period.spent) / 1e6, budget: report.period.budget ? Number(report.period.budget) / 1e6 : null,
   };
 }
+// Moving to new keys (3.21, Owner only): what is left to move, the mandates you may carry, and fees.
+function rekeyView(r) {
+  return {
+    movedTo: r.movedTo ? hexId(r.movedTo) : null, moves: r.moves.map((x) => ({ ...amountIn(x.asset, x.amount), txs: x.txs })),
+    txs: r.txs, dust: r.dust, pending: r.pending, governance: r.governance, stepCost: r.stepCost === null ? null : usd(r.stepCost), personal: usd(r.personal),
+    mandates: r.mandates.map((m) => ({
+      id: hexId(m.commit), label: m.label, to: zkAddress({ owner: m.recipient, encPub: m.recipientEncPub }), cap: usd(m.cap),
+      every: m.period ? `every ${Number(m.period) / 86_400} days` : 'once', paused: m.paused, carryable: m.carryable,
+      toAgent: r.payer !== null && m.recipient === r.payer, continued: m.continued, needsPause: m.needsPause,
+    })),
+    agentKey: r.payer ? hexId(r.payer) : null, schedulerAddress: deployment.scheduler ?? null,
+  };
+}
 function payerScopeView(L, t) {
   const c = L.config;
   if (!payerScoped(c)) return null;
@@ -71,6 +85,12 @@ const SYMBOLS = Object.keys(stocks); // testnet tSPY… / mainnet SPY…
 const T = MAINNET ? '' : 't'; // deployment symbol prefix
 export const plain = (symbol) => (MAINNET ? symbol : symbol.replace(/^t/, '')); // tSPY -> SPY (dashboard class names)
 const tokenOf = (name) => (name === 'USDG' ? deployment.usdg : stocks[`${T}${name}`]?.token);
+// A raw amount of a treasury asset, as shown: USDG, vault shares (12 decimals) or stock tokens (18).
+function amountIn(asset, raw) {
+  if (asset === BigInt(deployment.usdg)) return { amount: usd(raw), symbol: USD_SYMBOL };
+  if (deployment.vault && asset === BigInt(deployment.vault)) return { amount: Number(raw) / 1e12, symbol: 'vault shares' };
+  return { amount: Number(raw) / 1e18, symbol: SYMBOLS.find((x) => BigInt(stocks[x].token) === asset) ?? 'tokens' };
+}
 
 export { parseZkAddress, zkAddress };
 
@@ -235,11 +255,8 @@ async function refresh() {
       roles, workspace: L ? hexId(L.owner) : 'personal', workspaceName: L ? L.name : null,
       workspaces: ledgers.map((l) => ({ id: hexId(l.owner), name: l.name, roles: l.roles })),
       requests: requests.filter((r) => r.status !== 'Expired').map((r) => {
-        const usdgAsset = r.asset === BigInt(deployment.usdg);
-        const vaultAsset = deployment.vault && r.asset === BigInt(deployment.vault);
         return {
-          id: r.id, amount: usdgAsset ? usd(r.amount) : Number(r.amount) / (vaultAsset ? 1e12 : 1e18),
-          symbol: usdgAsset ? USD_SYMBOL : vaultAsset ? 'vault shares' : SYMBOLS.find((x) => BigInt(stocks[x].token) === r.asset) ?? 'tokens',
+          id: r.id, ...amountIn(r.asset, r.amount),
           status: r.status, mine: r.mine, role: r.role, at: new Date(r.at).toISOString(),
           to: r.to ? zkAddress(r.to).slice(0, 18) + '…' : `${r.recipient.slice(0, 8)}…${r.recipient.slice(-4)}`,
           // What the approval binds, in full: a 0x address, or the owner key of a zkd: address (v3.19).
@@ -253,7 +270,9 @@ async function refresh() {
         // Who holds the Payer role: the Owner's own key (no agent), the ZKdesk scheduler, or another key (an agent or person).
         payer: L.config.payer === L.config.owner ? 'owner' : parseZkAddress(deployment.scheduler ?? '')?.owner === L.config.payer ? 'scheduler' : `0x${L.config.payer.toString(16).padStart(64, '0').slice(0, 8)}…`,
         limit: limit && limit[0] ? { max: Number(limit[0]), days: Number(limit[1]) / 86_400, used: t < Number(limit[2]) + Number(limit[1]) ? Number(limit[3]) : 0 } : null, allocCap: usd(L.config.allocCap), dualThreshold: usd(L.config.dualThreshold), attested: L.attested && { epoch: L.attested.epoch, liabilities: usd(L.attested.liabilities) },
-        scope: payerScopeView(L, t), payments: paymentsView(snap.payments) },
+        scope: payerScopeView(L, t), payments: paymentsView(snap.payments),
+        // Moving to new keys (3.21, Owner only): what is left to move, and where it went.
+        rekey: snap.rekey && rekeyView(snap.rekey) },
       pending: usd(balance(deployment.usdg, 'pending')), stockBalances, shares: shares.toString(),
       // Personal USDG notes worth merging (each pays more than one merge fee): client.combine.
       combinable: L ? 0 : notes.filter((n) => n.status === 'unspent' && n.asset === BigInt(deployment.usdg) && n.amount > m.fee).length,
@@ -305,7 +324,7 @@ function validate(state, type, values) {
   const errors = {};
   const m = state.meta;
   const amount = Number(values.amount);
-  const needAmount = !['close', 'open', 'ledger', 'roles', 'mandate', 'pause', 'resume', 'revoke', 'approve', 'complete', 'combine', 'agent', 'unagent'].includes(type);
+  const needAmount = !['close', 'open', 'ledger', 'roles', 'mandate', 'pause', 'resume', 'revoke', 'approve', 'complete', 'combine', 'agent', 'unagent', 'rekey'].includes(type);
   if (needAmount && !(Number.isFinite(amount) && amount > 0 && amount <= 1e9)) errors.amount = 'Enter an amount greater than zero.';
   const position = state.positions.find((p) => p.id === values.id);
   const ledger = m.ledger;
@@ -355,6 +374,22 @@ function validate(state, type, values) {
     case 'unagent':
       if (!ledger || state.role !== 'Owner') errors.general = 'Only the treasury Owner can remove the agent.';
       break;
+    case 'rekey': {
+      const r = ledger?.rekey;
+      if (!ledger || !m.roles?.includes('Owner') || !r) { errors.general = 'Only the treasury Owner can move it to new keys.'; break; }
+      if (!r.movedTo) {
+        for (const k of ['treasurer', 'payer', 'auditor']) zkOrBlank(k);
+        if (!errors.payer && values.payer?.trim()) {
+          if (values.ends === '') errors.ends = "Choose when the new agent's access ends.";
+          else if (accessEnd(values) === null) errors.endsOn = 'Pick a date and time at least a minute from now.';
+        }
+      }
+      if (r.movedTo && !r.txs && !r.mandates.length && !r.governance) { errors.general = r.pending ? 'A deposit is still clearing the screening standby: move it once it has cleared.' : 'Nothing is left to move.'; break; }
+      if (r.stepCost === null) { errors.general = 'The relay fee could not be read right now. Try again in a moment.'; break; }
+      const cost = rekeyStepCount(r, values.carry) * r.stepCost;
+      if (cost > r.personal + 1e-9) errors.general = `The relay fees (about ${cost.toFixed(2)} ${USD_SYMBOL}) are more than your personal balance (${r.personal.toFixed(2)} ${USD_SYMBOL}). Add funds to your personal account first.`;
+      break;
+    }
     case 'ledger': case 'roles':
       if (type === 'ledger' && !values.name?.trim()) errors.name = 'Name this treasury.';
       if (type === 'roles' && state.role !== 'Owner') errors.general = 'Only the Owner can change roles or policy.';
@@ -433,6 +468,27 @@ async function submit(state, type, values) {
   if (type === 'deposit' && session.passkey) await linkWallet();
   const L = activeLedger();
   const member = (v) => (v?.trim() ? parseZkAddress(v) : undefined);
+  if (type === 'rekey' && L) {
+    const r = session.snap?.rekey;
+    const from = session.workspace;
+    // ends 'keep': the current end (until omitted); a payer only with an agent named.
+    const until = values.payer?.trim() && values.ends !== 'keep' ? accessEnd(values) : undefined;
+    if (until === null) throw new Error('The access end you picked has passed. Pick a new one.');
+    try {
+      const id = await client.rekeyLedger(L, {
+        treasurer: member(values.treasurer), payer: member(values.payer), auditor: member(values.auditor), until,
+        carry: values.carry ?? [], maxMoves: r?.txs ?? 250,
+      });
+      session.last = null;
+      if (session.workspace === from) session.workspace = id; // unless you switched meanwhile
+      notice = 'Moved to new keys. Share the new treasury address; the old treasury keeps its history.';
+    } catch (error) {
+      await refresh().catch(() => {});
+      const message = error?.message ?? String(error);
+      throw new Error(/Move to new keys again/.test(message) ? message : `${message} Nothing is lost: open Move to new keys again to continue from here.`);
+    }
+    return;
+  }
   if (type === 'ledger') {
     session.last = null;
     session.workspace = await client.createLedger({ name: values.name.trim(), treasurer: member(values.treasurer), payer: member(values.payer), auditor: member(values.auditor), allocCap: parseUnits(String(values.cap), 6), dualThreshold: parseUnits(String(values.threshold), 6) });

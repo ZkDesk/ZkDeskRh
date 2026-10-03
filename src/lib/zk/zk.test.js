@@ -12,6 +12,7 @@ import { buildMandateAuth, MANDATE_ACTIONS } from './mandate.js';
 import { allowHash, budgetCommit, budgetPad, policyHash } from './notes.js';
 import { NOTE_MEMO_CIPHERTEXT_BYTES } from './crypto.js';
 import { LeanIMT } from '@zk-kit/lean-imt';
+import { carriedMandate, cutBytes, moveSummary, nextMove, rekeySalt, rekeySecret, rekeyStepCount } from './rekey.js';
 
 // Same circomlib vector as circuits/lib and contracts/test.
 assert.equal(hash2(1n, 2n), 0x115cc0f5e7d690413df64c6b9662e9cf2a3617f2743245519e19607a4417189an);
@@ -296,4 +297,49 @@ assert.notEqual(lk.owner, ownerPk(0xabcn), 'ledger notes live outside the person
   assert.equal(requestShowsItsTransfer({ amount: 0n, recipient: vendor, ext: { recipient: vendor, extAmount: 0n } }), false);
   assert.equal(requestShowsItsTransfer({ amount: 'x', recipient: vendor, ext: {} }), false, 'malformed');
 }
-console.log('zk primitives passed: poseidon vector, public amount, key derivation (signature and passkey, recovery words), note encryption, grumpkin + operator encryption, liquidation replay, health witness, ledger key shares/config/roles, Payer scope and spending accumulator, Payer access end.');
+// 3.21 moving a treasury to new keys: the new secret is the Owner's to derive (stable, per treasury),
+// mandates continue after their last paid period, and moves take the two largest notes of an asset.
+{
+  assert.equal(rekeySecret(5n, 77n), rekeySecret(5n, 77n), 'a re-run finds the same treasury');
+  assert.notEqual(rekeySecret(5n, 77n), rekeySecret(5n, 78n));
+  assert.notEqual(rekeySecret(5n, 77n), rekeySecret(6n, 77n), 'another key (the old secret holder) gets another one');
+  assert.notEqual(rekeySalt(5n, 77n, 1n), rekeySalt(5n, 77n, 2n));
+  const DAY = 86_400n;
+  const m = (o) => ({ kind: 0n, recipient: 9n, recipientEncPub: new Uint8Array(32), asset: 1n, cap: 10n, period: 30n * DAY, start: 1000n, expiry: 1000n + 365n * DAY, reference: 0n, label: 'rent', status: 'Active', paid: new Set(), ...o });
+  const now = 1000n + 70n * DAY; // period 2
+  assert.equal(carriedMandate(m({}), now, 3n).start, 1000n, 'nothing paid: every period stays payable');
+  assert.equal(carriedMandate(m({ paid: new Set([0n, 1n]) }), now, 3n).start, 1000n + 60n * DAY, 'after the last paid period');
+  assert.equal(carriedMandate(m({ paid: new Set([0n, 2n]) }), now, 3n).start, 1000n + 90n * DAY, 'never a paid period twice');
+  assert.equal(carriedMandate(m({}), now, 3n).salt, 3n);
+  assert.equal(carriedMandate(m({ status: 'Revoked' }), now, 3n), null);
+  assert.equal(carriedMandate(m({ expiry: now }), now, 3n), null, 'expired');
+  assert.equal(carriedMandate(m({ expiry: 1000n + 61n * DAY, paid: new Set([0n, 1n, 2n]) }), now, 3n), null, 'no period left');
+  assert.equal(carriedMandate(m({ kind: 1n, period: 0n, paid: new Set([0n]) }), now, 3n), null, 'a paid invoice');
+  assert.equal(carriedMandate(m({ kind: 1n, period: 0n }), now, 3n).start, 1000n, 'an unpaid invoice');
+  assert.equal(carriedMandate(m({ status: 'Paused' }), now, 3n).label, 'rent', 'paused ones are carried (and paused again)');
+  const notes = [{ asset: 1n, amount: 5n, status: 'unspent' }, { asset: 1n, amount: 9n, status: 'unspent' }, { asset: 1n, amount: 7n, status: 'unspent' },
+    { asset: 2n, amount: 3n, status: 'unspent' }, { asset: 1n, amount: 0n, status: 'unspent' }, { asset: 1n, amount: 4n, status: 'pending' }, { asset: 1n, amount: 8n, status: 'spent' }];
+  const mv = nextMove(notes);
+  assert.deepEqual([mv.asset, mv.amount, mv.inputs.length], [1n, 16n, 2], 'the two largest unspent notes of one asset');
+  assert.equal(nextMove(notes.filter((n) => n.status !== 'unspent')), null);
+  assert.equal(nextMove(notes, { skip: new Set([1n]) }).asset, 2n, 'an asset that failed does not block the others');
+  const minOf = (asset) => (asset === 1n ? 6n : 1n); // a USDG-like asset whose fee is 6
+  assert.deepEqual(nextMove(notes, { minOf }).inputs.map((n) => n.amount), [9n, 7n], 'dust below the fee stays');
+  const sum = moveSummary(notes);
+  assert.deepEqual(sum.moves.map((x) => [x.asset, x.amount, x.txs]), [[1n, 21n, 2], [2n, 3n, 1]]);
+  assert.deepEqual([sum.txs, sum.pending, sum.dust], [3, 1, 0]);
+  const lean = moveSummary(notes, { minOf });
+  assert.deepEqual([lean.txs, lean.dust], [2, 1], 'the 5 is left behind and reported');
+  const pv = { governance: 4, txs: 3, mandates: [{ id: 'a', paused: false, carryable: true }, { id: 'b', paused: true, carryable: true }, { id: 'c', paused: false, carryable: false }] };
+  assert.equal(rekeyStepCount(pv), 4 + 3 + 3, 'none carried by default: each live mandate is revoked');
+  assert.equal(rekeyStepCount(pv, ['a', 'b', 'c']), 4 + 3 + 2 + 3 + 1, 'carried: commit and revoke (+ pause)');
+  assert.equal(rekeyStepCount({ ...pv, mandates: [{ id: 'a', paused: false, carryable: true, continued: true }] }, []), 4 + 3 + 1, 'continued earlier: only the old one is revoked');
+  assert.equal(rekeyStepCount({ ...pv, mandates: [{ id: 'a', paused: true, carryable: true, continued: true, needsPause: true }] }, []), 4 + 3 + 2, 'and its copy still to pause');
+  // A move's change note: memo-sized like any treasury change note, with no memo.
+  const moved = encryptNote(note, a.encPub, null);
+  assert.equal((moved.length - 2) / 2, NOTE_MEMO_CIPHERTEXT_BYTES);
+  assert.deepEqual(decryptNote(moved, a.encSecret), note);
+  assert.equal(cutBytes('Trésorerie générale de Paris', 20), 'Trésorerie généra', '20 bytes (é takes two)');
+  assert.equal(new TextEncoder().encode(cutBytes('€€€€€€€€', 20)).length, 18, 'never half a character');
+}
+console.log('zk primitives passed: poseidon vector, public amount, key derivation (signature and passkey, recovery words), note encryption, grumpkin + operator encryption, liquidation replay, health witness, ledger key shares/config/roles, Payer scope and spending accumulator, Payer access end, moving to new keys.');

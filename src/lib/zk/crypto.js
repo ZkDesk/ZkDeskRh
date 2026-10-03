@@ -63,6 +63,8 @@ function open(fields, ciphertextHex, encSecret, { atLeast = false } = {}) {
  * blinding} (the payment note's) or a 0x address string. Returns 0x-hex ciphertext.
  */
 export function encryptNote(note, recipientEncPub, memo) {
+  // null: memo-sized with no memo (kind 0), so it looks like any treasury change note (3.21 moves).
+  if (memo === null) return seal(NOTE_MEMO_FIELDS, { ...note, memoKind: 0n, memoTo: 0n, memoPub: 0n, memoBlinding: 0n }, recipientEncPub);
   if (!memo) return seal(NOTE_FIELDS, note, recipientEncPub);
   const m = typeof memo === 'string'
     ? { memoKind: 2n, memoTo: BigInt(memo), memoPub: 0n, memoBlinding: 0n }
