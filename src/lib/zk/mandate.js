@@ -3,7 +3,7 @@
 import { encodeAbiParameters, keccak256 } from 'viem';
 import { allowHash, FIELD, mandateCommit, MAX_DEPTH, noteCommitment, nullifier, ownerPk, policyHash, pullNullifier, randomField, receiptLeaf } from './notes.js';
 import { inputPaths, pad, padInputs } from './transact.js';
-import { payerScoped, ROLES, rolePks, rolesOf, scopeOf } from './ledger.js';
+import { payerEnded, payerScoped, ROLES, rolePks, rolesOf, scopeOf } from './ledger.js';
 
 export const KINDS = ['Payroll', 'Invoice', 'Vendor'];
 export const PERIODS = { Monthly: 30n * 86_400n, Weekly: 7n * 86_400n, 'One-time': 0n };
@@ -41,7 +41,7 @@ export function buildMandateAuth({ ledger, sk, role, action, mandate, ciphertext
     throw new Error(`A cap above the ${Number(c.dualThreshold) / 1e6} tUSDG dual-control threshold needs the Owner.`);
   }
   if (check && action !== MANDATE_ACTIONS.pause && r === 2 && payerScoped(c)) {
-    throw new Error('The Payer of this treasury has an allow list or a budget, so it can only pause mandates; the Owner or Treasurer creates, resumes or revokes them.');
+    throw new Error('The Payer of this treasury has an allow list, a budget or an access end, so it can only pause mandates; the Owner or Treasurer creates, resumes or revokes them.');
   }
   const scope = scopeOf(c);
   const commit = mandateCommit(ledger.owner, mandate);
@@ -51,7 +51,7 @@ export function buildMandateAuth({ ledger, sk, role, action, mandate, ciphertext
     mandate_commit: str(commit), ext_data_hash: str(extHash), lsk: str(ledger.lsk), sk: str(sk), role: r,
     role_pks: rolePks(c).map(str), roles_salt: str(c.rolesSalt), alloc_cap: str(c.allocCap), dual_threshold: str(c.dualThreshold),
     allow_hash: str(allowHash(scope.allow)), budget: str(scope.budget), budget_period: str(scope.budgetPeriod), budget_start: str(scope.budgetStart),
-    policy_salt: str(c.policySalt), asset: str(mandate.asset), ...mandateWitness(mandate),
+    payer_until: str(scope.payerUntil), policy_salt: str(c.policySalt), asset: str(mandate.asset), ...mandateWitness(mandate),
   };
   return { witness, public: { ledgerId: ledger.owner, action, mandateCommit: commit }, commit };
 }
@@ -63,6 +63,9 @@ export function buildMandateAuth({ ledger, sk, role, action, mandate, ciphertext
 export function buildPull({ tree, ledger, sk, role, mandate, k, t, usdgAmount, mark = 0n, inputs, ext, blindings = {}, check = true }) {
   const r = check ? roleOf(ledger, sk, role) : ROLES.indexOf(role);
   if (check && usdgAmount > mandate.cap) throw new Error('This payment exceeds the mandate cap.');
+  if (check && r === 2 && payerEnded(ledger.config, t)) throw new Error(`The Payer's access to this treasury ended at ${new Date(Number(ledger.config.payerUntil) * 1000).toISOString()}. The Owner can extend it.`);
+  const c = ledger.config;
+  const scope = scopeOf(c);
   const raw = rawForUsdg(usdgAmount, mark);
   const id = ledger.owner;
   const ins = padInputs(inputs);
@@ -78,15 +81,18 @@ export function buildPull({ tree, ledger, sk, role, mandate, k, t, usdgAmount, m
   const paths = inputPaths(tree, ins);
   const root = tree.size ? tree.root : 0n;
   const pub = {
-    root, ledgerId: id, rolesCommit: rolesOf(ledger.config), mandateCommit: commit, asset: mandate.asset, mark, k, t,
+    root, ledgerId: id, rolesCommit: rolesOf(c), mandateCommit: commit, asset: mandate.asset, mark, k, t,
     pullNullifier: pullNullifier(commit, k), receiptLeaf: receiptLeaf(id, k, outputs[1].commitment), extDataHash: pullExtHash(ext),
-    inputNullifiers, outputCommitments: outputs.map((o) => o.commitment),
+    inputNullifiers, outputCommitments: outputs.map((o) => o.commitment), policyHash: policyHash(c),
   };
   const witness = {
     root: str(root), ledger_id: str(id), roles_commit: str(pub.rolesCommit), mandate_commit: str(commit), asset: str(mandate.asset),
     mark: str(mark), k: str(k), t: str(t), pull_nullifier: str(pub.pullNullifier), receipt_leaf: str(pub.receiptLeaf),
     ext_data_hash: str(pub.extDataHash), input_nullifiers: inputNullifiers.map(str), output_commitments: pub.outputCommitments.map(str),
-    lsk: str(ledger.lsk), sk: str(sk), role: r, role_pks: rolePks(ledger.config).map(str), roles_salt: str(ledger.config.rolesSalt),
+    policy_hash: str(pub.policyHash),
+    lsk: str(ledger.lsk), sk: str(sk), role: r, role_pks: rolePks(c).map(str), roles_salt: str(c.rolesSalt),
+    alloc_cap: str(c.allocCap), dual_threshold: str(c.dualThreshold), allow_hash: str(allowHash(scope.allow)), budget: str(scope.budget),
+    budget_period: str(scope.budgetPeriod), budget_start: str(scope.budgetStart), payer_until: str(scope.payerUntil), policy_salt: str(c.policySalt),
     ...mandateWitness(mandate), usdg_amount: str(usdgAmount), raw_amount: str(raw),
     in_amounts: ins.map((n) => str(n.amount)), in_blindings: ins.map((n) => str(n.blinding)),
     in_path_depths: paths.map((p) => p.depth), in_path_indices: paths.map((p) => str(p.index)), in_path_siblings: paths.map((p) => p.siblings.map(str)),

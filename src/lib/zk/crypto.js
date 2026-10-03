@@ -93,10 +93,10 @@ export const decryptPosition = (ciphertextHex, encSecret) => open(POSITION_FIELD
 // with the secret can prove and read. Both are posted on-chain by TreasuryLedger.
 const SHARE_FIELDS = [['lsk', 32]];
 // v3.4 Payer scope: allow list (owner keys / addresses, plus each private entry's encryption key so the
-// list round-trips as zkd: addresses), budget, its period and start.
+// list round-trips as zkd: addresses), budget, its period and start; v3.5 the Payer's access end.
 const ALLOW = [0, 1, 2, 3, 4, 5, 6, 7];
 const CONFIG_FIELDS = [['name', 32], ['owner', 32], ['treasurer', 32], ['payer', 32], ['auditor', 32], ['rolesSalt', 32], ['allocCap', 16], ['dualThreshold', 16], ['policySalt', 32],
-  ...ALLOW.flatMap((i) => [[`allow${i}`, 32], [`allowPub${i}`, 32]]), ['budget', 16], ['budgetPeriod', 8], ['budgetStart', 8]];
+  ...ALLOW.flatMap((i) => [[`allow${i}`, 32], [`allowPub${i}`, 32]]), ['budget', 16], ['budgetPeriod', 8], ['budgetStart', 8], ['payerUntil', 8]];
 export const KEY_SHARE_BYTES = OVERHEAD + size(SHARE_FIELDS);
 export const CONFIG_BYTES = OVERHEAD + size(CONFIG_FIELDS);
 export const encryptKeyShare = (lsk, memberEncPub) => seal(SHARE_FIELDS, { lsk }, memberEncPub);
@@ -104,7 +104,7 @@ export const decryptKeyShare = (ciphertextHex, encSecret) => open(SHARE_FIELDS, 
 const nameToBig = (name) => BigInt('0x' + (bytesToHex(enc.encode(name).slice(0, 32)) || '0'));
 const bigToName = (x) => { const h = x.toString(16); return new TextDecoder().decode(hexToBytes(h.length % 2 ? `0${h}` : h)); };
 export const encryptConfig = (config, ledgerEncPub) => seal(CONFIG_FIELDS, {
-  budget: 0n, budgetPeriod: 0n, budgetStart: 0n, ...config, name: nameToBig(config.name),
+  budget: 0n, budgetPeriod: 0n, budgetStart: 0n, payerUntil: 0n, ...config, name: nameToBig(config.name),
   ...Object.fromEntries(ALLOW.flatMap((i) => [[`allow${i}`, config.allow?.[i] ?? 0n], [`allowPub${i}`, config.allowPubs?.[i] ? bytesToBig(config.allowPubs[i]) : 0n]])),
 }, ledgerEncPub);
 export function decryptConfig(ciphertextHex, ledgerEncSecret) {

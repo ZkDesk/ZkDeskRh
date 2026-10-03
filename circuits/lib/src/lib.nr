@@ -1,6 +1,6 @@
 // Shared ZKDesk note primitives. Must stay byte-identical with src/lib/zk/notes.js
 // and the on-chain PoseidonT3 (circomlib-compatible Poseidon over bn254).
-use poseidon::poseidon::bn254::{hash_11, hash_2, hash_3, hash_4, hash_5, hash_6, hash_8, hash_9};
+use poseidon::poseidon::bn254::{hash_11, hash_2, hash_3, hash_4, hash_5, hash_6, hash_9};
 use std::embedded_curve_ops::{EmbeddedCurvePoint, EmbeddedCurveScalar, fixed_base_scalar_mul, multi_scalar_mul};
 
 // Domain separators: ASCII "ZKD.owner" / "ZKD.nk" / "ZKD.pos".
@@ -58,7 +58,8 @@ pub fn roles_commit(pks: [Field; 4], salt: Field) -> Field {
 }
 
 /// The ledger policy. allow_hash (0 = any recipient), budget (0 = none), budget_period (seconds; 0 = one
-/// window for the policy's lifetime) and budget_start scope the PAYER; they never limit the Owner or Treasurer.
+/// window for the policy's lifetime), budget_start and payer_until (v3.5: unix seconds the PAYER may act
+/// before; 0 = no end) scope the PAYER; they never limit the Owner or Treasurer.
 pub fn policy_hash(
     alloc_cap: Field,
     dual_threshold: Field,
@@ -66,9 +67,10 @@ pub fn policy_hash(
     budget: Field,
     budget_period: Field,
     budget_start: Field,
+    payer_until: Field,
     salt: Field,
 ) -> Field {
-    hash_8([DOM_POLICY, alloc_cap, dual_threshold, allow_hash, budget, budget_period, budget_start, salt])
+    hash_9([DOM_POLICY, alloc_cap, dual_threshold, allow_hash, budget, budget_period, budget_start, payer_until, salt])
 }
 
 /// The Payer's allowed recipients: personal owner keys or public addresses, unused slots 0. An empty

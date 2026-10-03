@@ -15,6 +15,8 @@
 // one even with the SDK's checks off; an Owner-approved payment is outside the scope; lifting the scope
 // resets it. The Owner's alert watcher reports the agent's payments, its budget and its approval requests
 // once each. The spending report lists each payment with who made it (from the chain) and its recipient.
+// v3.5 access end: after it every agent payment is refused (an approved one too, and by the prover),
+// the watcher reports it, and the Owner extends it. Needs a local fork (it moves chain time).
 // Usage (testnet or a local fork with the site served by serve.mjs-style server and DB_SCHEMA set):
 //   RPC_URL_SERVER=<rpc> node scripts/ops/e2e-agent.mjs <siteUrl>
 import { readFileSync } from 'node:fs';
@@ -245,6 +247,51 @@ check((await agent.waitForPayment({ amount: '7', timeoutSeconds: 3 })).pending !
   await step('Owner lifts the scope', () => owner.updateLedger(L(), { scope: { allowTo: [], budget: 0n } }));
   check((await limits()) === null, 'no limits left');
   check((await step('Agent pays itself 1 (no list now)', () => agent.pay(id, { to: agent.address, amount: '1' }))).confirmed, 'paid');
+
+  if (!/127\.0\.0\.1|localhost/.test(RPC ?? '')) console.log('    (the access-end steps need a local fork: they move chain time)');
+  else {
+    // v3.5: the Owner gives the agent 2 hours of access. After that every Payer payment is refused (also
+    // one the Owner approved), by the SDK and by the prover; the Owner extends it and the agent pays again.
+    const t0 = (await publicClient.getBlock()).timestamp;
+    await step('Owner gives the agent access for 2 hours', async () => { await owner.sync(); return owner.updateLedger(L(), { scope: { allowTo: [], budget: 0n, until: t0 + 7_200n } }); });
+    const lim2 = await limits();
+    check(lim2?.accessEnds === new Date(Number(t0 + 7_200n) * 1000).toISOString() && lim2.accessEnded === false, 'the agent reads when its access ends');
+    check((await step('Agent pays itself 1 within its access', () => agent.pay(id, { to: agent.address, amount: '1' }))).confirmed, 'paid');
+    check((await step('Agent asks for 60 (above the approval line)', () => agent.pay(id, { to: agent.address, amount: '60' }))).requested === true, 'a request');
+    await step('Owner approves it', async () => {
+      await owner.sync();
+      const r = (await owner.ledgerRequests(L())).find((x) => x.status === 'Awaiting Owner');
+      return owner.approveRequest(L(), r).then(() => r.id);
+    });
+    await step('Chain time moves 2 hours on', async () => {
+      await publicClient.request({ method: 'evm_increaseTime', params: [7_300] });
+      await publicClient.request({ method: 'anvil_mine', params: ['0x1'] });
+      return String((await publicClient.getBlock()).timestamp - t0);
+    });
+    await refused('a payment after its access ended', () => agent.pay(id, { to: agent.address, amount: '1' }), /This agent's access to treasury 0x[0-9a-f]+ ended/);
+    await refused('a mandate payment after its access ended', () => agent.payMandate(id, mandate.id, '25'), /This agent's access to treasury 0x[0-9a-f]+ ended/);
+    const late = (await agent.requests(id)).find((r) => r.status === 'Approved' && r.mine);
+    await refused('the approved payment after its access ended', () => agent.complete(id, late.id), /This agent's access to treasury 0x[0-9a-f]+ ended/);
+    {
+      await owner.sync();
+      const T = owner.ledgers().find((l) => l.owner === ledgerId);
+      const k = agentKeys(agentSeed, chain.id);
+      const [note] = owner.ledgerNotes(T).filter((n) => n.status === 'unspent' && n.asset === BigInt(deployment.usdg)).sort((a, b) => (b.amount > a.amount ? 1 : -1));
+      const draft = (t) => buildLedger({ tree: owner.state.tree, ledger: T, sk: k.sk, role: 'Payer', action: ACTIONS.transfer, asset: BigInt(deployment.usdg), inputs: [note], out: { amount: 1_000000n, owner: keys.owner }, ext: { recipient: '0x0000000000000000000000000000000000000000', extAmount: 0n, encryptedOutput1: '0x', encryptedOutput2: '0x' }, t, check: false });
+      const now = (await publicClient.getBlock()).timestamp;
+      await refused('a proof at chain time (after the end)', () => prove('ledger', draft(now).witness), /./);
+      check((await step('...while the same payment dated before the end still proves', () => prove('ledger', draft(t0 + 7_000n).witness).then(() => 'proved'))) === 'proved', 'only the time decides (the chain takes such a proof for at most an hour after its time)');
+    }
+    const before = hooks.length;
+    await step('Watcher checks after the end', async () => (await watchOnce()).trim().split('\n').length);
+    const ended = hooks.slice(before).map((h) => `${h.event}: ${h.text}`);
+    console.log(ended.map((t) => `    ${t.split('\n')[0]}`).join('\n'));
+    check(ended.some((t) => /^access: Agent treasury: the agent's access ended at .* none after\./.test(t)), 'an alert that the access ended');
+    check(ended.some((t) => /^limits: .*agent's access end changed/.test(t)), 'an alert for the new access end');
+    await step('Owner extends the access by 7 days', async () => { await owner.sync(); return owner.updateLedger(L(), { scope: { allowTo: [], budget: 0n, until: (await publicClient.getBlock()).timestamp + 7n * 86_400n } }); });
+    check((await limits()).accessEnded === false, 'access again');
+    check((await step('Agent pays itself 1 again', () => agent.pay(id, { to: agent.address, amount: '1' }))).confirmed, 'paid after the extension');
+  }
 }
 hookServer.close();
 console.log(`Agent balance now ${(await agent.balance()).usdg} tUSDG. Agent e2e passed. (${record})`);

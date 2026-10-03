@@ -121,11 +121,11 @@ contract ScopeTest is Test {
 
     /// Runs the first n fixtures in chain order (the Owner approval lands before the transfer it approves).
     function _through(uint256 n) internal {
-        uint8[10] memory order = [0, 1, 2, 3, 4, 6, 5, 7, 8, 9];
+        uint8[13] memory order = [0, 1, 2, 3, 4, 6, 5, 7, 8, 9, 10, 11, 12];
         for (uint256 k; k < n; ++k) {
             uint256 i = order[k];
             if (i == 1) _deposit();
-            else if (i == 0 || i == 6 || i == 8) _runAuth(i);
+            else if (i == 0 || i == 6 || i == 8 || i == 10) _runAuth(i);
             else _runAct(i);
         }
     }
@@ -227,5 +227,31 @@ contract ScopeTest is Test {
             return;
         }
         fail();
+    }
+
+    /// v3.5: the Owner gives the agent an access end. The agent pays just before it, the Owner after it
+    /// (the circuit refuses any Payer transfer at or after the end: circuits/ledger tests).
+    function test_v35_agentAccessEnds() public {
+        _through(13);
+        (, uint256 policy,) = ledger.ledgers(id);
+        assertEq(policy, vm.parseJsonUint(json, ".policyHash3"));
+        assertGt(block.timestamp, vm.parseJsonUint(json, ".end"), "the Owner paid after the end");
+    }
+
+    /// A payment dated just before the end (a proof may also be made after the end and dated back) may
+    /// still land up to MAX_PROOF_AGE after its date, never later.
+    function test_v35_landingWindowAfterTheEnd() public {
+        _through(11);
+        (TreasuryLedger.LedgerProof memory p, TreasuryLedger.LedgerExt memory e) = _act(11);
+        uint256 end = vm.parseJsonUint(json, ".end");
+        assertLt(p.t, end);
+        uint256 snap = vm.snapshotState();
+        vm.warp(p.t + ledger.MAX_PROOF_AGE() + 1);
+        vm.expectRevert(TreasuryLedger.StaleTime.selector);
+        ledger.act(p, e);
+        vm.revertToState(snap);
+        vm.warp(p.t + ledger.MAX_PROOF_AGE());
+        assertGt(block.timestamp, end);
+        ledger.act(p, e);
     }
 }

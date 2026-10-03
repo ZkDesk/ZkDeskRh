@@ -28,6 +28,7 @@ for (const p of report.payments) if (p.by === 'payer' && p.to) p.to.toUpperCase(
 // @ts-expect-error since is a date or unix seconds
 await agent.spending(t.id, { since: true });
 if (t.payerLimits?.leftThisPeriod) t.payerLimits.leftThisPeriod.toUpperCase();
+if (t.payerLimits && !t.payerLimits.accessEnded) t.payerLimits.accessEnds?.slice(0, 10);
 // @ts-expect-error payerLimits may be null
 t.payerLimits.budget;
 const requested = await agent.pay(t.id, { to: agent.address, amount: '2' });

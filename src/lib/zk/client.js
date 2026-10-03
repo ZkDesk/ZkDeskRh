@@ -6,7 +6,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { abis, deployment, explorerTx, MAINNET, minRelayFee, NETWORK_NAME, payableFee, stocks, USD_SYMBOL } from '../chain/config.js';
 import { encryptConfig, encryptKeyShare, encryptMandate, encryptNote, encryptPosition, openRequest, sealRequest, textToField } from './crypto.js';
 import { buildMandateAuth, buildPull, buildReceipt, currentPeriod, KINDS, MANDATE_ACTIONS, PERIODS, rawForUsdg } from './mandate.js';
-import { ACTIONS, AUTH, authExtHash, buildAttest, buildLedger, buildRoleAuth, ledgerKeys, mailboxMessages, budgetWindow, payerSpent, requestShowsItsTransfer, rolesOf, scopeOf } from './ledger.js';
+import { ACTIONS, AUTH, authExtHash, buildAttest, buildLedger, buildRoleAuth, ledgerKeys, mailboxMessages, budgetWindow, payerEnded, payerScoped, payerSpent, requestShowsItsTransfer, rolesOf, scopeOf } from './ledger.js';
 import { ALLOW_SLOTS, allowHash, mandateCommit, MAX_AMOUNT, policyHash, randomField } from './notes.js';
 import { buildTransact } from './transact.js';
 import { paymentRows } from './report.js';
@@ -323,6 +323,10 @@ export function createClient({ publicClient, walletClient = null, address = null
     if (r.error) throw new Error(friendly(r.error));
   }
 
+  // A limited Payer that also holds the Treasurer role could pay as Treasurer, outside its limits.
+  const limitedPayerAlone = (c) => {
+    if (payerScoped(c) && c.payer !== c.owner && c.payer === c.treasurer) throw new Error("A Payer with limits cannot also be the Treasurer: the Treasurer's payments are outside the Payer's limits.");
+  };
   const shareTo = (lsk, members) => [...new Map(members.map((m) => [m.owner, m])).values()].map((m) => encryptKeyShare(lsk, m.encPub));
 
   /**
@@ -330,8 +334,10 @@ export function createClient({ publicClient, walletClient = null, address = null
    * address {owner, encPub} or a 0x address ([] = any recipient). budget: USDG base units per
    * budgetPeriod seconds (0n = no budget; period 0n = one budget for the policy's lifetime). Windows
    * start at UTC midnight of the day the policy is set, and a new policy starts from zero spent.
+   * until (v3.5): unix seconds the Payer may act before (0n = no end); it must be in the future, except
+   * `keep` (the current end, kept as it is).
    */
-  async function payerScope({ allowTo = [], budget = 0n, budgetPeriod = 0n } = {}) {
+  async function payerScope({ allowTo = [], budget = 0n, budgetPeriod = 0n, until = 0n } = {}, keep = 0n) {
     if (allowTo.length > ALLOW_SLOTS) throw new Error(`At most ${ALLOW_SLOTS} allowed recipients.`);
     const allow = Array(ALLOW_SLOTS).fill(0n);
     const allowPubs = Array(ALLOW_SLOTS).fill(null);
@@ -345,8 +351,13 @@ export function createClient({ publicClient, walletClient = null, address = null
     if (new Set(allow.filter((x) => x)).size !== allow.filter((x) => x).length) throw new Error('A recipient is listed twice.');
     if (budget < 0n || budget > MAX_AMOUNT || budgetPeriod < 0n || budgetPeriod >= 1n << 32n) throw new Error('Budget out of range.');
     const DAY = 86_400n;
-    const budgetStart = budgetPeriod ? ((await chainTime()) / DAY) * DAY : 0n;
-    return { allow, allowPubs, budget, budgetPeriod, budgetStart };
+    const now = await chainTime();
+    if (typeof until !== 'bigint' && !Number.isSafeInteger(until)) throw new Error("The agent's access end must be unix seconds (or 0 for none).");
+    until = BigInt(until);
+    if (until < 0n || until >= 1n << 40n) throw new Error("The agent's access end must be unix seconds (or 0 for none).");
+    if (until !== 0n && until !== keep && until <= now) throw new Error("The agent's access end must be a time in the future.");
+    const budgetStart = budgetPeriod ? (now / DAY) * DAY : 0n;
+    return { allow, allowPubs, budget, budgetPeriod, budgetStart, payerUntil: until };
   }
 
   /**
@@ -361,6 +372,7 @@ export function createClient({ publicClient, walletClient = null, address = null
     const lsk = randomField();
     const ledger = ledgerKeys(lsk);
     const config = { name, owner: self.owner, treasurer: members[1].owner, payer: members[2].owner, auditor: members[3].owner, rolesSalt: randomField(), allocCap, dualThreshold, policySalt: randomField(), ...(await payerScope(scope)) };
+    limitedPayerAlone(config);
     // The approval-mailbox key rides on the create request; only this proof can register it.
     await relayAuth({ ledger, config, action: AUTH.create, shares: shareTo(lsk, members), configCt: encryptConfig(config, ledger.encPub), mailbox: await mailboxFields(ledger) });
     return ledger.owner;
@@ -368,18 +380,26 @@ export function createClient({ publicClient, walletClient = null, address = null
 
   /**
    * Owner: replace members ({owner, encPub}; omitted = unchanged) and/or change the policy. scope: a
-   * new Payer allow list and budget (payerScope; omitted = unchanged). Either change resets what the
-   * Payer has spent in the current window.
+   * new Payer allow list, budget and access end (payerScope; omitted = unchanged, and an omitted
+   * `until` keeps the current end). Either change resets what the Payer has spent in the current window.
    */
   async function updateLedger(ledger, { treasurer, payer, auditor, allocCap = ledger.config.allocCap, dualThreshold = ledger.config.dualThreshold, scope }) {
     let current = ledger.config;
     // The policy first, then the roles: a new Payer (an agent) never holds the role before its scope
     // and threshold apply. An unchanged scope keeps its window start; any policy or roles change still
     // resets what the Payer spent in the current window (TreasuryLedger resets the accumulator).
-    let nextScope = scope ? await payerScope(scope) : {};
     const was = scopeOf(current);
-    if (scope && allowHash(nextScope.allow) === allowHash(was.allow) && nextScope.budget === was.budget && nextScope.budgetPeriod === was.budgetPeriod) nextScope = {};
+    let nextScope = scope ? await payerScope({ ...scope, until: scope.until === undefined ? was.payerUntil : scope.until }, was.payerUntil) : {};
+    // Only the end changes: the budget keeps its window start.
+    if (scope && allowHash(nextScope.allow) === allowHash(was.allow) && nextScope.budget === was.budget && nextScope.budgetPeriod === was.budgetPeriod) {
+      nextScope = nextScope.payerUntil === was.payerUntil ? {} : { payerUntil: nextScope.payerUntil };
+    }
+    // Checked for the end state and for the moment after the policy lands (before the roles change).
+    limitedPayerAlone({ ...current, ...nextScope, treasurer: treasurer?.owner ?? current.treasurer, payer: payer?.owner ?? current.payer });
     const policyChanges = allocCap !== current.allocCap || dualThreshold !== current.dualThreshold || Object.keys(nextScope).length > 0;
+    if (policyChanges && (payer?.owner === undefined || payer.owner === current.payer)) {
+      try { limitedPayerAlone({ ...current, ...nextScope }); } catch { throw new Error("The Payer is also the Treasurer now. Name a different Treasurer first (Manage roles), then set the Payer's limits."); }
+    }
     // A Payer being replaced must not see the new policy (a fresh budget, new recipients): the Owner
     // takes the role first.
     if (policyChanges && payer && payer.owner !== current.payer && current.payer !== current.owner) {
@@ -566,7 +586,10 @@ export function createClient({ publicClient, walletClient = null, address = null
     const once = async () => {
       await sync();
       if (request.from !== keys.owner) throw new Error('Only the member who requested this transfer can complete it.');
-      const rebuilt = rebuildRequest(current(ledger), request, keys.sk, true, await chainTime());
+      const t = await chainTime();
+      const config = current(ledger).config;
+      if (request.role === 'Payer' && payerEnded(config, t)) throw new Error(`The Payer's access to this treasury ended at ${new Date(Number(config.payerUntil) * 1000).toISOString()}. The Owner can extend it.`);
+      const rebuilt = rebuildRequest(current(ledger), request, keys.sk, true, t);
       if (!rebuilt) throw new Error('This request no longer matches the treasury notes.');
       return submitLedger(rebuilt.built, request.ext);
     };
@@ -698,6 +721,14 @@ export function createClient({ publicClient, walletClient = null, address = null
 
   /** Pays the current period of a mandate (usdgAmount ≤ cap). Stock mandates convert at the pinned mark. */
   async function payMandate(ledger, role, mandate, usdgAmount) {
+    // What would refuse the pull is checked before the relay fee is paid, on the current treasury and
+    // mandate (the caller's copies may be older).
+    await sync();
+    ledger = current(ledger);
+    mandate = mandates(ledger).find((m) => m.commit === mandate.commit) ?? mandate;
+    const before = await chainTime();
+    if (mandate.paid.has(currentPeriod(mandate, before))) throw new Error('This mandate is already paid for the current period.');
+    if (role === 'Payer' && payerEnded(ledger.config, before)) throw new Error(`The Payer's access to this treasury ended at ${new Date(Number(ledger.config.payerUntil) * 1000).toISOString()}. The Owner can extend it.`);
     const paid = await voucher();
     await sync();
     const t = await chainTime();
@@ -759,6 +790,8 @@ export function createClient({ publicClient, walletClient = null, address = null
     redeem: (shares) => convert('redeem', shares),
     balance: (asset, st = 'unspent') => balanceOf(notes(), big(asset), st),
     market, get state() { return state; },
+    /** The latest block's time (unix seconds, BigInt): what proofs are dated with. */
+    chainTime,
     owner: keys.owner,
     /** Relays submitted so far (counted before each submission, whatever its outcome). */
     get relaysSent() { return relaysSent; },

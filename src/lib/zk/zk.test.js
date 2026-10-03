@@ -7,7 +7,7 @@ import { G, mul, operatorDecrypt, operatorEncrypt, operatorPublicKey } from './g
 import { applyLiquidation, buildHealth, isBreached } from './desk.js';
 import { liquidatedBlinding, liquidationPad, positionCommitment, ownerPk } from './notes.js';
 import { decryptConfig, decryptKeyShare, encryptConfig, encryptKeyShare } from './crypto.js';
-import { ACTIONS, buildLedger, budgetWindow, heldRoles, ledgerKeys, openBudget, payerDeltas, payerScoped, payerSpent } from './ledger.js';
+import { ACTIONS, buildLedger, budgetWindow, heldRoles, ledgerKeys, openBudget, payerDeltas, payerEnded, payerScoped, payerSpent } from './ledger.js';
 import { buildMandateAuth, MANDATE_ACTIONS } from './mandate.js';
 import { allowHash, budgetCommit, budgetPad, policyHash } from './notes.js';
 import { NOTE_MEMO_CIPHERTEXT_BYTES } from './crypto.js';
@@ -85,13 +85,13 @@ const lk = ledgerKeys(0xabcn);
 assert.equal(decryptKeyShare(encryptKeyShare(0xabcn, a.encPub), a.encSecret), 0xabcn);
 assert.equal(decryptKeyShare(encryptKeyShare(0xabcn, a.encPub), b.encSecret), null);
 const config = { name: 'Ops treasury', owner: a.owner, treasurer: b.owner, payer: a.owner, auditor: b.owner, rolesSalt: 1n, allocCap: 5n, dualThreshold: 6n, policySalt: 7n };
-const unscoped = { budget: 0n, budgetPeriod: 0n, budgetStart: 0n, allow: Array(8).fill(0n), allowPubs: Array(8).fill(null) };
+const unscoped = { budget: 0n, budgetPeriod: 0n, budgetStart: 0n, payerUntil: 0n, allow: Array(8).fill(0n), allowPubs: Array(8).fill(null) };
 assert.deepEqual(decryptConfig(encryptConfig(config, lk.encPub), lk.encSecret), { ...config, ...unscoped });
 assert.equal(policyHash(config), policyHash({ ...config, ...unscoped }), 'no scope is the default');
 // v3.4 Payer scope: the config round-trips, and the scope changes the policy hash.
 {
   const vendor = '0x' + '11'.repeat(20);
-  const scoped = { ...config, allow: [b.owner, BigInt(vendor), 0n, 0n, 0n, 0n, 0n, 0n], allowPubs: [b.encPub, null, null, null, null, null, null, null], budget: 120_000000n, budgetPeriod: 86_400n, budgetStart: 1_790_000_000n };
+  const scoped = { ...config, allow: [b.owner, BigInt(vendor), 0n, 0n, 0n, 0n, 0n, 0n], allowPubs: [b.encPub, null, null, null, null, null, null, null], budget: 120_000000n, budgetPeriod: 86_400n, budgetStart: 1_790_000_000n, payerUntil: 0n };
   assert.deepEqual(decryptConfig(encryptConfig(scoped, lk.encPub), lk.encSecret), scoped);
   assert.notEqual(policyHash(scoped), policyHash(config));
   assert.equal(allowHash(Array(8).fill(0n)), 0n, 'an empty list is no restriction');
@@ -121,6 +121,23 @@ assert.equal(policyHash(config), policyHash({ ...config, ...unscoped }), 'no sco
   assert.equal(pay({ out: { amount: 0n, owner: L.owner }, ext: { recipient: vendor, extAmount: -60_000000n } }).spent, 120_000000n, 'a listed address');
   assert.equal(pay({ t: 1_790_086_500n, out: { amount: 100_000000n, owner: b.owner } }).spent, 100_000000n, 'the next window');
   assert.throws(() => buildMandateAuth({ ledger: L, sk: deriveKeys(sig).sk, role: 'Payer', action: MANDATE_ACTIONS.commit, mandate: { kind: 0n, recipient: 1n, asset: 0xa55e7n, cap: 1n, period: 0n, start: 0n, expiry: 1n, reference: 0n, salt: 1n } }), /can only pause mandates/);
+
+  // v3.5 access end: in the config and the policy hash; every Payer transfer at or after it is refused
+  // (approved ones too), the Owner is not limited, and an end alone scopes the Payer for mandates.
+  const ends = { ...config, payerUntil: 1_790_000_200n };
+  assert.deepEqual(decryptConfig(encryptConfig(ends, lk.encPub), lk.encSecret), { ...config, ...unscoped, payerUntil: 1_790_000_200n });
+  assert.notEqual(policyHash(ends), policyHash(config));
+  assert.ok(payerScoped(ends));
+  assert.ok(!payerEnded(ends, 1_790_000_199n) && payerEnded(ends, 1_790_000_200n) && !payerEnded(config, 2n ** 39n));
+  L.config = { ...L.config, payerUntil: 1_790_000_200n };
+  assert.equal(pay({ t: 1_790_000_199n, out: { amount: 1n, owner: b.owner } }).spent, 60_000001n, 'just before the end');
+  assert.throws(() => pay({ t: 1_790_000_200n, out: { amount: 1n, owner: b.owner } }), /access to this treasury ended/);
+  assert.throws(() => pay({ t: 1_790_000_300n, out: { amount: 600_000000n, owner: ownerPk(0x5n) } }), /access to this treasury ended/, 'an approved payment too');
+  assert.equal(pay({ t: 1_790_000_300n, role: 'Payer', check: false, out: { amount: 1n, owner: b.owner } }).witness.payer_until, '1790000200', 'the circuit gets the end');
+  const owned = { ...L, config: { ...L.config, payer: ownerPk(0x77n) } };
+  assert.ok(buildLedger({ tree, ledger: owned, sk: deriveKeys(sig).sk, role: 'Owner', action: ACTIONS.transfer, asset: 0xa55e7n, inputs: [{ ...note, leafIndex: 0 }], out: { amount: 1n, owner: b.owner }, t: 1_790_000_300n, ext: { encryptedOutput1: '0x', encryptedOutput2: '0x' } }), 'the Owner after the end');
+  const onlyEnd = { ...ledgerKeys(0xabdn), config: { ...config, payerUntil: 1_790_000_200n } };
+  assert.throws(() => buildMandateAuth({ ledger: onlyEnd, sk: deriveKeys(sig).sk, role: 'Payer', action: MANDATE_ACTIONS.commit, mandate: { kind: 0n, recipient: 1n, asset: 0xa55e7n, cap: 1n, period: 0n, start: 0n, expiry: 1n, reference: 0n, salt: 1n } }), /can only pause mandates/);
 }
 assert.deepEqual(heldRoles(config, a.owner), ['Owner', 'Payer']);
 assert.notEqual(lk.owner, ownerPk(0xabcn), 'ledger notes live outside the personal owner domain');
@@ -279,4 +296,4 @@ assert.notEqual(lk.owner, ownerPk(0xabcn), 'ledger notes live outside the person
   assert.equal(requestShowsItsTransfer({ amount: 0n, recipient: vendor, ext: { recipient: vendor, extAmount: 0n } }), false);
   assert.equal(requestShowsItsTransfer({ amount: 'x', recipient: vendor, ext: {} }), false, 'malformed');
 }
-console.log('zk primitives passed: poseidon vector, public amount, key derivation (signature and passkey, recovery words), note encryption, grumpkin + operator encryption, liquidation replay, health witness, ledger key shares/config/roles, Payer scope and spending accumulator.');
+console.log('zk primitives passed: poseidon vector, public amount, key derivation (signature and passkey, recovery words), note encryption, grumpkin + operator encryption, liquidation replay, health witness, ledger key shares/config/roles, Payer scope and spending accumulator, Payer access end.');

@@ -10,6 +10,7 @@
 // policy's allow list (if set) and keep the Payer's spending in the current budget window within the
 // budget (if set). Every transfer re-commits the ledger's spending accumulator (budget_old ->
 // budget_new), whoever acts, so the chain cannot tell a Payer transfer from an Owner one.
+// Payer access end (v3.5): with payer_until set, every PAYER transfer (approved or not) needs t before it.
 use lib::{
     ALLOW_SLOTS, allow_hash as allow_of, budget_commit, budget_pad, DOM_INTENT, ledger_id as ledger_of,
     listed, lte, MAX_DEPTH, nullifier_key, output_note, owner_pk, policy_hash as policy_of,
@@ -54,6 +55,7 @@ fn main(
     budget: Field,
     budget_period: Field,
     budget_start: Field,
+    payer_until: Field,
     policy_salt: Field,
     in_amounts: [Field; 2],
     in_blindings: [Field; 2],
@@ -82,9 +84,10 @@ fn main(
     budget.assert_max_bit_size::<100>();
     budget_period.assert_max_bit_size::<40>();
     budget_start.assert_max_bit_size::<40>();
+    payer_until.assert_max_bit_size::<40>();
     let allow_hash = allow_of(allow);
     assert_eq(
-        policy_of(alloc_cap, dual_threshold, allow_hash, budget, budget_period, budget_start, policy_salt),
+        policy_of(alloc_cap, dual_threshold, allow_hash, budget, budget_period, budget_start, payer_until, policy_salt),
         policy_hash,
     );
 
@@ -137,6 +140,9 @@ fn main(
         // The spending accumulator: open the current one (0 = fresh), roll the window forward from t,
         // add a scoped transfer, check the budget, re-commit under a pad only members can derive.
         t.assert_max_bit_size::<40>();
+        if (role == PAYER) & (payer_until != 0) {
+            assert(!lte(payer_until, t)); // t < payer_until
+        }
         old_window.assert_max_bit_size::<32>();
         window.assert_max_bit_size::<32>();
         let (w0, s0) = if budget_old == 0 {

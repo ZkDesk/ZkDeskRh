@@ -38,14 +38,17 @@ export function ledgerKeys(lsk) {
  * config: {owner, treasurer, payer, auditor (owner pks), rolesSalt, allocCap, dualThreshold, policySalt}
  * plus the Payer scope (v3.4; all optional, default none): allow (ALLOW_SLOTS owner keys or addresses,
  * 0 = unused), budget (USDG base units per window, 0 = none), budgetPeriod (seconds, 0 = one window),
- * budgetStart (unix seconds).
+ * budgetStart (unix seconds), payerUntil (v3.5: unix seconds the Payer may act before, 0 = no end).
  */
 export const rolePks = (c) => [c.owner, c.treasurer, c.payer, c.auditor];
 export const scopeOf = (c) => ({
   allow: c.allow ?? Array(ALLOW_SLOTS).fill(0n), budget: c.budget ?? 0n, budgetPeriod: c.budgetPeriod ?? 0n, budgetStart: c.budgetStart ?? 0n,
+  payerUntil: c.payerUntil ?? 0n,
 });
-/** The Payer is scoped when the policy has an allow list or a budget. */
-export const payerScoped = (c) => { const x = scopeOf(c); return allowHash(x.allow) !== 0n || x.budget !== 0n; };
+/** The Payer is scoped when the policy has an allow list, a budget or an access end. */
+export const payerScoped = (c) => { const x = scopeOf(c); return allowHash(x.allow) !== 0n || x.budget !== 0n || x.payerUntil !== 0n; };
+/** The Payer's access has ended at time t (seconds). */
+export const payerEnded = (c, t) => { const u = scopeOf(c).payerUntil; return u !== 0n && t >= u; };
 const mod = (x) => ((x % FIELD) + FIELD) % FIELD;
 /** The budget window of time t (0 when the policy has no period). */
 export const budgetWindow = (c, t) => {
@@ -165,6 +168,9 @@ export function buildLedger({ tree, ledger, sk, role, action, asset, outAsset = 
   const scope = scopeOf(c);
   const scoped = !convert && r === 2 && !needsOwner;
   const recipient = BigInt(ext.recipient ?? zeroAddress);
+  if (check && !convert && r === 2 && payerEnded(c, t)) {
+    throw new Error(`The Payer's access to this treasury ended at ${new Date(Number(scope.payerUntil) * 1000).toISOString()}. The Owner can extend it.`);
+  }
   if (check && scoped && allowHash(scope.allow) !== 0n) {
     const listed = (x) => x !== 0n && scope.allow.includes(x);
     if ((out.amount > 0n && !listed(out.owner)) || (extAmount < 0n && !listed(recipient))) {
@@ -209,7 +215,7 @@ export function buildLedger({ tree, ledger, sk, role, action, asset, outAsset = 
     cosign_intent: str(pub.cosignIntent), recipient: str(recipient), t: str(t), budget_old: str(acc.commit), budget_new: str(budgetNew),
     budget_ct: budgetCt.map(str), lsk: str(ledger.lsk), sk: str(sk), role: r, role_pks: rolePks(c).map(str), roles_salt: str(c.rolesSalt),
     alloc_cap: str(c.allocCap), dual_threshold: str(c.dualThreshold), allow: scope.allow.map(str), budget: str(scope.budget),
-    budget_period: str(scope.budgetPeriod), budget_start: str(scope.budgetStart), policy_salt: str(c.policySalt),
+    budget_period: str(scope.budgetPeriod), budget_start: str(scope.budgetStart), payer_until: str(scope.payerUntil), policy_salt: str(c.policySalt),
     in_amounts: ins.map((n) => str(n.amount)), in_blindings: ins.map((n) => str(n.blinding)),
     in_path_depths: paths.map((p) => p.depth), in_path_indices: paths.map((p) => str(p.index)), in_path_siblings: paths.map((p) => p.siblings.map(str)),
     out_amounts: outputs.map((o) => str(o.amount)), out_owner: str(outOwner), out_blindings: ob.map(str),

@@ -77,7 +77,7 @@ export interface Treasury {
   payerLimits: PayerLimits | null;
 }
 
-/** A treasury Payer's scope (v3.4). Payments the Owner approves are outside it. */
+/** A treasury Payer's scope (v3.4). Payments the Owner approves are outside the list and budget, not the access end (v3.5). */
 export interface PayerLimits {
   /** The only recipients the Payer may pay (zkd: or 0x); null = anyone. */
   allowedRecipients: string[] | null;
@@ -86,6 +86,13 @@ export interface PayerLimits {
   budgetPeriod: 'day' | 'week' | '30 days' | 'lifetime' | string | null;
   spentThisPeriod: Usdg | null;
   leftThisPeriod: Usdg | null;
+  /**
+   * When the Payer's access ends (ISO time, chain time); null = no end. From then on the proofs refuse
+   * every Payer payment and mandate pull. A payment dated before it may still land up to an hour later.
+   */
+  accessEnds: string | null;
+  /** The access end has passed (for the Payer role; an agent that is also the Owner can still pay as Owner). */
+  accessEnded: boolean;
 }
 
 /** Above the Owner's threshold, a treasury payment becomes a request for approval. */

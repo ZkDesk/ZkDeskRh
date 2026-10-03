@@ -11,14 +11,16 @@ const UNKNOWN_CHECKS = 10;
 const MAX_QUEUE = 500;
 const MAX_IDS = 2000;
 const short = (x) => (!x ? 'unknown' : x.length > 26 ? `${x.slice(0, 14)}…${x.slice(-6)}` : x);
-const LIMIT_NAMES = { payer: 'Payer (agent)', threshold: 'approval threshold', scope: 'agent limits (recipients, budget)', count: 'payments-without-approval limit', roles: 'Owner, Treasurer or Auditor', allocCap: 'allocation cap' };
+const LIMIT_NAMES = { payer: 'Payer (agent)', threshold: 'approval threshold', scope: 'agent limits (recipients, budget)', until: "agent's access end", count: 'payments-without-approval limit', roles: 'Owner, Treasurer or Auditor', allocCap: 'allocation cap' };
 
 /**
  * view: {
  *   payments: [{ tx, by, requestedByPayer, amount (decimal string), asset, to, toSource, mismatch }] newest first,
  *   period: { spent, budget (decimal strings or null), window (string) },
  *   requests: [{ id, status, amount, to }], or null when they could not be read,
- *   limits: { payer, threshold, scope, count, roles, allocCap } (strings; null = could not be read),
+ *   limits: { payer, threshold, scope, until, count, roles, allocCap } (strings; null = could not be read;
+ *     until: the agent's access end in unix seconds, '0' = none),
+ *   now: unix seconds (for the access-end alerts),
  * }
  * state: null on the first run (what is there is learned, not reported). channels: the configured ones.
  * Returns { alerts: [{ key, event, text, channels }] (oldest first, each with the channels it is still
@@ -60,7 +62,9 @@ export function decide(view, state, { name = 'Treasury', all = false, dashboard 
   if (view.period.budget) {
     const spent = Number(view.period.spent);
     const budget = Number(view.period.budget);
-    const tag = `${view.period.window}:${limits.scope}`;
+    // Any change to the policy or the roles restarts the agent's spending record (TreasuryLedger), so
+    // the marks are per window and per policy: after an extension the budget alerts can come again.
+    const tag = `${view.period.window}:${limits.scope}:${limits.until ?? 0}:${limits.threshold}:${limits.allocCap}:${limits.payer}:${limits.roles}`;
     for (const [level, reached, text] of [
       [80, spent >= budget * 0.8, `the agent has used ${Math.floor((spent / budget) * 100)}% of its budget for this period (${view.period.spent} of ${view.period.budget} USDG).`],
       [100, spent >= budget, `the agent has used its whole budget for this period (${view.period.spent} of ${view.period.budget} USDG).`],
@@ -71,7 +75,21 @@ export function decide(view, state, { name = 'Treasury', all = false, dashboard 
       if (level === 80 && spent >= budget) continue; // straight to 100%: one alert
       add(key, 'budget', text);
     }
-    for (const k of [...marks]) if (!k.endsWith(`:${tag}`)) marks.delete(k); // only this window's marks
+    for (const k of [...marks]) if (k.startsWith('budget') && !k.endsWith(`:${tag}`)) marks.delete(k); // only this window's marks
+  }
+
+  // The agent's access end (v3.5): a day before, and when it has passed. A new end time alerts again.
+  const until = Number(limits.until ?? 0);
+  for (const k of [...marks]) if (/^(ends24|ended):/.test(k) && k !== `ends24:${until}` && k !== `ended:${until}`) marks.delete(k);
+  if (until && Number.isFinite(view.now)) {
+    const at = new Date(until * 1000).toISOString();
+    if (view.now >= until && !marks.has(`ended:${until}`)) {
+      marks.add(`ended:${until}`);
+      add(`ended:${until}`, 'access', `the agent's access ended at ${at}. A payment dated before then can still go through until ${new Date((until + 3_600) * 1000).toISOString()} (a payment proof may be dated up to an hour back); none after. Extend it in the dashboard if it should keep paying.${link}`);
+    } else if (view.now < until && view.now >= until - 86_400 && !marks.has(`ends24:${until}`)) {
+      marks.add(`ends24:${until}`);
+      add(`ends24:${until}`, 'access', `the agent's access ends at ${at} (in about ${Math.max(1, Math.round((until - view.now) / 3600))} h). Extend it in the dashboard if it should keep paying.${link}`);
+    }
   }
 
   // Requests: the first list that could be read is learned, not reported (also when the first run could

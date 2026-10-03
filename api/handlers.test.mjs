@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { keccak256 } from 'viem';
 
 // Run against the network this app release speaks to.
-const RELEASE = 4; // src/lib/chain/config.js RELEASE
+const RELEASE = 5; // src/lib/chain/config.js RELEASE
 const onMainnet = JSON.parse(readFileSync(new URL('../src/lib/chain/deployments/4663.json', import.meta.url))).version === RELEASE;
 globalThis.ZKDESK_NETWORK = onMainnet ? 'mainnet' : 'testnet';
 const prefix = onMainnet ? 'MAINNET_' : '';

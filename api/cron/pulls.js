@@ -10,6 +10,7 @@ import { seedKeys } from '../../src/lib/zk/keys.js';
 import { createClient } from '../../src/lib/zk/client.js';
 import { createProver } from '../../src/lib/zk/prover.js';
 import { currentPeriod } from '../../src/lib/zk/mandate.js';
+import { payerEnded } from '../../src/lib/zk/ledger.js';
 import relayHandler from '../relay.js';
 import pullCircuit from '../../src/lib/zk/artifacts/mandate_pull.json' with { type: 'json' };
 
@@ -32,7 +33,7 @@ export async function runPulls({ keys, prove, log = () => {} }) {
   // Audit N-3: a treasury whose mandates fail (e.g. unfunded) must not starve the others. Only
   // successful pulls count toward MAX_PULLS, each treasury gets at most one pull per run, and the
   // starting treasury rotates every run.
-  for (const ledger of rotate(client.ledgers().filter((l) => l.roles.includes('Payer')), Math.floor(Date.now() / 3_600_000))) {
+  for (const ledger of rotate(client.ledgers().filter((l) => l.roles.includes('Payer') && !payerEnded(l.config, t)), Math.floor(Date.now() / 3_600_000))) {
     report.treasuries++;
     for (const m of client.mandates(ledger)) {
       const k = currentPeriod(m, t);

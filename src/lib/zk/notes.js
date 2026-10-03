@@ -1,5 +1,5 @@
 // Mirrors circuits/lib/src/lib.nr exactly. Any change here needs the same change there.
-import { poseidon2, poseidon3, poseidon4, poseidon5, poseidon6, poseidon7, poseidon8, poseidon9, poseidon11 } from 'poseidon-lite';
+import { poseidon2, poseidon3, poseidon4, poseidon5, poseidon6, poseidon7, poseidon9, poseidon11 } from 'poseidon-lite';
 
 // bn254 scalar field (circuit Field / snark scalar field).
 export const FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
@@ -48,8 +48,8 @@ export const ALLOW_SLOTS = 8;
 /** The Payer's allowed recipients (owner keys or addresses, unused slots 0); an empty list is 0. */
 export const allowHash = (list) => (list.every((x) => x === 0n) ? 0n : poseidon9([DOM_ALLOW, ...list]));
 /** Payer scope fields default to "none", so older call sites keep working. */
-export const policyHash = ({ allocCap, dualThreshold, allow = Array(ALLOW_SLOTS).fill(0n), budget = 0n, budgetPeriod = 0n, budgetStart = 0n, policySalt }) =>
-  poseidon8([DOM_POLICY, allocCap, dualThreshold, allowHash(allow), budget, budgetPeriod, budgetStart, policySalt]);
+export const policyHash = ({ allocCap, dualThreshold, allow = Array(ALLOW_SLOTS).fill(0n), budget = 0n, budgetPeriod = 0n, budgetStart = 0n, payerUntil = 0n, policySalt }) =>
+  poseidon9([DOM_POLICY, allocCap, dualThreshold, allowHash(allow), budget, budgetPeriod, budgetStart, payerUntil, policySalt]);
 export const budgetCommit = (ledger, window, spent, blinding) => poseidon5([DOM_BUDGET, ledger, window, spent, blinding]);
 export const budgetPad = (lsk, nonce, i) => poseidon3([poseidon2([DOM_BUDGET, lsk]), nonce, BigInt(i)]);
 export const cosignIntent = (id, nullifiers, commitments, extHash) => poseidon7([DOM_INTENT, id, ...nullifiers, ...commitments, extHash]);

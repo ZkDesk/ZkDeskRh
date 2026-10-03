@@ -447,7 +447,29 @@ const cfg6b = { ...cfg6, allow: Array(8).fill(0n), budget: 0n, budgetPeriod: 0n,
 }
 L6.config = cfg6b;
 L6.budget = undefined;
-await act6('agent pays Mallory 10 USDG under the new policy', { sk: AG, role: 'Payer', inputs: [d1.notes[0]], out: { amount: 10_000000n, owner: ownerPk(MAL) }, t: T6 + DAY + 200n });
+const n9 = await act6('agent pays Mallory 10 USDG under the new policy', { sk: AG, role: 'Payer', inputs: [d1.notes[0]], out: { amount: 10_000000n, owner: ownerPk(MAL) }, t: T6 + DAY + 200n });
+// v3.5: the Owner gives the agent an access end (and nothing else). Every Payer transfer needs t before it.
+const END6 = T6 + DAY + 400n;
+const cfg6c = { ...cfg6b, payerUntil: END6, policySalt: 64n };
+{
+  const b = buildRoleAuth({ ledger: L6, sk: A, config: cfg6b, action: AUTH.setPolicy, newValue: policyHash(cfg6c), extHash: authExtHash([], '0x06', undefined, nextNonce(L6)) });
+  await prove('role_auth', "Owner sets an end to the agent's access", b.witness, { ext: { shares: [], config: '0x06' } });
+}
+L6.config = cfg6c;
+L6.budget = undefined;
+const end1 = await act6('agent pays Vic 5 USDG just before its access ends', { sk: AG, role: 'Payer', inputs: [n9.notes[0]], out: { amount: 5_000000n, owner: ownerPk(VIC) }, t: END6 - 100n });
+await rejects('ledger', 'agent pays when its access has ended', draft6({ sk: AG, role: 'Payer', inputs: [end1.notes[0]], out: { amount: 5_000000n, owner: ownerPk(VIC) }, t: END6 }).witness, 'rejects_payer_after_access_ends');
+await accepts('ledger', 'agent sends an Owner-approved payment before its access ends', draft6({ sk: AG, role: 'Payer', inputs: [end1.notes[0]], out: { amount: 200_000000n, owner: ownerPk(MAL) }, t: END6 - 50n }).witness, 'accepts_approved_payer_before_access_ends');
+await rejects('ledger', 'agent sends an Owner-approved payment after its access ended', draft6({ sk: AG, role: 'Payer', inputs: [end1.notes[0]], out: { amount: 200_000000n, owner: ownerPk(MAL) }, t: END6 + 100n }).witness, 'rejects_approved_payer_after_access_ends');
+await rejects('mandate_auth', 'agent with an access end commits a mandate', buildMandateAuth({ ledger: L6, sk: AG, role: 'Payer', action: MANDATE_ACTIONS.commit, mandate: mandate({ recipient: ownerPk(MAL), cap: 50_000000n, salt: 95n }), check: false }).witness, 'rejects_payer_with_access_end_commits_mandate');
+await accepts('mandate_auth', 'agent with an access end pauses a mandate', buildMandateAuth({ ledger: L6, sk: AG, role: 'Payer', action: MANDATE_ACTIONS.pause, mandate: mandate({ recipient: ownerPk(MAL), cap: 50_000000n, salt: 95n }) }).witness, 'accepts_payer_with_access_end_pausing_a_mandate');
+// Mandate pulls too: the agent cannot pull at or after its access end; the Owner can.
+const mandate6 = mandate({ recipient: ownerPk(VIC), cap: 50_000000n, salt: 96n, start: T6, period: DAY, expiry: T6 + 90n * DAY });
+const pull6 = (sk, role, t) => buildPull({ tree, ledger: L6, sk, role, mandate: mandate6, k: 1n, t, usdgAmount: 5_000000n, inputs: [end1.notes[0]], ext: {}, check: false }).witness;
+await accepts('mandate_pull', 'agent pulls a mandate before its access ends', pull6(AG, 'Payer', END6 - 10n), 'accepts_payer_pull_before_access_ends');
+await rejects('mandate_pull', 'agent pulls a mandate when its access has ended', pull6(AG, 'Payer', END6), 'rejects_payer_pull_after_access_ends');
+await accepts('mandate_pull', "Owner pulls a mandate after the agent's access ended", pull6(A, 'Owner', END6 + 10n), 'accepts_owner_pull_after_access_ends');
+await act6("Owner pays Mallory 1 USDG after the agent's access ended", { sk: A, role: 'Owner', inputs: [end1.notes[0]], out: { amount: 1_000000n, owner: ownerPk(MAL) }, t: END6 + 100n });
 const m6 = fixtures;
 
 for (const [name, file] of Object.entries(CIRCUITS)) {
@@ -489,7 +511,7 @@ const common = { usdg: toHex(USDG), spy: toHex(SPY), nvda: toHex(NVDA), lending:
 writeFileSync('circuits/fixtures/m2.json', JSON.stringify({ ...common, mark: MARK.toString(), ltvBps: LTV, shares: shares.toString(), redeemAssets: back.toString(), closedLeaf: closed.position === null, txs: m2 }, null, 2));
 writeFileSync('circuits/fixtures/m4.json', JSON.stringify(jsonable({ ...common, vault: toHex(VAULT), ledgerId: ledger.owner, ledgerId2: L2.owner, limit: LIMIT, rolesCommit: rolesOf(cfg), rolesCommit2: rolesOf(cfg2), policyHash: policyHash(cfg), intent: big.built.public.cosignIntent, attestAssets: ATTEST_ASSETS_FIX.map(toHex), prices: PRICES, shares600, vaultBack, txs: m4 }), null, 2));
 writeFileSync('circuits/fixtures/m5.json', JSON.stringify(jsonable({ ...common, ledgerId: L5.owner, T, commits: { payroll: cPay, invoice: cInv, spy: cSpy }, receiptRoot: receipts.root, spyRaw: p3.built.raw, txs: m5 }), null, 2));
-writeFileSync('circuits/fixtures/m6.json', JSON.stringify(jsonable({ ...common, ledgerId: L6.owner, T: T6, vaddr: addr(VADDR), policyHash: policyHash(cfg6), policyHash2: policyHash(cfg6b), intent: big6.built.public.cosignIntent, txs: m6 }), null, 2));
+writeFileSync('circuits/fixtures/m6.json', JSON.stringify(jsonable({ ...common, ledgerId: L6.owner, T: T6, vaddr: addr(VADDR), policyHash: policyHash(cfg6), policyHash2: policyHash(cfg6b), policyHash3: policyHash(cfg6c), end: END6, intent: big6.built.public.cosignIntent, txs: m6 }), null, 2));
 writeFileSync('circuits/fixtures/m3.json', JSON.stringify(jsonable({ ...common, price: PRICE, batch: batch.public, offHours: offHours.public, cureLeaf: cure.public.newLeaf, txs: m3 }), null, 2));
 console.log(`wrote ${m2.length} M2, ${m3.length} M3, ${m4.length} M4, ${m5.length} M5 and ${m6.length} M6 fixtures`);
 await api.destroy();

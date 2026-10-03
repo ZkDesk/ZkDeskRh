@@ -4,7 +4,7 @@
 // Owner's standing approval for every pull under it. ext_data_hash binds the mandate ciphertext.
 // A Payer under a scoped policy (allow list or budget) may only pause mandates (v3.4): pulls are not
 // counted against its budget, so only the Owner or Treasurer may start one paying, and a revoke cannot
-// be undone.
+// be undone. An access end (payer_until, v3.5) scopes it too: a mandate would keep paying after it.
 use lib::{
     ledger_id as ledger_of, lte, mandate_commit as mandate_of, owner_pk, policy_hash as policy_of,
     roles_commit as roles_of,
@@ -35,6 +35,7 @@ fn main(
     budget: Field,
     budget_period: Field,
     budget_start: Field,
+    payer_until: Field,
     policy_salt: Field,
     kind: Field,
     recipient: Field,
@@ -52,11 +53,11 @@ fn main(
     assert_eq(owner_pk(sk), role_pks[role]);
     assert(role != AUDITOR);
     assert_eq(
-        policy_of(alloc_cap, dual_threshold, allow_hash, budget, budget_period, budget_start, policy_salt),
+        policy_of(alloc_cap, dual_threshold, allow_hash, budget, budget_period, budget_start, payer_until, policy_salt),
         policy_hash,
     );
     assert((action == COMMIT) | (action == 1) | (action == PAUSE) | (action == RESUME));
-    let scoped = (allow_hash != 0) | (budget != 0);
+    let scoped = (allow_hash != 0) | (budget != 0) | (payer_until != 0);
     assert(!((role == PAYER) & scoped & (action != PAUSE)));
     if action == COMMIT {
         assert_eq(

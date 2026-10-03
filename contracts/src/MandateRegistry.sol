@@ -159,8 +159,8 @@ contract MandateRegistry is ReentrancyGuard {
             revert MarkUnusable();
         }
         if (p.extDataHash != uint256(keccak256(abi.encode(e))) % FIELD) revert ExtDataHashMismatch();
-        (uint256 roles,,) = ledgers.ledgers(p.ledgerId);
-        if (!pullVerifier.verify(p.proof, _pullInputs(p, roles))) revert InvalidProof();
+        (uint256 roles, uint256 policy,) = ledgers.ledgers(p.ledgerId);
+        if (!pullVerifier.verify(p.proof, _pullInputs(p, roles, policy))) revert InvalidProof();
 
         pulled[p.pullNullifier] = true;
         pool.moduleSpend(p.root, p.inputNullifiers);
@@ -193,8 +193,8 @@ contract MandateRegistry is ReentrancyGuard {
     }
 
     /// Order must match the `pub` parameters of circuits/mandate_pull/src/main.nr.
-    function _pullInputs(PullProof calldata p, uint256 roles) internal pure returns (bytes32[] memory x) {
-        x = new bytes32[](15);
+    function _pullInputs(PullProof calldata p, uint256 roles, uint256 policy) internal pure returns (bytes32[] memory x) {
+        x = new bytes32[](16);
         x[0] = bytes32(p.root);
         x[1] = bytes32(p.ledgerId);
         x[2] = bytes32(roles);
@@ -210,5 +210,6 @@ contract MandateRegistry is ReentrancyGuard {
         x[12] = bytes32(p.inputNullifiers[1]);
         x[13] = bytes32(p.outputCommitments[0]);
         x[14] = bytes32(p.outputCommitments[1]);
+        x[15] = bytes32(policy); // v3.5: the policy, for the Payer's access end
     }
 }

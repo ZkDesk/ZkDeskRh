@@ -28,6 +28,43 @@ assert.match(alerts[0].text, /^Ops: Your agent paid 10 USDG to zkd:abab.*\. Now 
 [alerts, state] = run(view({ payments: [pay('t3', '5'), pay('t2', '10'), pay('t1', '10')], period: { spent: '25', budget: '30', window: '7' } }), state);
 assert.equal(alerts.length, 0, 'nothing twice');
 
+// The agent's access end (v3.5): a day before, once; when it passes, once; a new end alerts again. The
+// budget marks of other windows are pruned, but never the access marks.
+{
+  const U = 2_000_000_000;
+  const at = (now, until = String(U), o = {}) => view({ limits: { ...limits, until }, now, ...o });
+  let [a, st] = run(at(U - 200_000), null);
+  [a, st] = run(at(U - 100_000), st);
+  assert.equal(a.length, 0, 'more than a day before: nothing');
+  [a, st] = run(at(U - 7_200), st);
+  assert.deepEqual(a.map((x) => x.key), [`ends24:${U}`]);
+  assert.match(a[0].text, /access ends at 2033-05-18T03:33:20\.000Z \(in about 2 h\)/);
+  [a, st] = run(at(U - 3_600, String(U), { period: { spent: '0', budget: '30', window: '8' } }), st);
+  assert.equal(a.length, 0, 'not twice, and a new budget window keeps the access marks');
+  [a, st] = run(at(U), st);
+  assert.deepEqual(a.map((x) => x.key), [`ended:${U}`]);
+  assert.match(a[0].text, /still go through until 2033-05-18T04:33:20.000Z .*none after/);
+  [a, st] = run(at(U + 60), st);
+  assert.equal(a.length, 0, 'ended: once');
+  [a, st] = run(at(U + 120, String(U + 90_000)), st);
+  assert.deepEqual(a.map((x) => x.event), ['limits'], 'an extension is a limits change');
+  assert.match(a[0].text, /agent's access end changed/);
+  [a, st] = run(at(U + 90_000 - 600, String(U + 90_000)), st);
+  assert.deepEqual(a.map((x) => x.key), [`ends24:${U + 90_000}`], 'the new end alerts again');
+  [a, st] = run(at(U + 90_000, '0'), st);
+  assert.deepEqual(a.map((x) => x.event), ['limits'], 'end removed: no "ended" alert');
+  // An extension restarts the spending record (any policy change does), so the budget alerts come again.
+  let [c, sc] = run(at(U - 200_000, String(U), { period: { spent: '0', budget: '30', window: '9' } }), null);
+  [c, sc] = run(at(U - 199_000, String(U), { period: { spent: '30', budget: '30', window: '9' } }), sc);
+  assert.deepEqual(c.map((x) => x.event), ['budget']);
+  [c, sc] = run(at(U - 198_000, String(U + 50_000), { period: { spent: '30', budget: '30', window: '9' } }), sc);
+  assert.deepEqual(c.map((x) => x.event).sort(), ['budget', 'limits'], 'a new policy: the budget alert again');
+  // A first run after the end learns it.
+  let [b, sb] = run(at(U + 10), null);
+  [b, sb] = run(at(U + 20), sb);
+  assert.equal(b.length, 0, 'an end that passed before the first run is not reported');
+}
+
 // Budget reached, then 80% in the next window; a recorded recipient is labelled.
 [alerts, state] = run(view({ payments: [pay('t4', '5', { toSource: 'paying app' })], period: { spent: '30', budget: '30', window: '7' } }), state);
 assert.deepEqual(alerts.map((a) => a.event), ['payment', 'budget']);
@@ -190,4 +227,4 @@ const now = lim({ payer: 'b2', count: '1/86400', roles: 'o:t2:a' });
   }
   assert.equal(notes.length, 3, 'each damaged state is reported');
 }
-console.log('alerts checks passed: first run learns history, each payment decided once (oldest first, with the period total), unreadable calls decided later, no replay when rows read differently, 80% and 100% per window, approved payments the agent asked for, requests once across a mailbox outage, every limit change (also flipping back) and no false change on a failed read, per-channel retries, new channels get only new alerts, no flood over a long history, delivery shapes, watcher settings, state file recovery');
+console.log('alerts checks passed: first run learns history, each payment decided once (oldest first, with the period total), unreadable calls decided later, no replay when rows read differently, 80% and 100% per window, approved payments the agent asked for, requests once across a mailbox outage, the agent access end (a day before, when it passes, again after an extension), every limit change (also flipping back) and no false change on a failed read, per-channel retries, new channels get only new alerts, no flood over a long history, delivery shapes, watcher settings, state file recovery');

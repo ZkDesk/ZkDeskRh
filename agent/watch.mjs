@@ -97,6 +97,8 @@ async function main() {
     // A read that fails is "unknown" (null), never "none": that would look like a change.
     const requests = await client.ledgerRequests(L).catch(() => null);
     const count = await publicClient.readContract({ address: deployment.ledger, abi: config.abis.ledger, functionName: 'limits', args: [L.owner] }).catch(() => null);
+    // The access end is checked against chain time, as the proof is.
+    const now = await publicClient.getBlock().then((b) => Number(b.timestamp), () => Math.floor(Date.now() / 1000));
     const c = L.config;
     const view = {
       payments: report.rows.map((r) => {
@@ -110,9 +112,10 @@ async function main() {
       }),
       limits: {
         payer: c.payer.toString(16), threshold: fmt(c.dualThreshold),
-        scope: `${allowHash(c.allow ?? Array(8).fill(0n)).toString(16)}:${c.budget ?? 0n}:${c.budgetPeriod ?? 0n}:${c.budgetStart ?? 0n}`,
+        scope: `${allowHash(c.allow ?? Array(8).fill(0n)).toString(16)}:${c.budget ?? 0n}:${c.budgetPeriod ?? 0n}:${c.budgetStart ?? 0n}`, until: String(c.payerUntil ?? 0n),
         count: count ? `${count[0]}/${count[1]}` : null, roles: [c.owner, c.treasurer, c.auditor].map((x) => x.toString(16)).join(':'), allocCap: fmt(c.allocCap),
       },
+      now,
     };
     const { alerts, dropped, state: next } = decide(view, state, { name: L.name || 'Treasury', all: s.all, dashboard: `${s.api}/dashboard?view=treasury`, channels });
     if (dropped) console.error(`${new Date().toISOString()} ${dropped} undelivered alerts dropped (a channel has been down for long)`);

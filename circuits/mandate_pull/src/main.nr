@@ -4,12 +4,15 @@
 // mandate the cap is in USDG and the paid raw amount is floor(usdg * 1e20 / mark) at a pinned mark.
 // Publishes the mandate commitment, k, the pull nullifier and the receipt leaf; the amount, the
 // recipient and the treasury balance stay private. Output 0 is the ledger's change.
+// v3.5: the ledger policy is opened (policy_hash, last public input) so a Payer cannot pull at or after
+// its access end (payer_until), as in the ledger circuit.
 use lib::{
     ledger_id as ledger_of, lte, mandate_commit as mandate_of, MAX_DEPTH, nullifier_key, output_note,
-    owner_pk, pull_nullifier as pull_of, receipt_leaf as receipt_of, roles_commit as roles_of,
-    spend_inputs,
+    owner_pk, policy_hash as policy_of, pull_nullifier as pull_of, receipt_leaf as receipt_of,
+    roles_commit as roles_of, spend_inputs,
 };
 
+global PAYER: u32 = 2;
 global AUDITOR: u32 = 3;
 global VALUE_DIV: Field = 100000000000000000000; // 1e20: raw(18) * mark(8) -> USDG(6)
 
@@ -27,11 +30,20 @@ fn main(
     ext_data_hash: pub Field,
     input_nullifiers: pub [Field; 2],
     output_commitments: pub [Field; 2],
+    policy_hash: pub Field,
     lsk: Field,
     sk: Field,
     role: u32,
     role_pks: [Field; 4],
     roles_salt: Field,
+    alloc_cap: Field,
+    dual_threshold: Field,
+    allow_hash: Field,
+    budget: Field,
+    budget_period: Field,
+    budget_start: Field,
+    payer_until: Field,
+    policy_salt: Field,
     kind: Field,
     recipient: Field,
     cap: Field,
@@ -56,6 +68,10 @@ fn main(
     assert_eq(owner_pk(sk), role_pks[role]);
     assert(role != AUDITOR);
     assert_eq(
+        policy_of(alloc_cap, dual_threshold, allow_hash, budget, budget_period, budget_start, payer_until, policy_salt),
+        policy_hash,
+    );
+    assert_eq(
         mandate_of(ledger_id, kind, recipient, asset, cap, period, start, expiry, reference, salt),
         mandate_commit,
     );
@@ -71,6 +87,10 @@ fn main(
     }
     assert(lte(start + k * period, t));
     assert(!lte(expiry, t));
+    payer_until.assert_max_bit_size::<40>();
+    if (role == PAYER) & (payer_until != 0) {
+        assert(!lte(payer_until, t)); // t < payer_until
+    }
     assert_eq(pull_of(mandate_commit, k), pull_nullifier);
 
     // How much: at most the cap in USDG; stock tokens convert at the pinned mark.

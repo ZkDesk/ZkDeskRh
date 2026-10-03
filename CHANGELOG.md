@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.20.0 (October 2026)
+
+- **Agent access that expires (contract set v3.5):** when you add or change a treasury's agent, choose when its access ends: in 1 hour, 24 hours, 7 days, 30 days, or on a date. After that time, the agent can't make any payment, including one you approved, and can't pay mandates. The proofs enforce this, so it stops even if you are offline, the agent's key leaks or its SDK is modified.
+  - The end time is part of the treasury's hidden policy, like the budget and the recipient list, so nobody on-chain can see it.
+  - **Allow up to an hour:** a payment proof may be dated up to an hour back, so for up to an hour after the end, a payment dated before it can still go through. Nothing goes through after that. If the time must be exact, set the end an hour earlier.
+  - An agent with an access end can only pause mandates (it can't create, resume or revoke them), and after the end it can't pay them. Mandates that are already active keep paying when you, the Treasurer or a new Payer pay them, until you revoke them. A Payer you name in *Manage roles* (such as the ZKdesk scheduler) starts without the agent's limits. An agent can still pause a mandate after its end; *Remove agent* stops that too.
+  - A limited agent can no longer also be named Treasurer, because the Treasurer's payments are outside its limits.
+  - To give it more time, set a new end. Like any change to the agent's limits, this starts its budget for the period from zero. *Remove agent* still ends access at once.
+  - **Dashboard:** *Access ends* in *Treasury → AI agent*. The panel shows when it ends or that it has ended, and the agent's approval requests are marked once its access has ended.
+  - **Agents:** `payerLimits.accessEnds` and `accessEnded` in `zkdesk_treasuries`. After the end, the SDK refuses before proving anything.
+  - **Alerts:** update the watcher (`agent/watch.mjs`) to 3.20 for an alert a day before the end and one when it has passed. Budget alerts now come again after any change to the agent's limits, because that starts its budget from zero. After the update, a budget alert for the current period may be sent once more.
+- This is a new contract set. Treasuries, mandates and notes in the previous set stay there and need the previous app version. Receipts from earlier sets still verify. Re-create your treasury and add your agent again on v3.5.
+
 ## 3.19.0 (October 2026)
 
 - **Alerts for your agent:** a Telegram message or a webhook call when your agent pays (amount, recipient, how much of its budget is used), reaches 80% or all of its budget for the period, asks you to approve a payment, a payment you approved goes out, or a payment spends a note the other members cannot read, and when the treasury's Payer, threshold or limits change. Each alert goes out once per channel (a crash in the middle of sending can repeat one). If the watcher cannot check the treasury for 5 checks in a row, it says so, and again when it recovers.
