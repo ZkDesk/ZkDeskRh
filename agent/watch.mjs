@@ -16,12 +16,14 @@
 //   ZKDESK_API, ZKDESK_RPC     the ZKdesk site (default https://zkdesk.tech) and an optional chain RPC
 //   ZKDESK_STATE_DIR           where it remembers what it sent (default ~/.zkdesk)
 // --once: check once and exit (for cron).
+// --find-chat: list the chats that wrote to your bot (needs only ZKDESK_ALERT_TELEGRAM_TOKEN), for the chat id.
+// --test: open the treasury, send one test alert to each channel and say whether each arrived; changes nothing.
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createPublicClient, formatUnits, http } from 'viem';
-import { decide, deliver, markSent } from './alerts.mjs';
+import { decide, deliver, deliverDetailed, findChats, markSent } from './alerts.mjs';
 
 const env = process.env;
 const FAILURES_TO_ALERT = 5;
@@ -39,9 +41,10 @@ export function settings(e = env) {
     const local = ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
     if (u.protocol !== 'https:' && !(u.protocol === 'http:' && local)) throw new Error('ZKDESK_ALERT_WEBHOOK_URL must be https (http only for localhost).');
   }
-  const telegramToken = e.ZKDESK_ALERT_TELEGRAM_TOKEN || null;
-  const telegramChat = e.ZKDESK_ALERT_TELEGRAM_CHAT || null;
-  if (!!telegramToken !== !!telegramChat) throw new Error('Set both ZKDESK_ALERT_TELEGRAM_TOKEN and ZKDESK_ALERT_TELEGRAM_CHAT, or neither.');
+  const telegramToken = String(e.ZKDESK_ALERT_TELEGRAM_TOKEN ?? '').trim() || null;
+  const telegramChat = String(e.ZKDESK_ALERT_TELEGRAM_CHAT ?? '').trim() || null;
+  if (!!telegramToken !== !!telegramChat) throw new Error(telegramToken ? 'Set ZKDESK_ALERT_TELEGRAM_CHAT too: run node agent/watch.mjs --find-chat to get it.' : 'Set both ZKDESK_ALERT_TELEGRAM_TOKEN and ZKDESK_ALERT_TELEGRAM_CHAT, or neither.');
+  if (telegramToken && !/^\d+:[\w-]{20,}$/.test(telegramToken)) throw new Error('ZKDESK_ALERT_TELEGRAM_TOKEN does not look like a bot token (123456789:AA…): copy it again from @BotFather.');
   if (!webhookUrl && !telegramToken) throw new Error('Set a channel: ZKDESK_ALERT_TELEGRAM_TOKEN + ZKDESK_ALERT_TELEGRAM_CHAT, and/or ZKDESK_ALERT_WEBHOOK_URL.');
   const interval = Math.max(Number(e.ZKDESK_WATCH_INTERVAL) || 60, 15);
   return {
@@ -50,20 +53,57 @@ export function settings(e = env) {
   };
 }
 
-async function main() {
-  const s = settings();
+// A read-only client for the network in the settings (a throwaway key set: it reads with the view key
+// only and never proves or relays anything).
+async function connect(s) {
   globalThis.ZKDESK_NETWORK = s.network;
   const [config, { agentKeys, zkAddress }, zk, { createTransport }, { allowHash }] = await Promise.all([
     import('../src/lib/chain/config.js'), import('../src/lib/zk/keys.js'), import('../src/lib/zk/client.js'), import('../src/lib/zk/transport.js'), import('../src/lib/zk/notes.js'),
   ]);
-  const { chain, deployment, deploymentReady, apiBase } = config;
+  const { chain, deploymentReady, apiBase } = config;
   if (!deploymentReady) throw new Error(`ZKdesk ${s.network} still runs older contracts.`);
   const publicClient = createPublicClient({ chain, transport: http(s.rpc) });
   const { mailbox } = createTransport(`${s.api}${apiBase}`);
-  // A throwaway key set: the watcher reads with the view key only and never proves or relays anything.
   const keys = agentKeys('0x' + Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('hex'), chain.id);
   const refuse = () => { throw new Error('The watcher is read-only.'); };
   const client = zk.createClient({ publicClient, keys, prove: refuse, relay: refuse, requests: mailbox });
+  return { config, zkAddress, allowHash, publicClient, client };
+}
+const channelsOf = (s) => [s.telegramToken && 'telegram', s.webhookUrl && 'webhook'].filter(Boolean);
+const NAMES = { telegram: 'Telegram', webhook: 'Webhook' };
+
+/** --find-chat: the chats that wrote to the bot, with the line to set. */
+async function findChat(e = env, fetchFn = fetch) {
+  const token = String(e.ZKDESK_ALERT_TELEGRAM_TOKEN ?? '').trim();
+  if (!/^\d+:[\w-]{20,}$/.test(token)) throw new Error('Set ZKDESK_ALERT_TELEGRAM_TOKEN to your bot token from @BotFather (it looks like 123456789:AA…).');
+  const chats = await findChats(token, fetchFn);
+  for (const c of chats) console.log(`Chat ${c.id} (${c.type}${c.name ? `, ${c.name}` : ''})${c.from ? ` · last message from ${c.from} · username ${c.username ? `@${c.username}` : 'none'}` : ''}`);
+  // Anyone can message a bot: with more than one chat, you choose (alerts go to whoever has that chat).
+  if (chats.length === 1) console.log(`\nSet: ZKDESK_ALERT_TELEGRAM_CHAT=${chats[0].id}`);
+  else console.log('\nMore than one chat wrote to this bot. Set ZKDESK_ALERT_TELEGRAM_CHAT to yours from the list above (check the name), or use a new bot only you have messaged.');
+}
+
+/** --test: opens the treasury and sends one test alert to each channel. Exit 0 only if all arrived. */
+async function test() {
+  const s = settings();
+  console.log(`Opening the treasury on ${s.network}…`);
+  const { client } = await connect(s);
+  await client.sync();
+  const L = client.viewLedger(s.key);
+  if (!L) throw new Error(`The viewing key opens no treasury on ${s.network}. Copy it again (dashboard: Settings → Copy viewing key), and check ZKDESK_NETWORK.`);
+  console.log(`✓ Viewing key opens "${L.name || 'Treasury'}" on ${s.network}.`);
+  const text = `ZKdesk alerts are set up for "${L.name || 'Treasury'}" (${s.network}). You will get a message here when your agent pays, asks for approval, nears its budget or its access ends.`;
+  const results = await deliverDetailed({ key: 'test', event: 'test', text }, s, fetch, channelsOf(s));
+  for (const [channel, r] of Object.entries(results)) console.log(r.ok ? `✓ ${NAMES[channel]}: test alert delivered.` : `✗ ${NAMES[channel]}: ${r.reason}.`);
+  const ok = Object.values(results).every((r) => r.ok);
+  console.log(ok ? 'All set. Run it without --test to start watching.' : 'Fix the line marked ✗, then run --test again.');
+  return ok;
+}
+
+async function main() {
+  const s = settings();
+  const { config, zkAddress, allowHash, publicClient, client } = await connect(s);
+  const { deployment } = config;
 
   const fmt = (raw) => formatUnits(raw, 6);
   const unit = (asset) => {
@@ -74,7 +114,7 @@ async function main() {
   };
   const BY = { payer: 'payer', 'former payer': 'former payer', approved: 'approved by the Owner', member: 'Owner or Treasurer', mandate: 'mandate', unknown: 'unknown' };
 
-  const channels = [s.telegramToken && 'telegram', s.webhookUrl && 'webhook'].filter(Boolean);
+  const channels = channelsOf(s);
   let statePath = null;
   let state = null;
   const save = () => { // atomic, private to this user; it lists only what was already delivered
@@ -123,11 +163,11 @@ async function main() {
     save();
     const down = new Set(); // a channel that failed in this check is not tried again until the next one
     for (const a of alerts) {
-      const results = await deliver(a, s, fetch, a.channels.filter((c) => !down.has(c)));
-      for (const [channel, ok] of Object.entries(results)) {
-        if (ok) state = markSent(state, a, channel);
+      const results = await deliverDetailed(a, s, fetch, a.channels.filter((c) => !down.has(c)));
+      for (const [channel, r] of Object.entries(results)) {
+        if (r.ok) state = markSent(state, a, channel);
         else down.add(channel);
-        console.log(`${new Date().toISOString()} ${ok ? 'sent' : 'could not send (retrying next check)'} ${a.event} via ${channel}`);
+        console.log(`${new Date().toISOString()} ${r.ok ? 'sent' : `could not send (retrying next check): ${r.reason};`} ${a.event} via ${channel}`);
       }
       save(); // after each alert: a crash does not send the delivered ones again
     }
@@ -189,9 +229,19 @@ function lock(path) {
   process.on('exit', () => { try { if (readFileSync(path, 'utf8') === String(process.pid)) unlinkSync(path); } catch { /* gone */ } });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((error) => {
-    console.error(error.message);
+export { findChat };
+
+// Run directly (node agent/watch.mjs) or by pm2 (argv[1] is then pm2's container; pm_exec_path names this
+// file). A pm_exec_path inherited from another pm2 app never hides argv[1].
+if ([process.argv[1], process.env.pm_exec_path].some((p) => p && import.meta.url === pathToFileURL(p).href)) {
+  // The setup helpers run once, by hand: under pm2 they would be restarted and repeat.
+  if (process.env.pm_id !== undefined && (process.argv.includes('--test') || process.argv.includes('--find-chat'))) {
+    console.error('Run --test and --find-chat directly (node agent/watch.mjs --test), not under pm2.');
+    process.exit(1);
+  }
+  const run = process.argv.includes('--find-chat') ? findChat() : process.argv.includes('--test') ? test().then((ok) => { process.exitCode = ok ? 0 : 1; }) : main();
+  run.catch((error) => {
+    console.error(String(error.message).replace(/https?:\/\/\S+/g, '<url>'));
     process.exit(1);
   });
 }

@@ -315,16 +315,29 @@ ZKDESK_SEED=0x… node agent/cli.mjs balance`}</Code>
           <h3>Alerts</h3>
           <p>Get a Telegram message or a webhook call when your agent pays, uses 80% or all of its budget for the period, asks you to approve a payment, spends a note the other members cannot read, a day before its access ends and when it has ended, or when the treasury's Payer, threshold or limits change. Each alert is sent once.</p>
           <p>A treasury's activity is readable only by its members, so the alerts come from a small watcher you run, not from ZKdesk's servers. It uses the treasury's <em>viewing key</em> (Settings → Copy viewing key, Owner only). The key reads everything in the treasury but cannot pay, approve or change roles. Like any member's copy of it, it can post approval requests (the dashboard shows a request only when its amount and recipient are exactly what the transfer does, and an agent completes only requests it made) and publish solvency statements. Keep it on a machine you control.</p>
-          <Code label="Alert watcher (Node 22, from a clone of the public repository)">{`# 1. Telegram: message @BotFather, /newbot, copy the token; send your bot a message, then
-#    open https://api.telegram.org/bot<token>/getUpdates and copy "chat":{"id": ...}
-# 2. Run it (any always-on machine; pm2 or a systemd service keeps it running)
-ZKDESK_VIEW_KEY=0x… \\
-ZKDESK_ALERT_TELEGRAM_TOKEN=123:abc ZKDESK_ALERT_TELEGRAM_CHAT=4567 \\
-node agent/watch.mjs
+          <p>Set up Telegram alerts in about five minutes (Node 22, in a clone of the public repository):</p>
+          <ol>
+            <li>In Telegram, message <C>@BotFather</C>, send <C>/newbot</C> and follow the steps. Copy the token it gives you (it looks like <C>123456789:AA…</C>).</li>
+            <li>Open your new bot and send it any message, for example "hi". A bot can only write to someone who wrote to it first. Use a new bot just for these alerts: anyone can find a bot and message it.</li>
+            <li>Find your chat id: <C>ZKDESK_ALERT_TELEGRAM_TOKEN=… node agent/watch.mjs --find-chat</C>. It prints the line to use.</li>
+            <li>In the dashboard, open the treasury and copy its viewing key (<em>Settings → Copy viewing key</em>, Owner only).</li>
+            <li>Test everything: run the command below with <C>--test</C>. It opens the treasury, sends one test message and tells you plainly what to fix if something is wrong (for example a wrong token, or a chat that has not messaged the bot yet). It changes nothing. Check the test message arrives in your own Telegram.</li>
+            <li>Start it without <C>--test</C> on a machine that stays on, and keep it running with pm2 or a systemd service.</li>
+          </ol>
+          <Code label="Alert watcher">{`# Steps 3 and 5
+ZKDESK_ALERT_TELEGRAM_TOKEN=123456789:AA… node agent/watch.mjs --find-chat
+ZKDESK_VIEW_KEY=0x… ZKDESK_ALERT_TELEGRAM_TOKEN=123456789:AA… ZKDESK_ALERT_TELEGRAM_CHAT=4567 \\
+node agent/watch.mjs --test
 
-# Or a webhook (POST {text, event}), checked every 60 s by default:
-ZKDESK_VIEW_KEY=0x… ZKDESK_ALERT_WEBHOOK_URL=https://… node agent/watch.mjs
-# --once checks one time (for cron). ZKDESK_ALERT_ALL=1 also reports your and the Treasurer's payments.`}</Code>
+# Step 6: keep it running (export the three variables first; pm2 keeps them in its own
+# files under ~/.pm2, readable by your user: use a machine only you use, or a systemd
+# service with an EnvironmentFile of mode 600)
+pm2 start agent/watch.mjs --name zkdesk-alerts && pm2 save
+
+# Or a webhook (POST {text, event}) instead of, or as well as, Telegram:
+ZKDESK_VIEW_KEY=0x… ZKDESK_ALERT_WEBHOOK_URL=https://… node agent/watch.mjs --test
+# Checks every 60 s by default. --once checks one time (for cron).
+# ZKDESK_ALERT_ALL=1 also reports your and the Treasurer's payments.`}</Code>
           <p>The first check only learns what already happened, so history is not replayed. What was sent is kept in <C>~/.zkdesk</C>, so a restart does not repeat alerts, and a failed delivery is retried on the next check.</p>
           <h3>Pay-per-call APIs</h3>
           <p>Any HTTP API can charge agents per request with <C>agent/paywall.mjs</C>, using its own ZKdesk account.</p>

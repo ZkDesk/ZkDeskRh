@@ -127,12 +127,72 @@ export function markSent(state, alert, channel) {
 }
 
 const TIMEOUT_MS = 10_000;
-/** Delivers on the given channels; returns { telegram, webhook } (true when accepted). */
-export async function deliver(alert, { telegramToken, telegramChat, webhookUrl }, fetchFn = fetch, channels = ['telegram', 'webhook']) {
-  const post = (url, body) => fetchFn(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(TIMEOUT_MS) })
-    .then((r) => r.ok, () => false);
+const telegramApi = (token, method) => `https://api.telegram.org/bot${token}/${method}`;
+
+// Text someone else wrote (Telegram's answers, chat names), without control characters.
+const clean = (text, max = 200) => String(text ?? '').replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').slice(0, max);
+// Telegram's answer, in plain words. Never includes the token or a URL (Telegram's description has neither).
+function telegramReason(status, body) {
+  const d = clean(body?.description);
+  if (status === 401 || status === 404) return 'the bot token is wrong: copy it again from @BotFather';
+  if (/chat not found/i.test(d)) return 'Telegram cannot find this chat: send your bot a message first, then run --find-chat for the right chat id';
+  if (/blocked by the user/i.test(d)) return 'you blocked the bot: unblock it in Telegram';
+  if (/can't initiate/i.test(d)) return 'the bot cannot write to this chat yet: send it a message first';
+  if (/kicked|not a member/i.test(d)) return 'the bot is no longer in that group or channel: add it again, or use your own chat id';
+  if (/upgraded to a supergroup/i.test(d)) return `that group became a supergroup${body?.parameters?.migrate_to_chat_id ? `: use chat id ${clean(body.parameters.migrate_to_chat_id, 30)}` : ''}`;
+  if (status === 429) return 'Telegram is limiting messages for a moment: try again in a minute';
+  return `Telegram answered ${status}${d ? `: ${d}` : ''}`;
+}
+// Fetch's own errors carry the real cause one level down (undici: "fetch failed", cause "unexpected redirect").
+const failedFetch = (error, what) => (error?.name === 'TimeoutError' || error?.name === 'AbortError' ? `${what} did not answer within ${TIMEOUT_MS / 1000} s`
+  : /redirect/i.test(`${error?.message} ${error?.cause?.message}`) ? `${what} redirects: use the final URL` : `${what} could not be reached`);
+
+/**
+ * Delivers on the given channels; returns { telegram, webhook }, each { ok, reason } (reason: why it
+ * failed, in plain words, without the token or the URL).
+ */
+export async function deliverDetailed(alert, { telegramToken, telegramChat, webhookUrl }, fetchFn = fetch, channels = ['telegram', 'webhook']) {
+  const post = (url, body) => fetchFn(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(TIMEOUT_MS) });
   const out = {};
-  if (channels.includes('telegram') && telegramToken && telegramChat) out.telegram = await post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, { chat_id: telegramChat, text: alert.text, disable_web_page_preview: true });
-  if (channels.includes('webhook') && webhookUrl) out.webhook = await post(webhookUrl, { text: alert.text, event: alert.event });
+  if (channels.includes('telegram') && telegramToken && telegramChat) {
+    out.telegram = await post(telegramApi(telegramToken, 'sendMessage'), { chat_id: telegramChat, text: alert.text, disable_web_page_preview: true })
+      .then(async (r) => (r.ok ? { ok: true } : { ok: false, reason: telegramReason(r.status, await r.json().catch(() => null)) }), (error) => ({ ok: false, reason: failedFetch(error, 'Telegram') }));
+  }
+  if (channels.includes('webhook') && webhookUrl) {
+    out.webhook = await post(webhookUrl, { text: alert.text, event: alert.event })
+      .then((r) => (r.ok ? { ok: true } : { ok: false, reason: `the webhook answered HTTP ${r.status}` }), (error) => ({ ok: false, reason: failedFetch(error, 'the webhook') }));
+  }
   return out;
+}
+
+/** Delivers on the given channels; returns { telegram, webhook } (true when accepted). */
+export async function deliver(alert, settings, fetchFn = fetch, channels = ['telegram', 'webhook']) {
+  const out = await deliverDetailed(alert, settings, fetchFn, channels);
+  return Object.fromEntries(Object.entries(out).map(([k, v]) => [k, v.ok]));
+}
+
+/**
+ * The chats that wrote to a Telegram bot recently (its last updates): [{ id, type, name }], newest
+ * first. For --find-chat: you send the bot a message, then this finds your chat id. Throws in plain
+ * words (wrong token, no message yet, a webhook set on the bot).
+ */
+export async function findChats(token, fetchFn = fetch) {
+  const r = await fetchFn(telegramApi(token, 'getUpdates'), { redirect: 'error', signal: AbortSignal.timeout(TIMEOUT_MS) })
+    .catch((error) => { throw new Error(failedFetch(error, 'Telegram')); });
+  const body = await r.json().catch(() => null);
+  if (r.status === 409) {
+    throw new Error(/webhook/i.test(body?.description ?? '') ? 'This bot is set to send its messages to a webhook, so its chats cannot be listed here. Remove that webhook (Telegram deleteWebhook) or create a new bot.'
+      : 'Another program is reading this bot\'s messages right now. Stop it, or create a new bot used only for these alerts.');
+  }
+  if (!r.ok || !body?.ok) throw new Error(telegramReason(r.status, body));
+  const seen = new Map();
+  for (const u of [...(body.result ?? [])].reverse()) {
+    const m = u.message ?? u.edited_message ?? u.channel_post ?? u.edited_channel_post ?? u.my_chat_member ?? u.chat_member;
+    const chat = m?.chat;
+    if (chat?.id === undefined || seen.has(chat.id)) continue;
+    const who = (x) => clean(x?.title || [x?.first_name, x?.last_name].filter(Boolean).join(' ') || x?.username || '', 60);
+    seen.set(chat.id, { id: clean(chat.id, 30), type: clean(chat.type, 20), name: who(chat), from: m.from ? who(m.from) : '', username: m.from?.username ? clean(m.from.username, 40) : '' });
+  }
+  if (!seen.size) throw new Error('No message to this bot yet: open it in Telegram, send it any message (e.g. "hi"), then run this again.');
+  return [...seen.values()];
 }

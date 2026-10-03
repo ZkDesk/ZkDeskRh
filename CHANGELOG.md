@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.23.0 (October 2026)
+
+- **Telegram alerts in a few minutes:** the alerts guide (*AI agents → Alerts*) is now a numbered walkthrough: create the bot, message it, find your chat id, copy the viewing key, test, keep it running.
+  - `node agent/watch.mjs --find-chat` prints your chat id after you send your bot a message: no URL to open, no JSON to read.
+  - `node agent/watch.mjs --test` opens the treasury with the viewing key, sends one test alert to each channel you set, and says whether each arrived. It changes nothing.
+  - **Plain errors:** in the test and in normal runs, Telegram's usual answers are said in plain words: a wrong token, a chat that has not messaged the bot, a blocked bot, a webhook that answers with an error. Tokens and webhook URLs never appear in the output.
+- No contract change; the watcher and the docs only.
+
 ## 3.22.0 (October 2026)
 
 - **The agent's per-payment limit, made clear:** the treasury's approval threshold is the most your agent can pay in one payment without you, enforced by the proof. The dashboard and the agent's tools now say so: *Per payment: up to X USDG without your approval* in *Treasury → AI agent*, and `perPaymentLimit` in `zkdesk_treasuries` (the same value as `ownerApprovalAbove`).

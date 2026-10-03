@@ -103,12 +103,17 @@ const { execFile } = await import('node:child_process');
 const { promisify } = await import('node:util');
 const watchDir = mkdtemp(pjoin(tmp(), 'zkd-watch-'));
 // Asynchronous: the webhook above runs in this process, so it must keep answering while the watcher runs.
-const watchOnce = async () => (await promisify(execFile)(process.execPath, ['agent/watch.mjs', '--once'], {
-  env: { ...process.env, ZKDESK_VIEW_KEY: '0x' + L().lsk.toString(16).padStart(64, '0'), ZKDESK_NETWORK: 'testnet', ZKDESK_API: site, ZKDESK_RPC: RPC ?? '', ZKDESK_STATE_DIR: watchDir, ZKDESK_ALERT_WEBHOOK_URL: `http://127.0.0.1:${hookServer.address().port}/hook` },
+const watchOnce = async (mode = '--once') => (await promisify(execFile)(process.execPath, ['agent/watch.mjs', mode], {
+  env: { ...process.env, ZKDESK_ALERT_TELEGRAM_TOKEN: '', ZKDESK_ALERT_TELEGRAM_CHAT: '', ZKDESK_VIEW_KEY: '0x' + L().lsk.toString(16).padStart(64, '0'), ZKDESK_NETWORK: 'testnet', ZKDESK_API: site, ZKDESK_RPC: RPC ?? '', ZKDESK_STATE_DIR: watchDir, ZKDESK_ALERT_WEBHOOK_URL: `http://127.0.0.1:${hookServer.address().port}/hook` },
   encoding: 'utf8',
 }).catch((error) => { throw new Error(`watcher failed (exit ${error.code}): ${error.stderr || error.message}`); })).stdout;
 await step("Owner's alert watcher learns the treasury", async () => { await owner.sync(); return (await watchOnce()).trim().split('\n').at(-1); });
 check(hooks.length === 0, 'the first check sends nothing (no replay of history)');
+// 3.23: --test opens the treasury and sends one test alert, without touching the watcher's state.
+const tested = await step('Owner tests the alert setup (--test)', () => watchOnce('--test'));
+check(/Viewing key opens "Agent treasury"/.test(tested) && /Webhook: test alert delivered/.test(tested), 'the test reports the treasury and the delivery');
+check(hooks.length === 1 && hooks[0].event === 'test' && /alerts are set up for "Agent treasury"/.test(hooks[0].text), 'the test alert arrived');
+hooks.length = 0;
 const seen = await step('Agent lists its treasuries', () => agent.treasuries());
 check(seen.find((t) => t.id === id)?.roles.join() === 'Payer', 'the agent holds only the Payer role');
 const paid = await step('Agent pays 20 from the treasury (below the threshold)', () => agent.pay(id, { to: ownerZk, amount: '20' }));

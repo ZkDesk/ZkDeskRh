@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { decide, deliver, markSent } from './alerts.mjs';
-import { loadState, settings } from './watch.mjs';
+import { decide, deliver, deliverDetailed, findChats, markSent } from './alerts.mjs';
+import { findChat, loadState, settings } from './watch.mjs';
 
 const limits = { payer: 'a1', threshold: '50', scope: 's1', count: '0/0', roles: 'o:t:a', allocCap: '800' };
 const view = (o = {}) => ({ payments: [], period: { spent: '0', budget: '30', window: '7' }, requests: [], limits, ...o });
@@ -206,9 +206,63 @@ const now = lim({ payer: 'b2', count: '1/86400', roles: 'o:t2:a' });
   assert.throws(() => settings({ ZKDESK_VIEW_KEY: '0x12', ZKDESK_ALERT_WEBHOOK_URL: 'https://h/x' }), /view key/);
   assert.throws(() => settings({ ZKDESK_VIEW_KEY: '0x' + 'ff'.repeat(32), ZKDESK_ALERT_WEBHOOK_URL: 'https://h/x' }), /view key/, 'above the field');
   assert.throws(() => settings({ ZKDESK_VIEW_KEY: key }), /Set a channel/);
-  assert.throws(() => settings({ ZKDESK_VIEW_KEY: key, ZKDESK_ALERT_TELEGRAM_TOKEN: 'T' }), /both/);
+  assert.throws(() => settings({ ZKDESK_VIEW_KEY: key, ZKDESK_ALERT_TELEGRAM_TOKEN: 'T' }), /--find-chat/, 'a token without a chat points to --find-chat');
+  assert.throws(() => settings({ ZKDESK_VIEW_KEY: key, ZKDESK_ALERT_TELEGRAM_CHAT: '42' }), /both/);
+  assert.throws(() => settings({ ZKDESK_VIEW_KEY: key, ZKDESK_ALERT_TELEGRAM_TOKEN: 'not-a-token', ZKDESK_ALERT_TELEGRAM_CHAT: '42' }), /does not look like a bot token/);
+  assert.equal(settings({ ZKDESK_VIEW_KEY: key, ZKDESK_ALERT_TELEGRAM_TOKEN: '123456789:AAH4fake_token-value-for-tests-0001', ZKDESK_ALERT_TELEGRAM_CHAT: '42' }).telegramChat, '42');
   assert.throws(() => settings({ ZKDESK_VIEW_KEY: key, ZKDESK_ALERT_WEBHOOK_URL: 'http://hook.example/x' }), /https/);
   assert.throws(() => settings({ ZKDESK_VIEW_KEY: key, ZKDESK_NETWORK: 'devnet', ZKDESK_ALERT_WEBHOOK_URL: 'https://h/x' }), /mainnet or testnet/);
+}
+
+// 3.23 setup help: why a delivery failed, in plain words (never the token or URL), and --find-chat.
+{
+  const TOKEN = '123456789:AAH4fake_token-value-for-tests-0001';
+  const s = { telegramToken: TOKEN, telegramChat: '42', webhookUrl: 'https://hook.example/secret-path' };
+  const answer = (status, body) => () => Promise.resolve({ ok: status < 300, status, json: () => Promise.resolve(body) });
+  const alert = { key: 't', event: 'test', text: 'hi' };
+  const reason = async (fetchFn, ch = ['telegram']) => (await deliverDetailed(alert, s, fetchFn, ch))[ch[0]].reason ?? 'ok';
+  assert.equal(await reason(answer(200, { ok: true })), 'ok');
+  assert.match(await reason(answer(401, { ok: false, error_code: 401, description: 'Unauthorized' })), /bot token is wrong/);
+  assert.match(await reason(answer(400, { ok: false, error_code: 400, description: 'Bad Request: chat not found' })), /send your bot a message first.*--find-chat/);
+  assert.match(await reason(answer(403, { ok: false, error_code: 403, description: 'Forbidden: bot was blocked by the user' })), /blocked the bot/);
+  assert.match(await reason(answer(403, { ok: false, error_code: 403, description: "Forbidden: bot can't initiate conversation with a user" })), /send it a message first/);
+  assert.match(await reason(answer(429, { ok: false, error_code: 429, description: 'Too Many Requests: retry after 5' })), /try again in a minute/);
+  assert.match(await reason(() => Promise.reject(Object.assign(new Error('x'), { name: 'TimeoutError' }))), /did not answer within 10 s/);
+  assert.match(await reason(() => Promise.reject(new TypeError('fetch failed'))), /could not be reached/);
+  assert.match(await reason(answer(500, null), ['webhook']), /webhook answered HTTP 500/);
+  assert.match(await reason(() => Promise.reject(Object.assign(new TypeError('fetch failed'), { cause: new Error('unexpected redirect') })), ['webhook']), /redirects: use the final URL/, 'as undici reports it');
+  assert.match(await reason(answer(403, { ok: false, description: 'Forbidden: bot was kicked from the group chat' })), /no longer in that group/);
+  assert.equal(await reason(answer(400, { ok: false, description: 'Bad Request: \u001b[31mfake\nline' })), 'Telegram answered 400: Bad Request:  [31mfake line', 'no control characters');
+  for (const f of [answer(401, { description: 'Unauthorized' }), answer(500, null), () => Promise.reject(new Error(`fetch https://api.telegram.org/bot${TOKEN}/x failed`))]) {
+    const out = JSON.stringify(await deliverDetailed(alert, s, f));
+    assert.ok(!out.includes(TOKEN) && !out.includes('secret-path'), 'no token or webhook URL in any reason');
+  }
+
+  // --find-chat: the newest chat first, each once; plain errors for the usual mistakes.
+  const updates = { ok: true, result: [
+    { update_id: 1, message: { chat: { id: 111, type: 'private', first_name: 'Ann', last_name: 'Lee' }, from: { first_name: 'Ann', username: 'ann' } } },
+    { update_id: 2, message: { chat: { id: -222, type: 'group', title: 'Ops' } } },
+    { update_id: 3, message: { chat: { id: 111, type: 'private', first_name: 'Ann' } } },
+    { update_id: 4, my_chat_member: { chat: { id: 333, type: 'private', username: 'bob' } } },
+  ] };
+  assert.deepEqual((await findChats(TOKEN, answer(200, updates))).map((c) => [c.id, c.type, c.name]), [['333', 'private', 'bob'], ['111', 'private', 'Ann'], ['-222', 'group', 'Ops']]);
+  assert.equal((await findChats(TOKEN, answer(200, { ok: true, result: [{ message: { chat: { id: 5, type: 'private', first_name: 'E\u001b]0;x\u0007ve' } } }] })))[0].name, 'E ]0;x ve', 'names are cleaned');
+  await assert.rejects(findChats(TOKEN, answer(200, { ok: true, result: [] })), /No message to this bot yet/);
+  await assert.rejects(findChats(TOKEN, answer(401, { ok: false, description: 'Unauthorized' })), /bot token is wrong/);
+  await assert.rejects(findChats(TOKEN, answer(409, { ok: false, description: 'Conflict: can\'t use getUpdates method while webhook is active' })), /webhook/);
+  await assert.rejects(findChats(TOKEN, answer(409, { ok: false, description: 'Conflict: terminated by other getUpdates request' })), /Another program is reading/);
+  await assert.rejects(findChat({ ZKDESK_ALERT_TELEGRAM_TOKEN: 'nope' }), /bot token from @BotFather/);
+  const lines = [];
+  const log = console.log;
+  console.log = (m) => lines.push(m);
+  try { await findChat({ ZKDESK_ALERT_TELEGRAM_TOKEN: TOKEN }, answer(200, updates)); } finally { console.log = log; }
+  assert.match(lines.at(-1), /More than one chat wrote to this bot/, 'with several chats you choose');
+  lines.length = 0;
+  console.log = (m) => lines.push(m);
+  try { await findChat({ ZKDESK_ALERT_TELEGRAM_TOKEN: TOKEN }, answer(200, { ok: true, result: [updates.result[0]] })); } finally { console.log = log; }
+  assert.match(lines[0], /Chat 111 \(private, Ann Lee\) · last message from Ann · username @ann$/);
+  assert.match(lines.at(-1), /Set: ZKDESK_ALERT_TELEGRAM_CHAT=111$/, 'one chat: the line to set');
+  assert.ok(!lines.join('').includes(TOKEN), 'the token is never printed');
 }
 
 // The state file: a missing one is a first run; a damaged one (or an older format) starts fresh with a note.
@@ -230,4 +284,4 @@ const now = lim({ payer: 'b2', count: '1/86400', roles: 'o:t2:a' });
   }
   assert.equal(notes.length, 3, 'each damaged state is reported');
 }
-console.log('alerts checks passed: first run learns history, each payment decided once (oldest first, with the period total), unreadable calls decided later, no replay when rows read differently, 80% and 100% per window, approved payments the agent asked for, requests once across a mailbox outage, the agent access end (a day before, when it passes, again after an extension), every limit change (also flipping back) and no false change on a failed read, per-channel retries, new channels get only new alerts, no flood over a long history, delivery shapes, watcher settings, state file recovery');
+console.log('alerts checks passed: first run learns history, each payment decided once (oldest first, with the period total), unreadable calls decided later, no replay when rows read differently, 80% and 100% per window, approved payments the agent asked for, requests once across a mailbox outage, the agent access end (a day before, when it passes, again after an extension), every limit change (also flipping back) and no false change on a failed read, per-channel retries, new channels get only new alerts, no flood over a long history, delivery shapes, watcher settings, state file recovery, setup help (delivery reasons without secrets, --find-chat)');
