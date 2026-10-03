@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.19.0 (October 2026)
+
+- **Alerts for your agent:** a Telegram message or a webhook call when your agent pays (amount, recipient, how much of its budget is used), reaches 80% or all of its budget for the period, asks you to approve a payment, a payment you approved goes out, or a payment spends a note the other members cannot read, and when the treasury's Payer, threshold or limits change. Each alert goes out once per channel (a crash in the middle of sending can repeat one). If the watcher cannot check the treasury for 5 checks in a row, it says so, and again when it recovers.
+  - **It runs on your side:** `node agent/watch.mjs`, on any always-on machine with Node 22. A treasury's activity is readable only by its members, so ZKdesk's servers cannot send these alerts without holding your key, and they don't.
+  - **Viewing key:** the watcher uses the treasury's viewing key, which you copy in the dashboard under *Settings → Copy viewing key* (Owner only). It reads everything in the treasury but cannot pay, approve or change roles. Like any member's copy, it can post approval requests and publish solvency statements; keep it on a machine you control.
+  - **No floods or repeats:** the first check only learns what already happened. Each payment, request and change is decided once and remembered across restarts; a failed channel is retried without repeating the other, and a channel that is down does not slow the others. One watcher runs per treasury; `--once` exits non-zero when a check fails or an alert could not be delivered.
+- **Fix (found by the review, older than this release): approval requests must show what they do.** Anyone holding a treasury's keys could post a request whose displayed amount and recipient differed from an unshield it actually performed. The dashboard, the agent SDK and the alerts now drop such a request, the approval dialog shows the recipient in full (check every character) and says that "requested by" is as the request states, and an agent completes only requests it made itself.
+  - Setup, including a Telegram bot in a few steps, is in the AI agents guide under *Alerts*. No contract change.
+
 ## 3.18.0 (October 2026)
 
 - **Agent spending report:** see what your AI agent paid from a treasury. Each payment shows when, how much, to whom and who made it, plus what the agent has spent this period against its budget.

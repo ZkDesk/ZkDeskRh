@@ -222,10 +222,18 @@ async function refresh() {
       mode: 'testnet', connected: true, address: session.wallet.address, keySource: session.passkey ? 'passkey' : 'wallet', zkAddress: zkAddress(L ?? session.pub), personalZkAddress: zkAddress(session.pub),
       roles, workspace: L ? hexId(L.owner) : 'personal', workspaceName: L ? L.name : null,
       workspaces: ledgers.map((l) => ({ id: hexId(l.owner), name: l.name, roles: l.roles })),
-      requests: requests.filter((r) => r.status !== 'Expired').map((r) => ({
-        id: r.id, amount: usd(r.amount), status: r.status, mine: r.mine, role: r.role, at: new Date(r.at).toISOString(),
-        to: r.to ? zkAddress(r.to).slice(0, 18) + '…' : `${r.recipient.slice(0, 8)}…${r.recipient.slice(-4)}`,
-      })),
+      requests: requests.filter((r) => r.status !== 'Expired').map((r) => {
+        const usdgAsset = r.asset === BigInt(deployment.usdg);
+        const vaultAsset = deployment.vault && r.asset === BigInt(deployment.vault);
+        return {
+          id: r.id, amount: usdgAsset ? usd(r.amount) : Number(r.amount) / (vaultAsset ? 1e12 : 1e18),
+          symbol: usdgAsset ? USD_SYMBOL : vaultAsset ? 'vault shares' : SYMBOLS.find((x) => BigInt(stocks[x].token) === r.asset) ?? 'tokens',
+          status: r.status, mine: r.mine, role: r.role, at: new Date(r.at).toISOString(),
+          to: r.to ? zkAddress(r.to).slice(0, 18) + '…' : `${r.recipient.slice(0, 8)}…${r.recipient.slice(-4)}`,
+          // What the approval binds, in full: a 0x address, or the owner key of a zkd: address (v3.19).
+          toFull: r.to ? `a zkd: address whose first 64 characters after "zkd:" are ${r.to.owner.toString(16).padStart(64, '0')}` : r.recipient,
+        };
+      }),
       notice: (() => { const n = notice; notice = null; return n; })(),
       scheduler: deployment.scheduler,
       ledger: L && {
@@ -489,6 +497,12 @@ export default {
   net: { mainnet: MAINNET, network, mainnetReady, testnetReady, usd: USD_SYMBOL, name: NETWORK_NAME, t: T, label: MAINNET ? 'Mainnet' : 'Testnet' },
   load: () => offline(),
   connect: () => connect().catch((error) => { const message = friendly(error.shortMessage || error.message); emit(offline(message)); throw new Error(message); }),
+  /** The open treasury's view key for the alert watcher (agent/watch.mjs); Owner only. */
+  viewKey: live(async () => {
+    const L = activeLedger();
+    if (!L) throw new Error('Open a treasury first.');
+    return session.client.viewKey('0x' + L.owner.toString(16));
+  }),
   /** Passkey accounts: a seed (32 bytes, hex) stays on this page only until the worker opens it. */
   passkey: {
     supported: passkeySupported,

@@ -197,28 +197,41 @@ export const balanceOf = (notes, asset, status = 'unspent') =>
  */
 export function myLedgers(state, keys) {
   const out = [];
-  const events = state.ledgerEvents;
   const seen = new Set();
-  for (const e of events.filter((x) => x.name === 'KeyShare')) {
+  for (const e of state.ledgerEvents.filter((x) => x.name === 'KeyShare')) {
     const lsk = decryptKeyShare(e.share, keys.encSecret);
-    if (lsk === null) continue;
-    const ledger = ledgerKeys(lsk);
-    if (ledger.owner !== e.id || seen.has(e.id)) continue;
+    if (lsk === null || seen.has(e.id)) continue;
+    const ledger = ledgerFromSecret(state, lsk, keys.owner);
+    if (!ledger || ledger.owner !== e.id) continue;
     seen.add(e.id);
-    const mine = events.filter((x) => x.id === e.id);
-    const roles = mine.filter((x) => x.name === 'LedgerCreated' || x.name === 'RolesRotated').at(-1)?.rolesCommit;
-    const policy = mine.filter((x) => x.name === 'LedgerCreated' || x.name === 'PolicySet').at(-1)?.policyHash;
-    const config = mine.filter((x) => x.name === 'LedgerConfig').map((x) => decryptConfig(x.config, ledger.encSecret))
-      .filter((c) => c && rolesOf(c) === roles && policyHash(c) === policy).at(-1);
-    if (!config) continue;
-    const held = heldRoles(config, keys.owner);
-    if (!held.length) continue; // rotated out: the old share still opens, but no role remains
-    const attested = mine.filter((x) => x.name === 'TreasuryAttested').at(-1);
-    // The Payer's spending accumulator (v3.4): the latest note, opened with the ledger secret.
-    const budget = openBudget(lsk, mine.filter((x) => x.name === 'BudgetNote').at(-1)); // null: does not open
-    out.push({ ...ledger, config, budget, name: config.name, roles: held, approved: new Set(mine.filter((x) => x.name === 'IntentApproved').map((x) => x.intent)), attested: attested && { epoch: Number(attested.epoch), liabilities: attested.liabilities, block: attested.block } });
+    if (!ledger.roles.length) continue; // rotated out: the old share still opens, but no role remains
+    out.push(ledger);
   }
   return out;
+}
+
+/**
+ * A treasury rebuilt from its ledger secret alone (the view key; v3.19 alerts), or null if it does not
+ * exist on this network: the current config (matching the on-chain roles commitment and policy hash),
+ * the spending record, approvals and the latest statement. roles: those `owner` (a personal owner key)
+ * holds in it; [] for a view-only reader.
+ */
+export function ledgerFromSecret(state, lsk, owner = null) {
+  const ledger = ledgerKeys(lsk);
+  const mine = state.ledgerEvents.filter((x) => x.id === ledger.owner);
+  const roles = mine.filter((x) => x.name === 'LedgerCreated' || x.name === 'RolesRotated').at(-1)?.rolesCommit;
+  const policy = mine.filter((x) => x.name === 'LedgerCreated' || x.name === 'PolicySet').at(-1)?.policyHash;
+  const config = mine.filter((x) => x.name === 'LedgerConfig').map((x) => decryptConfig(x.config, ledger.encSecret))
+    .filter((c) => c && rolesOf(c) === roles && policyHash(c) === policy).at(-1);
+  if (!config) return null;
+  const attested = mine.filter((x) => x.name === 'TreasuryAttested').at(-1);
+  // The Payer's spending accumulator (v3.4): the latest note, opened with the ledger secret.
+  const budget = openBudget(lsk, mine.filter((x) => x.name === 'BudgetNote').at(-1)); // null: does not open
+  return {
+    ...ledger, config, budget, name: config.name, roles: owner === null ? [] : heldRoles(config, owner),
+    approved: new Set(mine.filter((x) => x.name === 'IntentApproved').map((x) => x.intent)),
+    attested: attested && { epoch: Number(attested.epoch), liabilities: attested.liabilities, block: attested.block },
+  };
 }
 
 const STATUS = ['', 'Active', 'Paused', 'Revoked'];

@@ -15,7 +15,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5184",
     "build": "vite build",
-    "test": "node src/dashboard/model.test.js && node src/lib/zk/zk.test.js && node api/relay.test.mjs && node api/handlers.test.mjs && node api/crons.test.mjs && node api/nyse.test.mjs && node agent/agent.test.mjs && node agent/paywall.test.mjs",
+    "test": "node src/dashboard/model.test.js && node src/lib/zk/zk.test.js && node api/relay.test.mjs && node api/handlers.test.mjs && node api/crons.test.mjs && node api/nyse.test.mjs && node agent/agent.test.mjs && node agent/alerts.test.mjs && node agent/paywall.test.mjs",
     "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=api/** --test-coverage-exclude=api/**/*.test.mjs --test-coverage-lines=85 api/relay.test.mjs api/handlers.test.mjs api/crons.test.mjs api/nyse.test.mjs",
     "preview": "vite preview --host 127.0.0.1 --port 5184",
     "zk:fixtures": "node circuits/scripts/fixtures.mjs",

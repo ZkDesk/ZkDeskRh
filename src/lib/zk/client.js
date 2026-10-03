@@ -6,12 +6,12 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { abis, deployment, explorerTx, MAINNET, minRelayFee, NETWORK_NAME, payableFee, stocks, USD_SYMBOL } from '../chain/config.js';
 import { encryptConfig, encryptKeyShare, encryptMandate, encryptNote, encryptPosition, openRequest, sealRequest, textToField } from './crypto.js';
 import { buildMandateAuth, buildPull, buildReceipt, currentPeriod, KINDS, MANDATE_ACTIONS, PERIODS, rawForUsdg } from './mandate.js';
-import { ACTIONS, AUTH, authExtHash, buildAttest, buildLedger, buildRoleAuth, ledgerKeys, mailboxMessages, payerSpent, rolesOf, scopeOf } from './ledger.js';
+import { ACTIONS, AUTH, authExtHash, buildAttest, buildLedger, buildRoleAuth, ledgerKeys, mailboxMessages, budgetWindow, payerSpent, requestShowsItsTransfer, rolesOf, scopeOf } from './ledger.js';
 import { ALLOW_SLOTS, allowHash, mandateCommit, MAX_AMOUNT, policyHash, randomField } from './notes.js';
 import { buildTransact } from './transact.js';
 import { paymentRows } from './report.js';
 import { buildPosition, debtOf, maxDebt, valueOf } from './position.js';
-import { balanceOf, freeSlot, ledgerMandates, myLedgers, myNotes, myPositions, myReceipts, syncPool } from './wallet.js';
+import { balanceOf, freeSlot, ledgerFromSecret, ledgerMandates, myLedgers, myNotes, myPositions, myReceipts, syncPool } from './wallet.js';
 
 const USDG = BigInt(deployment.usdg);
 const hexId = (id) => '0x' + id.toString(16).padStart(64, '0');
@@ -426,7 +426,12 @@ export function createClient({ publicClient, walletClient = null, address = null
   const ledgerAct = (ledger, role, action) => { const memo = {}; return againWhenBusy(() => ledgerActOnce(ledger, role, action, memo)); };
 
   /** The ledger as of the last sync (its spending accumulator moves with every transfer). */
-  const current = (ledger) => ledgers().find((l) => l.owner === ledger.owner) ?? ledger;
+  const current = (ledger) => ledgers().find((l) => l.owner === ledger.owner) ?? (ledger.lsk !== undefined && ledger.roles?.length === 0 ? ledgerFromSecret(state, ledger.lsk) : null) ?? ledger;
+  /**
+   * A treasury read with its view key (the ledger secret) alone, as of the last sync: what the alert
+   * watcher (agent/watch.mjs) reads. It can read everything and move nothing. null if it does not exist.
+   */
+  const viewLedger = (lsk) => ledgerFromSecret(state, BigInt(lsk));
 
   async function ledgerActOnce(ledger, role, { action, amount, asset = deployment.usdg, to = null, recipient = null }, memo = {}) {
     await sync();
@@ -509,12 +514,14 @@ export function createClient({ publicClient, walletClient = null, address = null
   }
 
   /** Rebuilds a request exactly as proposed; null if it does not reproduce its intent. */
+  // Anyone holding the treasury's keys can post a request, so any shape may arrive: nothing in here throws.
   function rebuildRequest(ledger, r, sk, check, t) {
-    const notes = ledgerNotes(ledger);
-    const inputs = r.inputs.map((c) => notes.find((n) => n.commitment === c));
-    if (inputs.some((n) => !n)) return null;
-    const out = r.to ? { amount: r.amount, owner: r.to.owner } : { amount: 0n, owner: ledger.owner };
     try {
+      if (!r || !requestShowsItsTransfer(r) || !Array.isArray(r.inputs) || !Array.isArray(r.outputs)) return null; // shown amount or recipient differ from the transfer
+      const notes = ledgerNotes(ledger);
+      const inputs = r.inputs.map((c) => notes.find((n) => n.commitment === c));
+      if (inputs.some((n) => !n)) return null;
+      const out = r.to ? { amount: r.amount, owner: r.to.owner } : { amount: 0n, owner: ledger.owner };
       const built = buildLedger({ tree: state.tree, ledger, sk, role: r.role, action: ACTIONS.transfer, asset: r.asset, inputs, out, ext: r.ext, t, blindings: { outputs: r.outputs, dummies: r.dummies }, check });
       return built.intent === r.intent && built.needsOwner ? { built, inputs } : null;
     } catch {
@@ -613,7 +620,8 @@ export function createClient({ publicClient, walletClient = null, address = null
     if (requests) {
       for (const row of await requests.list(hexId(ledger.owner)).catch(() => [])) {
         const r = openRequest(row.ciphertext, ledger.requestKey);
-        if (r?.intent !== undefined) intentsFrom.set(r.intent, r.from);
+        // Only a request that rebuilds into its own intent counts, and the first one for an intent.
+        if (r?.intent !== undefined && !intentsFrom.has(r.intent) && rebuildRequest(ledger, r, keys.sk, false, BigInt(Math.floor(Date.now() / 1000)))) intentsFrom.set(r.intent, r.from);
       }
     }
     const rows = paymentRows({
@@ -623,7 +631,11 @@ export function createClient({ publicClient, walletClient = null, address = null
     const scope = scopeOf(ledger.config);
     return {
       rows: rows.reverse(),
-      period: { spent: (() => { try { return ledger.budget ? payerSpent(ledger, BigInt(Math.floor(Date.now() / 1000))) : 0n; } catch { return 0n; } })(), budget: scope.budget, budgetPeriod: scope.budgetPeriod },
+      period: {
+        spent: (() => { try { return ledger.budget ? payerSpent(ledger, BigInt(Math.floor(Date.now() / 1000))) : 0n; } catch { return 0n; } })(),
+        budget: scope.budget, budgetPeriod: scope.budgetPeriod,
+        window: (() => { try { return budgetWindow(ledger.config, BigInt(Math.floor(Date.now() / 1000))); } catch { return 0n; } })(),
+      },
     };
   }
 
@@ -740,7 +752,7 @@ export function createClient({ publicClient, walletClient = null, address = null
 
   return {
     sync, notes, positions, deposit, send, combine, credit, deskHealth,
-    ledgers, ledgerNotes, createLedger, updateLedger, ledgerAct, ledgerAttest, ledgerRequests, ledgerPayments, approveRequest, completeRequest, setTransferLimit,
+    ledgers, viewLedger, ledgerNotes, createLedger, updateLedger, ledgerAct, ledgerAttest, ledgerRequests, ledgerPayments, approveRequest, completeRequest, setTransferLimit,
     mandates, createMandate, manageMandate, payMandate, receipts, proveReceipt,
     ledgerBalance: (ledger, asset, st = 'unspent') => balanceOf(ledgerNotes(ledger), big(asset), st),
     lend: (amount) => convert('lend', amount),

@@ -249,4 +249,34 @@ assert.notEqual(lk.owner, ownerPk(0xabcn), 'ledger notes live outside the person
   const { FIELD: P_ } = await import('./notes.js');
   assert.deepEqual(decryptNote(encryptNote(n1, K.encPub, { owner: B.owner + P_, encPub: B.encPub, blinding: 1n }), K.encSecret), n1);
 }
+// v3.19: a treasury read with its view key alone, and approval requests that must show their transfer.
+{
+  const { ledgerFromSecret, myLedgers } = await import('./wallet.js');
+  const { requestShowsItsTransfer, rolesOf: rolesCommitOf } = await import('./ledger.js');
+  const { encryptConfig, encryptKeyShare } = await import('./crypto.js');
+  const lsk = 0x77n;
+  const K = ledgerKeys(lsk);
+  const cfg = { name: 'View', owner: a.owner, treasurer: b.owner, payer: b.owner, auditor: b.owner, rolesSalt: 3n, allocCap: 9n, dualThreshold: 4n, policySalt: 5n };
+  const st = { ledgerEvents: [
+    { id: K.owner, name: 'LedgerCreated', rolesCommit: rolesCommitOf(cfg), policyHash: policyHash(cfg) },
+    { id: K.owner, name: 'KeyShare', share: encryptKeyShare(lsk, a.encPub) },
+    { id: K.owner, name: 'LedgerConfig', config: encryptConfig(cfg, K.encPub) },
+  ] };
+  const viewed = ledgerFromSecret(st, lsk);
+  const member = myLedgers(st, a)[0];
+  assert.equal(viewed.name, 'View');
+  assert.deepEqual(viewed.roles, [], 'a view key holds no role');
+  assert.deepEqual(member.roles, ['Owner']);
+  assert.equal(viewed.owner, member.owner);
+  assert.equal(ledgerFromSecret(st, 0x78n), null, 'another secret finds nothing');
+  // Requests: an unshield must display exactly its ext data; a private payment carries no ext.
+  const vendor = '0x' + '3c'.repeat(20);
+  assert.equal(requestShowsItsTransfer({ amount: 200n, recipient: vendor, ext: { recipient: vendor, extAmount: -200n } }), true);
+  assert.equal(requestShowsItsTransfer({ amount: 200n, recipient: vendor, ext: { recipient: '0x' + 'ee'.repeat(20), extAmount: -200n } }), false, 'another recipient');
+  assert.equal(requestShowsItsTransfer({ amount: 200n, recipient: vendor, ext: { recipient: vendor, extAmount: -50000n } }), false, 'another amount');
+  assert.equal(requestShowsItsTransfer({ amount: 5n, to: { owner: 1n }, ext: { recipient: '0x0000000000000000000000000000000000000000', extAmount: 0n } }), true);
+  assert.equal(requestShowsItsTransfer({ amount: 5n, to: { owner: 1n }, ext: { recipient: vendor, extAmount: -5n } }), false, 'a private request that also unshields');
+  assert.equal(requestShowsItsTransfer({ amount: 0n, recipient: vendor, ext: { recipient: vendor, extAmount: 0n } }), false);
+  assert.equal(requestShowsItsTransfer({ amount: 'x', recipient: vendor, ext: {} }), false, 'malformed');
+}
 console.log('zk primitives passed: poseidon vector, public amount, key derivation (signature and passkey, recovery words), note encryption, grumpkin + operator encryption, liquidation replay, health witness, ledger key shares/config/roles, Payer scope and spending accumulator.');

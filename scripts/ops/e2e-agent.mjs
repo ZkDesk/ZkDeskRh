@@ -13,7 +13,8 @@
 // v3.4 Payer scope: the Owner gives the agent an allow list and a daily budget; listed payments within
 // it go through, an over-budget or off-list payment is refused, and the prover cannot make a proof for
 // one even with the SDK's checks off; an Owner-approved payment is outside the scope; lifting the scope
-// resets it. The spending report lists each payment with who made it (from the chain) and its recipient.
+// resets it. The Owner's alert watcher reports the agent's payments, its budget and its approval requests
+// once each. The spending report lists each payment with who made it (from the chain) and its recipient.
 // Usage (testnet or a local fork with the site served by serve.mjs-style server and DB_SCHEMA set):
 //   RPC_URL_SERVER=<rpc> node scripts/ops/e2e-agent.mjs <siteUrl>
 import { readFileSync } from 'node:fs';
@@ -87,6 +88,25 @@ await step('Owner deposits 400 tUSDG into the treasury', async () => {
   await owner.deposit(deployment.usdg, 400_000000n, { owner: L().owner, encPub: L().encPub });
   await cleared(async () => Number((await agent.treasuries()).find((t) => t.id === id)?.usdg ?? 0) * 1e6, 400_000000);
 });
+// v3.19 alerts: the Owner's watcher (agent/watch.mjs) with the treasury's view key, posting to a local
+// webhook. Its first check only learns what is already there.
+const hooks = [];
+const { createServer } = await import('node:http');
+const hookServer = createServer((req, res) => { let b = ''; req.on('data', (c) => { b += c; }); req.on('end', () => { hooks.push(JSON.parse(b)); res.end('ok'); }); });
+await new Promise((r) => hookServer.listen(0, '127.0.0.1', r));
+const { mkdtempSync: mkdtemp } = await import('node:fs');
+const { tmpdir: tmp } = await import('node:os');
+const { join: pjoin } = await import('node:path');
+const { execFile } = await import('node:child_process');
+const { promisify } = await import('node:util');
+const watchDir = mkdtemp(pjoin(tmp(), 'zkd-watch-'));
+// Asynchronous: the webhook above runs in this process, so it must keep answering while the watcher runs.
+const watchOnce = async () => (await promisify(execFile)(process.execPath, ['agent/watch.mjs', '--once'], {
+  env: { ...process.env, ZKDESK_VIEW_KEY: '0x' + L().lsk.toString(16).padStart(64, '0'), ZKDESK_NETWORK: 'testnet', ZKDESK_API: site, ZKDESK_RPC: RPC ?? '', ZKDESK_STATE_DIR: watchDir, ZKDESK_ALERT_WEBHOOK_URL: `http://127.0.0.1:${hookServer.address().port}/hook` },
+  encoding: 'utf8',
+}).catch((error) => { throw new Error(`watcher failed (exit ${error.code}): ${error.stderr || error.message}`); })).stdout;
+await step("Owner's alert watcher learns the treasury", async () => { await owner.sync(); return (await watchOnce()).trim().split('\n').at(-1); });
+check(hooks.length === 0, 'the first check sends nothing (no replay of history)');
 const seen = await step('Agent lists its treasuries', () => agent.treasuries());
 check(seen.find((t) => t.id === id)?.roles.join() === 'Payer', 'the agent holds only the Payer role');
 const paid = await step('Agent pays 20 from the treasury (below the threshold)', () => agent.pay(id, { to: ownerZk, amount: '20' }));
@@ -193,6 +213,18 @@ check((await agent.waitForPayment({ amount: '7', timeoutSeconds: 3 })).pending !
   }
   const big = await step('Agent pays 60 to itself (off the list, above the approval line)', () => agent.pay(id, { to: agent.address, amount: '60' }));
   check(big.requested === true, 'it became a request for the Owner');
+  // The watcher now reports what happened since its first check.
+  await step('Watcher checks again', async () => (await watchOnce()).trim().split('\n').length);
+  const texts = hooks.map((h) => `${h.event}: ${h.text}`);
+  console.log(texts.map((t) => `    ${t.split('\n')[0]}`).join('\n'));
+  check(texts.some((t) => /^payment: Agent treasury: Your agent paid 20 USDG to zkd:/.test(t)), 'an alert for the agent paying 20');
+  check(texts.some((t) => /^payment: Agent treasury: A payment you approved \(requested by your agent\) was sent: 80 USDG/.test(t)), 'an alert for the approved 80 the agent asked for');
+  check(texts.some((t) => /^approval: .*approval requested: 60 USDG/.test(t)), 'an alert for the approval it asked for');
+  check(texts.some((t) => /^budget: .*83% of its budget/.test(t)), 'an alert at 80% of the budget (25 of 30)');
+  check(texts.some((t) => /^limits: /.test(t)), 'an alert for the limits the Owner set');
+  const count = hooks.length;
+  await step('Watcher checks a third time', async () => (await watchOnce()).trim().split('\n').length);
+  check(hooks.length === count, 'nothing is sent twice');
   await step('Owner approves it', async () => {
     await owner.sync();
     const r = (await owner.ledgerRequests(L())).find((x) => x.status === 'Awaiting Owner');
@@ -214,5 +246,6 @@ check((await agent.waitForPayment({ amount: '7', timeoutSeconds: 3 })).pending !
   check((await limits()) === null, 'no limits left');
   check((await step('Agent pays itself 1 (no list now)', () => agent.pay(id, { to: agent.address, amount: '1' }))).confirmed, 'paid');
 }
+hookServer.close();
 console.log(`Agent balance now ${(await agent.balance()).usdg} tUSDG. Agent e2e passed. (${record})`);
 process.exit(0);

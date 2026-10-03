@@ -239,12 +239,18 @@ export async function createAgent({
     const dest = zkTo(to);
     return done(await spend(amount, to, (raw) => client.send({ amount: raw, to: dest }).catch(hinted)));
   }
+  // Approval requests this agent posted (by intent). It completes only those: a request in the mailbox
+  // says who made it, but anyone holding the treasury's keys can write one.
+  const ownRequestsPath = join(stateDir, `requests-${network}-${keys.owner.toString(16).slice(0, 16)}.json`);
+  const ownRequests = () => { try { return new Set(JSON.parse(readFileSync(ownRequestsPath, 'utf8'))); } catch { return new Set(); } };
+  const rememberRequest = (intent) => writeFileSync(ownRequestsPath, JSON.stringify([...ownRequests(), String(intent)].slice(-500)), { mode: 0o600 });
   async function pay(treasuryId, { to, amount }) {
     const L = await treasury(treasuryId);
     const dest = isAddress(to ?? '') ? { recipient: to } : { to: zkTo(to) };
     // Above the threshold an agent that is also the Owner approves first: a second voucher.
     const vouchers = L.roles.includes('Owner') && usdg(amount) > L.config.dualThreshold ? 2 : 1;
     const r = await spend(amount, to, (raw) => client.ledgerAct(L, mover(L), { action: 'transfer', amount: raw, ...dest }), { vouchers });
+    if (r?.requested) rememberRequest(r.intent);
     if (r?.requested) return { requested: true, message: `Above ${fmt(L.config.dualThreshold)} USDG: sent to the treasury Owner for approval. Complete it once approved.` };
     return done(r);
   }
@@ -436,6 +442,7 @@ export async function createAgent({
       const r = (await client.ledgerRequests(L)).find((x) => String(x.id) === String(requestId));
       if (!r) throw new Error(`No request ${requestId} in this treasury.`);
       if (r.status !== 'Approved') throw new Error(`Request ${requestId} is ${r.status}, not Approved.`);
+      if (!ownRequests().has(String(r.intent))) throw new Error(`Request ${requestId} was not made by this agent, so it will not send it.`);
       day.check((await client.quoteFee(USDG)).fee * 2n);
       return done(await client.completeRequest(L, r));
     },

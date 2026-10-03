@@ -35,7 +35,7 @@ const askPage = (method, args) => new Promise((resolve, reject) => {
 });
 
 let client = null;
-const SECRET = ['lsk', 'nk', 'encSecret', 'requestKey'];
+const SECRET = ['lsk', 'nk', 'encSecret', 'requestKey', 'mailboxKey'];
 const strip = (l) => l && { ...Object.fromEntries(Object.entries(l).filter(([k]) => !SECRET.includes(k))), __ledger: true };
 const unstrip = (x) => (x && typeof x === 'object' && x.__ledger ? client.ledgers().find((l) => l.owner === x.owner) : x);
 
@@ -52,6 +52,16 @@ const api = {
       onStatus: (message) => self.postMessage({ type: 'status', message }),
     });
     return { owner: keys.owner, encPub: keys.encPub };
+  },
+  /**
+   * The view key of a treasury you own (v3.19, for the alert watcher): its ledger secret, which reads
+   * everything in it and moves nothing. Owner only; the page asks for it explicitly.
+   */
+  viewKey(ledgerId) {
+    const L = client?.ledgers().find((l) => l.owner === BigInt(ledgerId));
+    if (!L) throw new Error('Open this treasury first.');
+    if (!L.roles.includes('Owner')) throw new Error('Only the treasury Owner can copy its viewing key.');
+    return '0x' + L.lsk.toString(16).padStart(64, '0');
   },
   /** Whether a passkey seed opens this account (a person may hold several passkeys). */
   isMine(passkey) {
@@ -89,7 +99,9 @@ self.onmessage = async ({ data }) => {
     const fn = api[method] ?? (client && typeof client[method] === 'function' ? client[method] : null);
     if (!fn) throw new Error(client ? `Unknown account method ${method}` : 'Connect your wallet first.');
     const result = await fn(...args.map(unstrip));
-    self.postMessage({ id, result: result && typeof result === 'object' && result.lsk ? strip(result) : result });
+    // Ledger keys never reach the page, also inside a list (client.ledgers()).
+    const safe = (x) => (x && typeof x === 'object' && x.lsk !== undefined ? strip(x) : x);
+    self.postMessage({ id, result: Array.isArray(result) ? result.map(safe) : safe(result) });
   } catch (error) {
     self.postMessage({ id, error: error?.shortMessage || error?.message || String(error) });
   }

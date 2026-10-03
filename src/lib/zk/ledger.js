@@ -84,6 +84,23 @@ export function payerDeltas(lsk, notes) {
   return out;
 }
 
+/**
+ * Whether an approval request shows what its transfer does (v3.19). Anyone holding the ledger secret
+ * (every member, or a watcher's view key) can post a request, so what the Owner is shown must be the
+ * transfer itself: a private payment's amount and recipient are its output 2, which the intent binds; an
+ * unshield's are the ext data, which the intent binds too, so they must equal what the request displays.
+ */
+export function requestShowsItsTransfer(r) {
+  try {
+    const extAmount = BigInt(r.ext?.extAmount ?? 0n);
+    const to = BigInt(r.ext?.recipient ?? 0n);
+    if (r.to) return extAmount === 0n && to === 0n && BigInt(r.amount) > 0n;
+    return typeof r.recipient === 'string' && /^0x[0-9a-fA-F]{40}$/.test(r.recipient) && to !== 0n && to === BigInt(r.recipient) && BigInt(r.amount) > 0n && extAmount === -BigInt(r.amount);
+  } catch {
+    return false;
+  }
+}
+
 /** What the Payer has spent in the budget window of time t (0 after a rollover). */
 export const payerSpent = (ledger, t) => {
   const b = ledger.budget;
