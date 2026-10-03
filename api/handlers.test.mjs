@@ -4,9 +4,10 @@
 // balance floors, uncertain sends, and every mailbox outcome.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { keccak256 } from 'viem';
 
 // Run against the network this app release speaks to.
-const RELEASE = 3;
+const RELEASE = 4; // src/lib/chain/config.js RELEASE
 const onMainnet = JSON.parse(readFileSync(new URL('../src/lib/chain/deployments/4663.json', import.meta.url))).version === RELEASE;
 globalThis.ZKDESK_NETWORK = onMainnet ? 'mainnet' : 'testnet';
 const prefix = onMainnet ? 'MAINNET_' : '';
@@ -43,7 +44,7 @@ const { privateKeyToAccount } = await import('viem/accounts');
 assert.ok(deployment.version === RELEASE, 'deployment is on this release');
 
 // ---- in-memory database: just the statements the handlers issue ----
-const mem = { ops: new Map(), spends: new Map(), nonce: null, vouchers: [], mailbox: new Map(), posts: [], log: [] };
+const mem = { ops: new Map(), spends: new Map(), nonce: null, vouchers: [], voucherRows: new Map(), mailbox: new Map(), posts: [], log: [] };
 let nextOp = 1;
 const ops = () => [...mem.ops.values()];
 function query(sql, p = []) {
@@ -98,6 +99,16 @@ function query(sql, p = []) {
     return rows([{ id: mem.posts.length }]);
   }
   if (q.startsWith('select id, ciphertext, created_at from public.approval_requests')) return rows(mem.posts.filter((x) => x.ledger === p[0]).map((x) => ({ id: x.id, ciphertext: x.ct, created_at: 'now' })));
+  if (q.startsWith('update public.relay_vouchers set used_at = now()')) {
+    const v = mem.voucherRows.get(p[0]);
+    if (!v || v.used) return rows();
+    v.used = true;
+    return { rows: [], rowCount: 1 };
+  }
+  if (q.startsWith('update public.relay_vouchers set used_at = null')) {
+    if (mem.voucherRows.has(p[0])) mem.voucherRows.get(p[0]).used = false;
+    return rows();
+  }
   throw new Error(`unmocked SQL: ${q}`);
 }
 db.query = async (sql, p) => query(sql, p);
@@ -160,7 +171,8 @@ assert.equal(r.body.status, 'confirmed');
 assert.equal(rpc.sent.length, 1);
 
 // N-2: while an operation is in flight (no receipt yet), another request spending one of its notes is
-// refused before simulation, at no gas cost.
+// refused at no gas cost. v3.4: the claim follows a successful simulation, so a request with an invalid
+// proof can never hold a claim and block others.
 chain.receipt = null;
 r = await post(transfer(3, 4, String(minFee)));
 assert.equal(r.status, 202);
@@ -169,7 +181,7 @@ const sims = simCalls;
 r = await post(transfer(3, 99, String(minFee)));
 assert.equal(r.status, 409);
 assert.equal(r.body.errorCode, 'spend_in_flight');
-assert.equal(simCalls, sims, 'refused before simulation');
+assert.equal(simCalls, sims + 1, 'refused after its simulation, before any broadcast');
 assert.equal(rpc.sent.length, 2);
 chain.receipt = 'success';
 
@@ -178,7 +190,7 @@ chain.simulate = () => { throw Object.assign(new Error('x'), { shortMessage: 'Nu
 r = await post(transfer(5, 6, String(minFee)));
 assert.equal(r.status, 422);
 assert.equal(r.body.errorCode, 'NullifierSpent');
-assert.equal([...mem.spends.keys()].some((k) => BigInt(k) === 5n), false, 'claims released');
+assert.equal([...mem.spends.keys()].some((k) => BigInt(k) === 5n), false, 'a request that fails simulation holds no claim');
 chain.simulate = () => ({ request: {} });
 r = await post(transfer(5, 6, String(minFee)));
 assert.equal(r.body.status, 'confirmed', 'a failed operation can be retried');
@@ -194,6 +206,21 @@ assert.equal(r.status, 422);
 assert.equal(r.body.errorCode, 'NullifierSpent');
 assert.equal(rpc.sent.length, sent);
 assert.equal(mem.nonce, nonce);
+// v3.4: a voucher-paid step refused there gets its voucher back, so the client's retry is paid for.
+{
+  const token = '0x' + 'cd'.repeat(32);
+  mem.voucherRows.set(keccak256(token), { used: false });
+  simCalls = 0;
+  chain.resimulate = Object.assign(new Error('x'), { shortMessage: 'StaleBudget' });
+  const approve = { kind: 'ledger_auth', proof: { proof: '0x' + 'ab'.repeat(100), action: 3, ledgerId: '7', rolesCommit: '9', policyHash: '1', newValue: '5', nonce: '2' }, ext: { shares: [], config: '0x' }, voucher: token };
+  r = await post(approve);
+  assert.equal(r.body.errorCode, 'StaleBudget');
+  assert.equal(mem.voucherRows.get(keccak256(token)).used, false, 'the voucher is unused again');
+  chain.resimulate = null;
+  r = await post({ ...approve, proof: { ...approve.proof, nonce: '3' } });
+  assert.equal(r.body.status, 'confirmed', 'the retry spends it');
+  assert.equal(mem.voucherRows.get(keccak256(token)).used, true);
+}
 chain.resimulate = null;
 
 // Fee floor, relayer balance floor.

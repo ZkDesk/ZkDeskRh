@@ -37,7 +37,10 @@ contract TreasuryTest is Test {
     TreasuryLedger ledger;
     uint256 id;
 
+    uint256 constant T4 = 1_790_000_000; // the fixtures' transfers are proven at this time
+
     function setUp() public {
+        vm.warp(T4); // start at the proof time, so the mock vault accrues no yield in between
         json = vm.readFile("../circuits/fixtures/m4.json");
         id = vm.parseJsonUint(json, ".ledgerId");
         deployCodeTo("MockUSDG.sol:MockUSDG", USDG);
@@ -94,6 +97,10 @@ contract TreasuryTest is Test {
         p.inputNullifiers = [uint256(x[10]), uint256(x[11])];
         p.outputCommitments = [uint256(x[12]), uint256(x[13])];
         p.cosignIntent = uint256(x[14]);
+        p.t = uint256(x[16]);
+        p.budgetOld = uint256(x[17]);
+        p.budgetNew = uint256(x[18]);
+        p.budgetCt = [uint256(x[19]), uint256(x[20])];
         e = TreasuryLedger.LedgerExt({
             recipient: vm.parseJsonAddress(json, _k(i, "ext.recipient")),
             extAmount: vm.parseJsonInt(json, _k(i, "ext.extAmount")),
@@ -137,6 +144,7 @@ contract TreasuryTest is Test {
 
     function _runAct(uint256 i) internal {
         (TreasuryLedger.LedgerProof memory p, TreasuryLedger.LedgerExt memory e) = _act(i);
+        if (p.action == ledger.TRANSFER_OUT() && block.timestamp < p.t) vm.warp(p.t); // the proof's time
         vm.prank(address(0xbeef)); // relayed: any sender
         ledger.act(p, e);
     }
@@ -235,7 +243,9 @@ contract TreasuryTest is Test {
         (TreasuryLedger.LedgerProof memory p, TreasuryLedger.LedgerExt memory e) = _act(9);
         vm.expectRevert(); // Eve is not yet a member: her proof does not match the stored roles
         ledger.act(p, e);
+        assertTrue(ledger.budgetCommit(id) != 0);
         _runAuth(8);
+        assertEq(ledger.budgetCommit(id), 0, "a rotation resets the spending accumulator (v3.4)");
         (uint256 roles,,) = ledger.ledgers(id);
         assertEq(roles, vm.parseJsonUint(json, ".rolesCommit2"));
         ledger.act(p, e);
@@ -300,8 +310,22 @@ contract TreasuryTest is Test {
         (TreasuryLedger.LedgerProof memory p, TreasuryLedger.LedgerExt memory e) = _act(14);
         vm.expectRevert(TreasuryLedger.LimitReached.selector);
         ledger.act(p, e);
-        vm.warp(block.timestamp + 1 days);
-        ledger.act(p, e); // a new period
+        vm.warp(p.t); // a new period (the 2nd transfer is proven a day later)
+        ledger.act(p, e);
+    }
+
+    /// v3.4: a governance proof applies once. Replaying the Owner's SET_LIMIT would restart the window
+    /// (and an older one could loosen the limit); the ledger's governance nonce has moved on.
+    function test_v34_governanceProofAppliesOnce() public {
+        _through(10);
+        _runAuth(12);
+        _runAct(13); // one transfer used
+        assertEq(ledger.authNonce(id), 4, "create, approve, rotate, limit");
+        (TreasuryLedger.AuthProof memory p, bytes[] memory s, bytes memory c) = _auth(12);
+        vm.expectRevert(); // the proof bound nonce 3; the verifier rejects it for nonce 4
+        ledger.authorize(p, s, c, address(0));
+        (,,, uint64 used) = ledger.limits(id);
+        assertEq(used, 1, "the window was not restarted");
     }
 
     /// M-7: the ledger is a pool module because the deployer named it, once; nobody can add another.

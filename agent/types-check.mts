@@ -23,6 +23,9 @@ else if (!merged.reached) merged.stopped?.toUpperCase();
 const posted = await agent.fetchPaid({ url: 'https://api.example/q', maxPrice: '1', method: 'POST', body: { q: 1 } });
 if (posted.paid) posted.paid.tx.toUpperCase();
 const [t] = await agent.treasuries();
+if (t.payerLimits?.leftThisPeriod) t.payerLimits.leftThisPeriod.toUpperCase();
+// @ts-expect-error payerLimits may be null
+t.payerLimits.budget;
 const requested = await agent.pay(t.id, { to: agent.address, amount: '2' });
 if (!requested.confirmed && 'requested' in requested) (await agent.requests(t.id)).filter((x) => x.status === 'Approved');
 // @ts-expect-error a GET has no body

@@ -123,6 +123,19 @@
   },
   {
     "type": "function",
+    "name": "MAX_PROOF_AGE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "ROTATE",
     "inputs": [],
     "outputs": [
@@ -241,6 +254,26 @@
             "name": "cosignIntent",
             "type": "uint256",
             "internalType": "uint256"
+          },
+          {
+            "name": "t",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "budgetOld",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "budgetNew",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "budgetCt",
+            "type": "uint256[2]",
+            "internalType": "uint256[2]"
           }
         ]
       },
@@ -372,6 +405,25 @@
   },
   {
     "type": "function",
+    "name": "authNonce",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "authVerifier",
     "inputs": [],
     "outputs": [
@@ -442,6 +494,25 @@
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "budgetCommit",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -570,6 +641,37 @@
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "event",
+    "name": "BudgetNote",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "commit",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "nonce",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "ct",
+        "type": "uint256[2]",
+        "indexed": false,
+        "internalType": "uint256[2]"
+      }
+    ],
+    "anonymous": false
   },
   {
     "type": "event",
@@ -847,7 +949,17 @@
   },
   {
     "type": "error",
+    "name": "StaleBudget",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "StaleRoles",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "StaleTime",
     "inputs": []
   },
   {

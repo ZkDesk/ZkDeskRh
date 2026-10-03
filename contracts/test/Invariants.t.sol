@@ -85,6 +85,11 @@ contract Handler is Test {
     bool public unapprovedIntentPaid;
     bool public limitBreached; // more unapproved transfers in a window than the ledger's limit
     uint256 public ledgerActs;
+    // v3.4: the spending accumulator is the last accepted transfer's, or 0 after a rotate / policy change.
+    mapping(uint256 id => uint256) ghostBudget;
+    bool public budgetDesync;
+    bool public staleBudgetAccepted;
+    bool staleNext; // the next ledger act opens a stale accumulator
 
     constructor(ZKDeskPool pool_, CreditDesk desk_, LendingPoolUSDG lending_, Marker marker_, MockUSDG usdg_, MockStockToken stock_, MockAMM amm_, TreasuryLedger ledger_) {
         (pool, desk, lending, marker) = (pool_, desk_, lending_, marker_);
@@ -389,6 +394,24 @@ contract Handler is Test {
         if (_auth(id, 0, 0)) ledgerIds.push(id);
     }
 
+    /// v3.4: a roles rotation or a policy change resets the spending accumulator.
+    function rotateOrSetPolicy(uint256 seed, bool rotate) external {
+        if (ledgerIds.length == 0) return;
+        uint256 id = ledgerIds[seed % ledgerIds.length];
+        if (_auth(id, rotate ? 1 : 2, _fresh())) ghostBudget[id] = 0;
+        if (ledger.budgetCommit(id) != ghostBudget[id]) budgetDesync = true;
+    }
+
+    /// v3.4: a transfer that opens an accumulator other than the current one never lands.
+    function staleBudgetTransfer(uint256 seed) external {
+        if (ledgerIds.length == 0) return;
+        uint256 id = ledgerIds[seed % ledgerIds.length];
+        staleNext = true;
+        if (_ledgerAct(id, 2, address(usdg), address(usdg), 0, address(0), 0)) staleBudgetAccepted = true;
+        staleNext = false;
+        if (ledger.budgetCommit(id) != ghostBudget[id]) budgetDesync = true;
+    }
+
     function approveIntent(uint256 seed) external {
         if (ledgerIds.length == 0) return;
         uint256 id = ledgerIds[seed % ledgerIds.length];
@@ -412,10 +435,13 @@ contract Handler is Test {
         p.publicAmount = pool.publicAmountOf(e.extAmount, 0);
         p.extDataHash = uint256(keccak256(abi.encode(e))) % FIELD;
         (p.inputNullifiers, p.outputCommitments, p.cosignIntent) = ([_fresh(), _fresh()], [_fresh(), _fresh()], intent);
+        (p.t, p.budgetOld, p.budgetNew) = (block.timestamp, staleNext ? ghostBudget[id] ^ 1 : ghostBudget[id], _fresh());
         try ledger.act(p, e) {
             ok = true;
             ledgerActs++;
+            if (action == 2) ghostBudget[id] = p.budgetNew;
         } catch {}
+        if (ledger.budgetCommit(id) != ghostBudget[id]) budgetDesync = true;
     }
 
     /// mode 0: no intent; 1: an Owner-approved intent (taken off the list); 2: an intent never approved.
@@ -563,6 +589,8 @@ contract InvariantsTest is Test {
         assertFalse(handler.intentReused(), "approval used once");
         assertFalse(handler.unapprovedIntentPaid(), "intent must be approved");
         assertFalse(handler.limitBreached(), "transfer limit");
+        assertFalse(handler.budgetDesync(), "the accumulator is the last transfer's, or 0 after a reset");
+        assertFalse(handler.staleBudgetAccepted(), "a stale accumulator never lands");
         assertEq(usdg.balanceOf(address(ledger)), 0, "ledger holds no USDG");
         assertEq(vault.balanceOf(address(ledger)), 0, "ledger holds no vault shares");
     }

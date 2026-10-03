@@ -15,8 +15,21 @@ import { balanceOf } from '../../lib/zk/wallet.js';
 import { relay } from '../../lib/zk/transport.js';
 import { healthBps } from '../../lib/zk/desk.js';
 import { currentPeriod, KINDS, PERIODS } from '../../lib/zk/mandate.js';
+import { payerScoped, payerSpent } from '../../lib/zk/ledger.js';
 import { periodKey } from '../model.js';
 import { initialState } from '../model.js';
+
+// v3.4 Payer scope (the AI agent panel): allow list and budget, as the dashboard shows and edits them.
+const ALLOW_MAX = 8;
+const BUDGET_PERIODS = { day: 86_400n, week: 604_800n, month: 2_592_000n };
+const allowLines = (text) => String(text ?? '').split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+function payerScopeView(L, t) {
+  const c = L.config;
+  if (!payerScoped(c)) return null;
+  const allowTo = c.allow.flatMap((x, i) => (!x ? [] : [c.allowPubs[i] ? zkAddress({ owner: x, encPub: c.allowPubs[i] }) : `0x${x.toString(16).padStart(40, '0')}`]));
+  const per = Object.entries(BUDGET_PERIODS).find(([, v]) => v === c.budgetPeriod)?.[0] ?? null;
+  return { allowTo, budget: c.budget ? Number(c.budget) / 1e6 : null, per, spent: L.budget ? Number(payerSpent(L, BigInt(t))) / 1e6 : null };
+}
 
 const FAUCET_CAP = { USDG: 100_000, STOCK: 1_000 };
 const usd = (raw) => Number(raw) / 1e6;
@@ -198,7 +211,8 @@ async function refresh() {
         scheduled: parseZkAddress(deployment.scheduler ?? '')?.owner === L.config.payer, name: L.name,
         // Who holds the Payer role: the Owner's own key (no agent), the ZKdesk scheduler, or another key (an agent or person).
         payer: L.config.payer === L.config.owner ? 'owner' : parseZkAddress(deployment.scheduler ?? '')?.owner === L.config.payer ? 'scheduler' : `0x${L.config.payer.toString(16).padStart(64, '0').slice(0, 8)}…`,
-        limit: limit && limit[0] ? { max: Number(limit[0]), days: Number(limit[1]) / 86_400, used: t < Number(limit[2]) + Number(limit[1]) ? Number(limit[3]) : 0 } : null, allocCap: usd(L.config.allocCap), dualThreshold: usd(L.config.dualThreshold), attested: L.attested && { epoch: L.attested.epoch, liabilities: usd(L.attested.liabilities) } },
+        limit: limit && limit[0] ? { max: Number(limit[0]), days: Number(limit[1]) / 86_400, used: t < Number(limit[2]) + Number(limit[1]) ? Number(limit[3]) : 0 } : null, allocCap: usd(L.config.allocCap), dualThreshold: usd(L.config.dualThreshold), attested: L.attested && { epoch: L.attested.epoch, liabilities: usd(L.attested.liabilities) },
+        scope: payerScopeView(L, t) },
       pending: usd(balance(deployment.usdg, 'pending')), stockBalances, shares: shares.toString(),
       // Personal USDG notes worth merging (each pays more than one merge fee): client.combine.
       combinable: L ? 0 : notes.filter((n) => n.status === 'unspent' && n.asset === BigInt(deployment.usdg) && n.amount > m.fee).length,
@@ -281,6 +295,13 @@ function validate(state, type, values) {
       break;
     case 'agent': {
       if (!ledger || state.role !== 'Owner') { errors.general = 'Only the treasury Owner can add or remove an agent.'; break; }
+      const listed = allowLines(values.allowTo);
+      if (listed.length > ALLOW_MAX) errors.allowTo = `At most ${ALLOW_MAX} recipients.`;
+      else if (listed.some((x) => !isAddress(x) && !parseZkAddress(x))) errors.allowTo = 'One recipient per line: a ZKdesk address (zkd:…) or a 0x address.';
+      else if (new Set(listed.map((x) => x.toLowerCase())).size !== listed.length) errors.allowTo = 'A recipient is listed twice.';
+      const budgetUnits = (() => { try { return parseUnits(String(values.budget).trim(), 6); } catch { return -1n; } })();
+      if (values.budget !== '' && !(budgetUnits > 0n)) errors.budget = 'Enter the most the agent may pay per period (at least 0.000001), or leave it blank.';
+      else if (listed.some((x) => isAddress(x) && /^0x0{40}$/i.test(x))) errors.allowTo = 'The zero address cannot be an allowed recipient.';
       const agent = parseZkAddress(values.recipient);
       if (!agent) errors.recipient = "Enter the agent's ZKdesk address (zkd:…).";
       else if (agent.owner === session.pub.owner) errors.recipient = "That is your own address. Enter the agent's address.";
@@ -320,12 +341,14 @@ function validate(state, type, values) {
       if (!values.expiry || values.expiry <= new Date().toISOString().slice(0, 10)) errors.expiry = 'Choose a future expiry date.';
       if (values.kind === 'Invoice' && !values.reference?.trim()) errors.reference = 'Enter the invoice reference.';
       if (!['Owner', 'Treasurer', 'Payer'].includes(state.role)) errors.general = 'The Auditor role cannot create mandates.';
+      else if (state.role === 'Payer' && ledger.scope) errors.general = 'This treasury limits its Payer, so only the Owner or Treasurer can create mandates.';
       break;
     }
     case 'pay': case 'pause': case 'resume': case 'revoke': {
       const mandate = state.mandates.find((x) => x.id === values.id);
       if (!mandate) { errors.general = 'This mandate is no longer available.'; break; }
       if (!['Owner', 'Treasurer', 'Payer'].includes(state.role)) errors.general = 'The Auditor role can view mandates but not use them.';
+      else if (['resume', 'revoke'].includes(type) && state.role === 'Payer' && ledger?.scope) errors.general = `This treasury limits its Payer, so only the Owner or Treasurer can ${type} mandates.`;
       if (type === 'pay') {
         if (amount > mandate.cap + 1e-9) errors.amount = 'This payment exceeds the mandate cap.';
         else if (mandate.asset === 'USDG' && amount > state.cash + 1e-9) errors.amount = `Not enough liquid treasury ${USD_SYMBOL}.`;
@@ -375,18 +398,23 @@ async function submit(state, type, values) {
     const usdg6 = (x) => parseUnits(String(x), 6);
     switch (type) {
       case 'agent': {
-        // The agent becomes the Payer; then the approval threshold, then the payments-without-approval limit.
-        await client.updateLedger(L, { payer: parseZkAddress(values.recipient), dualThreshold: usdg6(values.threshold) });
+        // The payments-without-approval limit first, then the threshold and the scope (allow list and
+        // budget, enforced in the proof), and only then the agent becomes the Payer (client.updateLedger
+        // applies the policy before the roles), so it never holds the role unscoped.
         const max = values.limit === '' ? null : Number(values.limit);
         const days = values.per === 'week' ? 7 : 1;
         const now = state.meta.ledger.limit;
-        if (max !== null && !(max === (now?.max ?? 0) && (!max || days === now?.days))) {
-          await client.sync(); // the worker then resolves the treasury with its new config
-          await client.setTransferLimit(L, max, max ? days * 86_400 : 0);
-        }
+        if (max !== null && !(max === (now?.max ?? 0) && (!max || days === now?.days))) await client.setTransferLimit(L, max, max ? days * 86_400 : 0);
+        const scope = {
+          allowTo: allowLines(values.allowTo).map((x) => (isAddress(x) ? x : parseZkAddress(x))),
+          budget: values.budget === '' ? 0n : usdg6(String(values.budget).trim()),
+          budgetPeriod: values.budget === '' ? 0n : BUDGET_PERIODS[values.budgetPer] ?? 86_400n,
+        };
+        await client.updateLedger(L, { payer: parseZkAddress(values.recipient), dualThreshold: usdg6(values.threshold), scope });
         return;
       }
-      case 'unagent': return client.updateLedger(L, { payer: { owner: session.pub.owner, encPub: session.pub.encPub } });
+      // The agent's limits go with it, so a Payer named later is not silently limited.
+      case 'unagent': return client.updateLedger(L, { payer: { owner: session.pub.owner, encPub: session.pub.encPub }, scope: { allowTo: [], budget: 0n } });
       case 'roles': return client.updateLedger(L, { treasurer: member(values.treasurer), payer: member(values.payer), auditor: member(values.auditor), allocCap: usdg6(values.cap), dualThreshold: usdg6(values.threshold) });
       case 'deposit': return client.deposit(tokenOf(values.asset), values.asset === 'USDG' ? usdg6(values.amount) : parseUnits(String(values.amount), 18), { owner: L.owner, encPub: L.encPub });
       case 'allocate': return client.ledgerAct(L, state.role, { action: 'allocate', amount: usdg6(values.amount) });

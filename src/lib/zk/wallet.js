@@ -4,7 +4,7 @@ import { LeanIMT } from '@zk-kit/lean-imt';
 import { parseAbi, parseAbiItem } from 'viem';
 import { evictedBlinding, hash2, mandateCommit, noteCommitment, nullifier, policyHash, positionCommitment, receiptLeaf } from './notes.js';
 import { decryptConfig, decryptKeyShare, decryptMandate, decryptNote, decryptPosition } from './crypto.js';
-import { heldRoles, ledgerKeys, rolesOf } from './ledger.js';
+import { heldRoles, ledgerKeys, openBudget, rolesOf } from './ledger.js';
 import { applyLiquidation, LIQUIDATION_CIPHERTEXT_BYTES } from './desk.js';
 
 const EVENTS = {
@@ -25,6 +25,7 @@ const LEDGER_EVENTS = parseAbi([
   'event LedgerConfig(uint256 indexed id, bytes config)',
   'event IntentApproved(uint256 indexed id, uint256 intent)',
   'event TreasuryAttested(uint256 indexed id, uint64 epoch, uint256 liabilities)',
+  'event BudgetNote(uint256 indexed id, uint256 commit, uint256 nonce, uint256[2] ct)',
 ]);
 const MANDATE_EVENTS = parseAbi([
   'event MandateCommitted(uint256 indexed ledgerId, uint256 indexed commit, bytes ciphertext)',
@@ -213,7 +214,9 @@ export function myLedgers(state, keys) {
     const held = heldRoles(config, keys.owner);
     if (!held.length) continue; // rotated out: the old share still opens, but no role remains
     const attested = mine.filter((x) => x.name === 'TreasuryAttested').at(-1);
-    out.push({ ...ledger, config, name: config.name, roles: held, approved: new Set(mine.filter((x) => x.name === 'IntentApproved').map((x) => x.intent)), attested: attested && { epoch: Number(attested.epoch), liabilities: attested.liabilities, block: attested.block } });
+    // The Payer's spending accumulator (v3.4): the latest note, opened with the ledger secret.
+    const budget = openBudget(lsk, mine.filter((x) => x.name === 'BudgetNote').at(-1)); // null: does not open
+    out.push({ ...ledger, config, budget, name: config.name, roles: held, approved: new Set(mine.filter((x) => x.name === 'IntentApproved').map((x) => x.intent)), attested: attested && { epoch: Number(attested.epoch), liabilities: attested.liabilities, block: attested.block } });
   }
   return out;
 }

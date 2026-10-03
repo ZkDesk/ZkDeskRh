@@ -86,6 +86,9 @@ contract MandateRegistry is ReentrancyGuard {
     address public immutable usdg;
 
     mapping(uint256 commit => Mandate) public mandates;
+    /// Governance proofs applied to the mandate (commit, pause, resume, revoke); the next one must bind
+    /// this value, so a proof applies once (v3.4: a replayed RESUME could restart a paused mandate).
+    mapping(uint256 commit => uint64) public changes;
     mapping(uint256 pullNullifier => bool) public pulled;
     LeanIMTData internal receipts;
     mapping(uint256 root => bool) public receiptRoots;
@@ -131,8 +134,9 @@ contract MandateRegistry is ReentrancyGuard {
         x[2] = bytes32(policy);
         x[3] = bytes32(uint256(p.action));
         x[4] = bytes32(p.mandateCommit);
-        x[5] = bytes32(uint256(keccak256(abi.encode(ciphertext))) % FIELD);
+        x[5] = bytes32(uint256(keccak256(abi.encode(ciphertext, changes[p.mandateCommit]))) % FIELD);
         if (!authVerifier.verify(p.proof, x)) revert InvalidProof();
+        ++changes[p.mandateCommit];
 
         if (p.action == COMMIT) {
             (m.ledgerId, m.status) = (p.ledgerId, ACTIVE);

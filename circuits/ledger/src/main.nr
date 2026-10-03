@@ -6,9 +6,14 @@
 //                    non-owner exposes `cosign_intent`, which the OWNER must approve on-chain first.
 // AUDITOR can never act. Roles and policy are hidden behind the on-chain commitments; the acting
 // role, amounts and recipient stay private. Output 0 is always the ledger's change.
+// Payer scope (v3.4): a PAYER transfer the Owner did not approve must go to a recipient on the
+// policy's allow list (if set) and keep the Payer's spending in the current budget window within the
+// budget (if set). Every transfer re-commits the ledger's spending accumulator (budget_old ->
+// budget_new), whoever acts, so the chain cannot tell a Payer transfer from an Owner one.
 use lib::{
-    DOM_INTENT, ledger_id as ledger_of, lte, MAX_DEPTH, nullifier_key, output_note, owner_pk,
-    policy_hash as policy_of, roles_commit as roles_of, spend_inputs,
+    ALLOW_SLOTS, allow_hash as allow_of, budget_commit, budget_pad, DOM_INTENT, ledger_id as ledger_of,
+    listed, lte, MAX_DEPTH, nullifier_key, output_note, owner_pk, policy_hash as policy_of,
+    roles_commit as roles_of, spend_inputs,
 };
 use poseidon::poseidon::bn254::hash_7;
 
@@ -16,6 +21,7 @@ global ALLOCATE: Field = 0;
 global TRANSFER_OUT: Field = 2;
 global OWNER: u32 = 0;
 global TREASURER: u32 = 1;
+global PAYER: u32 = 2;
 global AUDITOR: u32 = 3;
 
 fn main(
@@ -32,6 +38,11 @@ fn main(
     input_nullifiers: pub [Field; 2],
     output_commitments: pub [Field; 2],
     cosign_intent: pub Field,
+    recipient: pub Field,
+    t: pub Field,
+    budget_old: pub Field,
+    budget_new: pub Field,
+    budget_ct: pub [Field; 2],
     lsk: Field,
     sk: Field,
     role: u32,
@@ -39,6 +50,10 @@ fn main(
     roles_salt: Field,
     alloc_cap: Field,
     dual_threshold: Field,
+    allow: [Field; ALLOW_SLOTS],
+    budget: Field,
+    budget_period: Field,
+    budget_start: Field,
     policy_salt: Field,
     in_amounts: [Field; 2],
     in_blindings: [Field; 2],
@@ -48,6 +63,10 @@ fn main(
     out_amounts: [Field; 2],
     out_owner: Field,
     out_blindings: [Field; 2],
+    old_window: Field,
+    old_spent: Field,
+    old_blinding: Field,
+    window: Field,
 ) {
     // Who: a member of this ledger's role set, acting in a role allowed for the action.
     assert_eq(ledger_of(lsk), ledger_id);
@@ -60,7 +79,14 @@ fn main(
     }
     alloc_cap.assert_max_bit_size::<100>();
     dual_threshold.assert_max_bit_size::<100>();
-    assert_eq(policy_of(alloc_cap, dual_threshold, policy_salt), policy_hash);
+    budget.assert_max_bit_size::<100>();
+    budget_period.assert_max_bit_size::<40>();
+    budget_start.assert_max_bit_size::<40>();
+    let allow_hash = allow_of(allow);
+    assert_eq(
+        policy_of(alloc_cap, dual_threshold, allow_hash, budget, budget_period, budget_start, policy_salt),
+        policy_hash,
+    );
 
     // What: ledger notes in, the ledger's change out, plus one output.
     let sum_in = spend_inputs(
@@ -96,6 +122,46 @@ fn main(
         ]);
         let needs_owner = !lte(moved, dual_threshold) & (role != OWNER);
         assert_eq(cosign_intent, if needs_owner { intent } else { 0 });
+
+        // The Payer's scope; a transfer the Owner approved is outside it.
+        let scoped = (role == PAYER) & !needs_owner;
+        if scoped & (allow_hash != 0) {
+            if out_amounts[1] != 0 {
+                assert(listed(allow, out_owner));
+            }
+            if public_amount != 0 {
+                assert(listed(allow, recipient));
+            }
+        }
+
+        // The spending accumulator: open the current one (0 = fresh), roll the window forward from t,
+        // add a scoped transfer, check the budget, re-commit under a pad only members can derive.
+        t.assert_max_bit_size::<40>();
+        old_window.assert_max_bit_size::<32>();
+        window.assert_max_bit_size::<32>();
+        let (w0, s0) = if budget_old == 0 {
+            (0, 0)
+        } else {
+            assert_eq(budget_commit(ledger_id, old_window, old_spent, old_blinding), budget_old);
+            (old_window, old_spent)
+        };
+        if budget_period == 0 {
+            assert_eq(window, w0);
+        } else {
+            assert(lte(budget_start + window * budget_period, t));
+            assert(!lte(budget_start + (window + 1) * budget_period, t));
+        }
+        assert(lte(w0, window));
+        let carried = if window == w0 { s0 } else { 0 };
+        let spent = carried + if scoped { moved } else { 0 };
+        spent.assert_max_bit_size::<128>();
+        if scoped & (budget != 0) {
+            assert(lte(spent, budget));
+        }
+        let nonce = input_nullifiers[0];
+        assert_eq(budget_commit(ledger_id, window, spent, budget_pad(lsk, nonce, 2)), budget_new);
+        assert_eq(budget_ct[0], window + budget_pad(lsk, nonce, 0));
+        assert_eq(budget_ct[1], spent + budget_pad(lsk, nonce, 1));
     } else {
         // Convert through the yield vault; the proceeds stay with the ledger.
         assert(out_asset != asset);
@@ -106,6 +172,9 @@ fn main(
             assert(lte(moved, alloc_cap));
         }
         assert_eq(cosign_intent, 0);
+        assert_eq(budget_new, budget_old);
+        assert_eq(budget_ct, [0, 0]);
+        let _ = (recipient, t, old_window, old_spent, old_blinding, window);
     }
 }
 

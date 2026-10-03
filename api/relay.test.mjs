@@ -76,12 +76,32 @@ rejects(position({ operatorCipher: ['1'] }), /operator/, 'operator ciphertext re
 rejects(position({}, { encryptedPosition: bytes(5) }), /position ciphertext/, 'wrong position size');
 
 // ---- ledger, ledger_auth, ledger_attest ----
-const ledger = { kind: 'ledger', proof: { proof, root: '1', ledgerId: '7', action: 2, asset: deployment.usdg, outAsset: deployment.usdg, publicAmount: '0', publicAmountOut: '0', extDataHash: '2', inputNullifiers: ['51', '52'], outputCommitments: ['61', '62'], cosignIntent: '0' }, ext: { recipient: ZERO, extAmount: '0', ...notes } };
+const ledger = { kind: 'ledger', proof: { proof, root: '1', ledgerId: '7', action: 2, asset: deployment.usdg, outAsset: deployment.usdg, publicAmount: '0', publicAmountOut: '0', extDataHash: '2', inputNullifiers: ['51', '52'], outputCommitments: ['61', '62'], cosignIntent: '0', t: '1790000000', budgetOld: '0', budgetNew: '71', budgetCt: ['72', '73'] }, ext: { recipient: ZERO, extAmount: '0', ...notes } };
 assert.equal(parseRelayRequest(ledger).kind, 'ledger_transfer');
-assert.deepEqual(parseRelayRequest(ledger).spends, [51n, 52n]);
+assert.deepEqual(parseRelayRequest(ledger).spends.slice(0, 2), [51n, 52n]);
+// v3.4: a transfer also claims its accumulator (after simulation), so two transfers on one
+// accumulator wait for each other; governance changes and mandate changes are serialized the same way.
+{
+  const other = { ...ledger, proof: { ...ledger.proof, inputNullifiers: ['53', '54'] } };
+  const key = (r) => parseRelayRequest(r).serial[0];
+  assert.deepEqual(parseRelayRequest(ledger).spends, [51n, 52n], 'notes only; the accumulator is a separate claim');
+  assert.equal(key(other), key(ledger), 'same ledger and accumulator');
+  assert.equal(key({ ...other, proof: { ...other.proof, budgetOld: '1' } }), key(ledger), 'one key per treasury');
+  assert.notEqual(key({ ...other, proof: { ...other.proof, ledgerId: '8' } }), key(ledger), 'fresh ledgers do not share a claim');
+  assert.equal(parseRelayRequest({ ...ledger, proof: { ...ledger.proof, action: 0 }, ext: { ...ledger.ext, extAmount: '-1' } }).serial.length, 0, 'converts do not touch the accumulator');
+}
 rejects({ ...ledger, proof: { ...ledger.proof, action: 9 } }, /ledger action/);
 rejects({ ...ledger, ext: { ...ledger.ext, extAmount: '1' } }, /deposit or a private transfer/);
+// v3.4: the spending accumulator rides with every ledger proof.
+assert.deepEqual(parseRelayRequest(ledger).args[0].budgetCt, [72n, 73n]);
+assert.equal(parseRelayRequest(ledger).args[0].t, 1790000000n);
+rejects({ ...ledger, proof: { ...ledger.proof, budgetCt: ['72'] } }, /budget ciphertext/);
 const auth = { kind: 'ledger_auth', proof: { proof, action: 4, ledgerId: '7', rolesCommit: '8', policyHash: '9', newValue: '1' }, ext: { shares: [bytes(KEY_SHARE_BYTES)], config: bytes(CONFIG_BYTES) } };
+// v3.4: the same limit set again later binds a new governance counter, so it is a new operation; one
+// governance change per ledger in flight.
+assert.notDeepEqual(parseRelayRequest({ ...auth, proof: { ...auth.proof, nonce: '5' } }).nullifiers, parseRelayRequest({ ...auth, proof: { ...auth.proof, nonce: '6' } }).nullifiers);
+assert.notDeepEqual(parseRelayRequest({ ...auth, proof: { ...auth.proof, policyHash: '10' } }).nullifiers, parseRelayRequest(auth).nullifiers);
+assert.deepEqual(parseRelayRequest(auth).serial, parseRelayRequest(ledger).serial, 'governance and transfers of a treasury go one at a time');
 assert.equal(parseRelayRequest(auth).kind, 'ledger_set_limit', 'the M-4 transfer limit is relayed');
 assert.equal(parseRelayRequest({ ...auth, proof: { ...auth.proof, action: 3 } }).kind, 'ledger_approve');
 rejects({ ...auth, proof: { ...auth.proof, action: 5 } }, /governance action/, 'unknown governance action');
@@ -100,6 +120,12 @@ rejects({ kind: 'ledger_attest', proof: { proof, root: '1', ledgerId: '7', liabi
 
 // ---- mandates ----
 const mauth = { kind: 'mandate_auth', proof: { proof, ledgerId: '7', action: 0, mandateCommit: '9' }, ext: { ciphertext: bytes(MANDATE_BYTES) } };
+// v3.4: a pause after a resume binds a new change counter, so it is not a duplicate of the first pause.
+{
+  const pause = (nonce) => parseRelayRequest({ ...mauth, proof: { ...mauth.proof, action: 2, nonce }, ext: { ciphertext: '0x' } }).nullifiers;
+  assert.notDeepEqual(pause('1'), pause('3'));
+  assert.deepEqual(parseRelayRequest(mauth).serial, parseRelayRequest(ledger).serial, 'and so do its mandate changes');
+}
 assert.equal(parseRelayRequest(mauth).kind, 'mandate_commit');
 rejects({ ...mauth, ext: { ciphertext: '0x' } }, /mandate ciphertext/);
 const pull = { kind: 'mandate_pull', proof: { proof, root: '1', ledgerId: '7', mandateCommit: '9', asset: deployment.usdg, mark: '0', k: '0', t: '1', pullNullifier: '77', receiptLeaf: '1', extDataHash: '2', inputNullifiers: ['71', '72'], outputCommitments: ['81', '82'] }, ext: notes };

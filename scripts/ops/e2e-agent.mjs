@@ -10,6 +10,10 @@
 // is reported as pending, never as received -> combine: a second agent paid six times cannot send an
 // amount that needs three notes (hint to combine), a daily limit below the merge fees refuses before any
 // merge, and after combining into one note the payment goes through.
+// v3.4 Payer scope: the Owner gives the agent an allow list and a daily budget; listed payments within
+// it go through, an over-budget or off-list payment is refused, and the prover cannot make a proof for
+// one even with the SDK's checks off; an Owner-approved payment is outside the scope; lifting the scope
+// resets it.
 // Usage (testnet or a local fork with the site served by serve.mjs-style server and DB_SCHEMA set):
 //   RPC_URL_SERVER=<rpc> node scripts/ops/e2e-agent.mjs <siteUrl>
 import { readFileSync } from 'node:fs';
@@ -23,9 +27,10 @@ for (const line of readFileSync('.env.local', 'utf8').split(/\r?\n/)) {
 const site = process.argv[2] ?? 'http://localhost:5199';
 const RPC = process.env.RPC_URL_SERVER || undefined;
 const { createAgent, newSeed } = await import('../../agent/index.mjs');
-const agent = await createAgent({ seed: newSeed(), network: 'testnet', api: site, rpc: RPC, maxPerTx: '500', onStatus: (m) => console.log(`    · agent: ${m}`) });
+const agentSeed = newSeed();
+const agent = await createAgent({ seed: agentSeed, network: 'testnet', api: site, rpc: RPC, maxPerTx: '500', onStatus: (m) => console.log(`    · agent: ${m}`) });
 const { chain, deployment, apiBase } = await import('../../src/lib/chain/config.js');
-const { deriveKeys, keyRequest, zkAddress, parseZkAddress } = await import('../../src/lib/zk/keys.js');
+const { agentKeys, deriveKeys, keyRequest, zkAddress, parseZkAddress } = await import('../../src/lib/zk/keys.js');
 const { createClient } = await import('../../src/lib/zk/client.js');
 const { createProver } = await import('../../src/lib/zk/prover.js');
 const { createTransport } = await import('../../src/lib/zk/transport.js');
@@ -161,6 +166,44 @@ check((await agent.waitForPayment({ amount: '7', timeoutSeconds: 3 })).pending !
   check(merged.merges === 5 && merged.notes === 1, `5 merges into one note of ${merged.largestNote}`);
   check(merged.reached === true && Math.abs(Number(merged.spentLast24h) - Number(merged.feesAbout)) < 1e-6, `the daily record holds only the merge fees (${merged.spentLast24h}); the refused payment was released`);
   check((await step('...and now sends 200', () => payee.send({ to: ownerZk, amount: '200' }))).confirmed, 'the payment goes through');
+}
+// v3.4: the Owner scopes the agent (the Owner's zkd: and 0x addresses, at most 30 tUSDG a day).
+{
+  const { buildLedger, ACTIONS } = await import('../../src/lib/zk/ledger.js');
+  const limits = async () => (await agent.treasuries()).find((t) => t.id === id).payerLimits;
+  await step('Owner scopes the agent: two listed recipients, 30 tUSDG a day', () => owner.updateLedger(L(), { scope: { allowTo: [parseZkAddress(ownerZk), account.address], budget: 30_000000n, budgetPeriod: 86_400n } }));
+  const lim = await step('Agent sees its limits', limits);
+  check(lim.budget === '30' && lim.budgetPeriod === 'day' && lim.allowedRecipients.length === 2 && lim.spentThisPeriod === '0', 'the limits, as the agent reads them');
+  check((await step('Agent pays the Owner 20 (listed, within the budget)', () => agent.pay(id, { to: ownerZk, amount: '20' }))).confirmed, 'paid');
+  check((await step('Agent pays 5 to the listed 0x address', () => agent.pay(id, { to: account.address, amount: '5' }))).confirmed, 'unshielded to the listed address');
+  check((await limits()).spentThisPeriod === '25' && (await limits()).leftThisPeriod === '5', 'the agent has spent 25 of 30 today');
+  await refused('over the daily budget (25 + 10 > 30)', () => agent.pay(id, { to: ownerZk, amount: '10' }), /over the treasury budget/);
+  await refused('a recipient not on the list', () => agent.pay(id, { to: agent.address, amount: '1' }), /not on the treasury's list/);
+  // The SDK's checks off: the prover itself cannot make either proof, so the chain never sees one.
+  {
+    await owner.sync();
+    const T = owner.ledgers().find((l) => l.owner === ledgerId);
+    const k = agentKeys(agentSeed, chain.id);
+    const notes = owner.ledgerNotes(T).filter((n) => n.status === 'unspent' && n.asset === BigInt(deployment.usdg)).sort((a, b) => (b.amount > a.amount ? 1 : -1));
+    const t = (await publicClient.getBlock()).timestamp;
+    const draft = (to, amount) => buildLedger({ tree: owner.state.tree, ledger: T, sk: k.sk, role: 'Payer', action: ACTIONS.transfer, asset: BigInt(deployment.usdg), inputs: [notes[0]], out: { amount, owner: to }, ext: { recipient: '0x0000000000000000000000000000000000000000', extAmount: 0n, encryptedOutput1: '0x', encryptedOutput2: '0x' }, t, check: false });
+    await refused('a proof over the budget', () => prove('ledger', draft(keys.owner, 10_000000n).witness), /./);
+    await refused('a proof to an off-list recipient', () => prove('ledger', draft(k.owner, 1_000000n).witness), /./);
+    check((await step('...while a listed payment within the budget still proves', () => prove('ledger', draft(keys.owner, 5_000000n).witness).then(() => 'proved'))) === 'proved', 'the same draft proves when it is within the scope');
+  }
+  const big = await step('Agent pays 60 to itself (off the list, above the approval line)', () => agent.pay(id, { to: agent.address, amount: '60' }));
+  check(big.requested === true, 'it became a request for the Owner');
+  await step('Owner approves it', async () => {
+    await owner.sync();
+    const r = (await owner.ledgerRequests(L())).find((x) => x.status === 'Awaiting Owner');
+    return owner.approveRequest(L(), r).then(() => r.id);
+  });
+  const ok = (await agent.requests(id)).find((r) => r.status === 'Approved' && r.mine);
+  check((await step('Agent completes the approved payment', () => agent.complete(id, ok.id))).confirmed, 'an Owner-approved payment is outside the scope');
+  check((await limits()).spentThisPeriod === '25', 'and does not count toward the budget');
+  await step('Owner lifts the scope', () => owner.updateLedger(L(), { scope: { allowTo: [], budget: 0n } }));
+  check((await limits()) === null, 'no limits left');
+  check((await step('Agent pays itself 1 (no list now)', () => agent.pay(id, { to: agent.address, amount: '1' }))).confirmed, 'paid');
 }
 console.log(`Agent balance now ${(await agent.balance()).usdg} tUSDG. Agent e2e passed. (${record})`);
 process.exit(0);

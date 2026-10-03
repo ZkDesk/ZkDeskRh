@@ -17,7 +17,7 @@ import mandatesAbi from './abis/MandateRegistry.json' with { type: 'json' };
 // wrappers set globalThis.ZKDESK_NETWORK before loading the shared handlers; otherwise testnet.
 // This app version speaks to the v3 contracts (RELEASE). A network still on an older release is shown
 // as upgrading; notes in older pools stay withdrawable with that release's final app version.
-export const RELEASE = 3;
+export const RELEASE = 4; // contract set v3.4 (scoped Payer, governance nonce)
 export const mainnetReady = deployment4663.version === RELEASE;
 export const testnetReady = deployment46630.version === RELEASE;
 function pick() {

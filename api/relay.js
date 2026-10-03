@@ -16,7 +16,7 @@
 //   { kind: 'mandate_auth', proof, ext: {ciphertext} } -> MandateRegistry.manage (commit, revoke, pause, resume)
 //   { kind: 'mandate_pull', proof, ext } -> MandateRegistry.pull (one payment under a mandate)
 import { randomBytes } from 'node:crypto';
-import { concatHex, isAddress, isHex, keccak256, toHex, verifyMessage, zeroAddress } from 'viem';
+import { concatHex, encodeAbiParameters, isAddress, isHex, keccak256, toHex, verifyMessage, zeroAddress } from 'viem';
 import { mailboxMessages } from '../src/lib/zk/ledger.js';
 import { abis, db, deployment, deploymentReady, publicClient, relayer, sendFromRelayer, revertName, json } from './_lib/server.js';
 import { RELAY_GAS, relayFees } from './_lib/fees.js';
@@ -100,8 +100,13 @@ function parseLedger(p, e) {
   const extAmount = BigInt(e.extAmount);
   if (extAmount > 0n) throw new Error('Funds enter a treasury by a deposit or a private transfer.');
   const proof = { proof: p.proof, action, asset: p.asset, outAsset: p.outAsset, inputNullifiers: p.inputNullifiers.slice(0, 2).map(uint), outputCommitments: p.outputCommitments.slice(0, 2).map(uint) };
-  for (const k of ['root', 'ledgerId', 'publicAmount', 'publicAmountOut', 'extDataHash', 'cosignIntent']) proof[k] = uint(p[k]);
-  return { kind: `ledger_${LEDGER_KINDS[action]}`, nullifiers: proof.inputNullifiers, spends: proof.inputNullifiers, target: ledgerTarget('act'), args: [proof, { recipient: e.recipient, extAmount, encryptedOutput1: e.encryptedOutput1, encryptedOutput2: e.encryptedOutput2 }] };
+  for (const k of ['root', 'ledgerId', 'publicAmount', 'publicAmountOut', 'extDataHash', 'cosignIntent', 't', 'budgetOld', 'budgetNew']) proof[k] = uint(p[k]);
+  if (!Array.isArray(p.budgetCt) || p.budgetCt.length !== 2) throw new Error('Bad budget ciphertext.');
+  proof.budgetCt = p.budgetCt.map(uint);
+  // A transfer replaces the ledger's spending accumulator (v3.4): two in flight for one accumulator
+  // cannot both land, so the second waits like a second spend of the same note.
+  const serial = action === 2 ? [serialKey('ledger', proof.ledgerId)] : [];
+  return { kind: `ledger_${LEDGER_KINDS[action]}`, nullifiers: proof.inputNullifiers, spends: proof.inputNullifiers, serial, target: ledgerTarget('act'), args: [proof, { recipient: e.recipient, extAmount, encryptedOutput1: e.encryptedOutput1, encryptedOutput2: e.encryptedOutput2 }] };
 }
 
 function parseLedgerAuth(p, e) {
@@ -112,6 +117,7 @@ function parseLedgerAuth(p, e) {
   if (bytesLen(e.config) !== CONFIG_BYTES && bytesLen(e.config) !== 0) throw new Error('Bad config ciphertext.');
   const proof = { proof: p.proof, action };
   for (const k of ['ledgerId', 'rolesCommit', 'policyHash', 'newValue']) proof[k] = uint(p[k]);
+  const nonce = uint(p.nonce ?? 0); // the governance counter the proof binds (TreasuryLedger.authNonce)
   // A create may carry the treasury's approval-mailbox key (audit M-6/N-4): the address of a key
   // derived from the ledger secret, plus its signature over the register message. The address is part
   // of the create proof's ext hash (audit L-c), so nobody else can attach a key to the treasury.
@@ -120,8 +126,12 @@ function parseLedgerAuth(p, e) {
     if (!isAddress(e.mailboxSigner) || !/^0x[0-9a-fA-F]{130}$/.test(e.mailboxSignature ?? '')) throw new Error('Bad mailbox key.');
     mailbox = { ledger: toHex(proof.ledgerId, { size: 32 }), signer: e.mailboxSigner, signature: e.mailboxSignature };
   }
-  // One operation per (ledger, action, value, current roles).
-  return { kind: `ledger_${AUTH_KINDS[action]}`, nullifiers: [proof.ledgerId, BigInt(action), proof.newValue, proof.rolesCommit], target: ledgerTarget('authorize'), args: [proof, e.shares, e.config, mailbox?.signer ?? zeroAddress], mailbox };
+  // One operation per (ledger, action, value, roles, policy, counter): the same change made again later
+  // binds a new counter, so it is a new operation. One governance change per ledger in flight (v3.4).
+  return {
+    kind: `ledger_${AUTH_KINDS[action]}`, nullifiers: [proof.ledgerId, BigInt(action), proof.newValue, proof.rolesCommit, proof.policyHash, nonce],
+    serial: [serialKey('ledger', proof.ledgerId)], target: ledgerTarget('authorize'), args: [proof, e.shares, e.config, mailbox?.signer ?? zeroAddress], mailbox,
+  };
 }
 
 function parseLedgerAttest(p) {
@@ -140,7 +150,8 @@ function parseMandateAuth(p, e) {
   if (!MANDATE_KINDS[action]) throw new Error('Bad mandate action.');
   if (bytesLen(e.ciphertext) !== (action === 0 ? MANDATE_BYTES : 0)) throw new Error('Bad mandate ciphertext.');
   const proof = { proof: p.proof, ledgerId: uint(p.ledgerId), action, mandateCommit: uint(p.mandateCommit) };
-  return { kind: `mandate_${MANDATE_KINDS[action]}`, nullifiers: [proof.mandateCommit, BigInt(action), proof.ledgerId], target: mandatesTarget('manage'), args: [proof, e.ciphertext] };
+  const nonce = uint(p.nonce ?? 0); // the mandate's change counter the proof binds (MandateRegistry.changes)
+  return { kind: `mandate_${MANDATE_KINDS[action]}`, nullifiers: [proof.mandateCommit, BigInt(action), proof.ledgerId, nonce], serial: [serialKey('ledger', proof.ledgerId)], target: mandatesTarget('manage'), args: [proof, e.ciphertext] };
 }
 
 function parseMandatePull(p, e) {
@@ -180,6 +191,9 @@ export function parseRelayRequest(body) {
 
 /** Fee for a call of `gas`, given the minimum `base` quoted for RELAY_GAS (rounded up). */
 export const feeForGas = (base, gas) => (gas > RELAY_GAS ? (base * gas + RELAY_GAS - 1n) / RELAY_GAS : base);
+
+/** A claim key for state that only one operation may change at a time (not a note nullifier). */
+const serialKey = (what, ...ids) => BigInt(keccak256(encodeAbiParameters([{ type: 'string' }, ...ids.map(() => ({ type: 'uint256' }))], [what, ...ids])));
 
 /** Claims every note this operation spends; false if another unfinished operation holds one. */
 async function claimSpends(opId, spends) {
@@ -242,10 +256,6 @@ export default async function handler(req, res) {
     await release(opId);
     return json(res, status, { opId, status: 'failed', errorCode: code });
   };
-  // Audit N-2: one in-flight operation per note. Requests spending a note another pending operation
-  // spends would all pass simulation and all but one would revert at the relayer's cost.
-  if (tx.spends?.length && !(await claimSpends(opId, tx.spends))) return fail(409, 'spend_in_flight');
-
   let gas;
   try {
     const sim = await publicClient.simulateContract({ account: relayer, ...tx.target, args: tx.args });
@@ -253,6 +263,14 @@ export default async function handler(req, res) {
   } catch (error) {
     return fail(422, revertName(error));
   }
+  // Audit N-2: one in-flight operation per note. Requests spending a note another pending operation
+  // spends would all pass simulation and all but one would revert at the relayer's cost. Claimed only
+  // after a successful simulation (a valid proof), so a bogus request cannot hold a claim (v3.4).
+  if (tx.spends?.length && !(await claimSpends(opId, tx.spends))) return fail(409, 'spend_in_flight');
+  // v3.4: one in-flight change per treasury (a transfer moves its accumulator; a governance or mandate
+  // change moves a counter or the roles and policy the others bind). The key is public, which is why it
+  // is claimed after the simulation too.
+  if (tx.serial?.length && !(await claimSpends(opId, tx.serial))) return fail(409, 'ledger_busy');
   // Fees are quoted for RELAY_GAS; a heavier call pays proportionally more, and a voucher (sized
   // for RELAY_GAS with the client's 25% margin) covers nothing heavier.
   if (tx.fee && gas > RELAY_GAS) {
@@ -292,7 +310,11 @@ export default async function handler(req, res) {
     await release(opId);
     return json(res, 200, { opId, status, txHash: hash, block: receipt.blockNumber, voucher });
   } catch (error) {
-    if (error.code === 'resimulate_failed') return fail(422, revertName(error.cause));
+    if (error.code === 'resimulate_failed') {
+      // Nothing was broadcast: the voucher this step used pays for its retry (v3.4).
+      if (needsVoucher) await db.query('update public.relay_vouchers set used_at = null where token_hash = $1', [hashToken(body.voucher)]);
+      return fail(422, revertName(error.cause));
+    }
     // Unknown whether it reached the chain: leave it queued for the reconciler, never resend blindly.
     await db.query(`update public.operations set error_code = $2, updated_at = now() where op_id = $1`, [opId, revertName(error)]);
     return json(res, 502, { opId, status: 'queued', errorCode: 'send_uncertain', voucher });

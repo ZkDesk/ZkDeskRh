@@ -73,6 +73,19 @@ export interface Treasury {
   address: ZkAddress;
   usdg: Usdg;
   ownerApprovalAbove: Usdg;
+  /** The Owner's limits on the Payer, enforced on-chain by the proof; null when there are none. */
+  payerLimits: PayerLimits | null;
+}
+
+/** A treasury Payer's scope (v3.4). Payments the Owner approves are outside it. */
+export interface PayerLimits {
+  /** The only recipients the Payer may pay (zkd: or 0x); null = anyone. */
+  allowedRecipients: string[] | null;
+  /** Most the Payer may pay per budgetPeriod; null = no budget. */
+  budget: Usdg | null;
+  budgetPeriod: 'day' | 'week' | '30 days' | 'lifetime' | string | null;
+  spentThisPeriod: Usdg | null;
+  leftThisPeriod: Usdg | null;
 }
 
 /** Above the Owner's threshold, a treasury payment becomes a request for approval. */

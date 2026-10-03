@@ -1,13 +1,13 @@
 // One private-account client for the dashboard and ops scripts. It reads chain state, picks notes,
 // builds witnesses and ciphertexts, then hands proofs to injected `prove(kind, witness)` and
 // `relay(body)` (browser: worker + fetch; Node: bb.js + in-process handler).
-import { maxUint256, toHex, zeroAddress } from 'viem';
+import { getAddress, maxUint256, toHex, zeroAddress } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { abis, deployment, explorerTx, MAINNET, minRelayFee, NETWORK_NAME, payableFee, stocks, USD_SYMBOL } from '../chain/config.js';
 import { encryptConfig, encryptKeyShare, encryptMandate, encryptNote, encryptPosition, openRequest, sealRequest, textToField } from './crypto.js';
 import { buildMandateAuth, buildPull, buildReceipt, currentPeriod, KINDS, MANDATE_ACTIONS, PERIODS, rawForUsdg } from './mandate.js';
-import { ACTIONS, AUTH, authExtHash, buildAttest, buildLedger, buildRoleAuth, ledgerKeys, mailboxMessages, rolesOf } from './ledger.js';
-import { policyHash, randomField } from './notes.js';
+import { ACTIONS, AUTH, authExtHash, buildAttest, buildLedger, buildRoleAuth, ledgerKeys, mailboxMessages, rolesOf, scopeOf } from './ledger.js';
+import { ALLOW_SLOTS, allowHash, mandateCommit, MAX_AMOUNT, policyHash, randomField } from './notes.js';
 import { buildTransact } from './transact.js';
 import { buildPosition, debtOf, maxDebt, valueOf } from './position.js';
 import { balanceOf, freeSlot, ledgerMandates, myLedgers, myNotes, myPositions, myReceipts, syncPool } from './wallet.js';
@@ -76,8 +76,13 @@ export function createClient({ publicClient, walletClient = null, address = null
    * Steps whose proofs have no fee field (credit, treasury, payments) redeem a one-use voucher. It is
    * bought first by a private self-transfer that pays twice the fee: its own gas and the step's.
    */
+  // A voucher whose step was refused before the relay used it (a race on the treasury's accumulator or
+  // governance counter) pays for the retry instead of a new one.
+  let spareVoucher;
+  const keepVoucher = (paid, error) => { if (paid && retryable(error)) spareVoucher = paid; };
   async function voucher() {
     if (!vouchers) return undefined;
+    if (spareVoucher) { const v = spareVoucher; spareVoucher = undefined; return v; }
     const info = await relayInfo();
     await sync();
     const hexAddr = (x) => '0x' + x.toString(16).padStart(40, '0');
@@ -272,13 +277,29 @@ export function createClient({ publicClient, walletClient = null, address = null
   const ledgerNotes = (ledger) => myNotes(state, ledger);
   const ledgerUnspent = (ledger, asset) => ledgerNotes(ledger).filter((n) => n.asset === big(asset) && n.status === 'unspent').sort((a, b) => (b.amount > a.amount ? 1 : -1));
 
-  async function relayAuth({ ledger, config, action, newValue = 0n, shares = [], configCt = '0x', mailbox = {} }) {
+  // Governance changes of one treasury go one at a time (each binds the treasury's counter): a change
+  // that finds another in flight is proven again on the new counter.
+  const relayAuth = (args) => againWhenBusy(() => relayAuthOnce(args));
+  async function relayAuthOnce({ ledger, config, action, newValue = 0n, shares = [], configCt = '0x', mailbox = {} }) {
     const paid = await voucher();
-    const built = buildRoleAuth({ ledger, sk: keys.sk, config, action, newValue, extHash: authExtHash(shares, configCt, mailbox.mailboxSigner) });
-    status('Generating proof…');
-    const { proof } = await prove('role_auth', built.witness);
-    const p = built.public;
-    return submitRelay({ kind: 'ledger_auth', proof: { proof, ledgerId: s(p.ledgerId), rolesCommit: s(p.rolesCommit), policyHash: s(p.policyHash), action, newValue: s(newValue) }, ext: { shares, config: configCt, ...mailbox }, voucher: paid });
+    try {
+      // The ledger's governance nonce: each proof applies once (v3.4).
+      const nonce = action === AUTH.create ? 0n : await read(deployment.ledger, abis.ledger, 'authNonce', [ledger.owner]);
+      const built = buildRoleAuth({ ledger, sk: keys.sk, config, action, newValue, extHash: authExtHash(shares, configCt, mailbox.mailboxSigner, nonce) });
+      status('Generating proof…');
+      const { proof } = await prove('role_auth', built.witness);
+      const p = built.public;
+      try {
+        return await submitRelay({ kind: 'ledger_auth', proof: { proof, ledgerId: s(p.ledgerId), rolesCommit: s(p.rolesCommit), policyHash: s(p.policyHash), action, newValue: s(newValue), nonce: s(nonce) }, ext: { shares, config: configCt, ...mailbox }, voucher: paid });
+      } catch (error) {
+        // Another change landed while this one was proven: its counter moved, so prove it again.
+        if (action !== AUTH.create && (await read(deployment.ledger, abis.ledger, 'authNonce', [ledger.owner])) !== nonce) throw new Error('Another change to this treasury landed first.');
+        throw error;
+      }
+    } catch (error) {
+      keepVoucher(paid, error);
+      throw error;
+    }
   }
 
   // Approval mailbox (api/requests.js): posts are signed with the treasury's mailbox key.
@@ -304,35 +325,78 @@ export function createClient({ publicClient, walletClient = null, address = null
   const shareTo = (lsk, members) => [...new Map(members.map((m) => [m.owner, m])).values()].map((m) => encryptKeyShare(lsk, m.encPub));
 
   /**
-   * New treasury with you as Owner. treasurer/payer/auditor: {owner, encPub} (a ZKDesk address;
-   * default yourself). allocCap / dualThreshold in USDG base units. Returns the ledger id.
+   * The Payer's scope as config fields (v3.4). allowTo: up to ALLOW_SLOTS recipients, each a ZKDesk
+   * address {owner, encPub} or a 0x address ([] = any recipient). budget: USDG base units per
+   * budgetPeriod seconds (0n = no budget; period 0n = one budget for the policy's lifetime). Windows
+   * start at UTC midnight of the day the policy is set, and a new policy starts from zero spent.
    */
-  async function createLedger({ name, treasurer, payer, auditor, allocCap, dualThreshold }) {
+  async function payerScope({ allowTo = [], budget = 0n, budgetPeriod = 0n } = {}) {
+    if (allowTo.length > ALLOW_SLOTS) throw new Error(`At most ${ALLOW_SLOTS} allowed recipients.`);
+    const allow = Array(ALLOW_SLOTS).fill(0n);
+    const allowPubs = Array(ALLOW_SLOTS).fill(null);
+    allowTo.forEach((r, i) => {
+      if (typeof r === 'string') {
+        allow[i] = BigInt(getAddress(r));
+        if (!allow[i]) throw new Error('The zero address cannot be an allowed recipient.');
+      }
+      else [allow[i], allowPubs[i]] = [r.owner, r.encPub];
+    });
+    if (new Set(allow.filter((x) => x)).size !== allow.filter((x) => x).length) throw new Error('A recipient is listed twice.');
+    if (budget < 0n || budget > MAX_AMOUNT || budgetPeriod < 0n || budgetPeriod >= 1n << 32n) throw new Error('Budget out of range.');
+    const DAY = 86_400n;
+    const budgetStart = budgetPeriod ? ((await chainTime()) / DAY) * DAY : 0n;
+    return { allow, allowPubs, budget, budgetPeriod, budgetStart };
+  }
+
+  /**
+   * New treasury with you as Owner. treasurer/payer/auditor: {owner, encPub} (a ZKDesk address;
+   * default yourself). allocCap / dualThreshold in USDG base units. scope: the Payer's allow list and
+   * budget (payerScope). Returns the ledger id.
+   */
+  async function createLedger({ name, treasurer, payer, auditor, allocCap, dualThreshold, scope }) {
     await sync();
     const self = { owner: keys.owner, encPub: keys.encPub };
     const members = [self, treasurer ?? self, payer ?? self, auditor ?? self];
     const lsk = randomField();
     const ledger = ledgerKeys(lsk);
-    const config = { name, owner: self.owner, treasurer: members[1].owner, payer: members[2].owner, auditor: members[3].owner, rolesSalt: randomField(), allocCap, dualThreshold, policySalt: randomField() };
+    const config = { name, owner: self.owner, treasurer: members[1].owner, payer: members[2].owner, auditor: members[3].owner, rolesSalt: randomField(), allocCap, dualThreshold, policySalt: randomField(), ...(await payerScope(scope)) };
     // The approval-mailbox key rides on the create request; only this proof can register it.
     await relayAuth({ ledger, config, action: AUTH.create, shares: shareTo(lsk, members), configCt: encryptConfig(config, ledger.encPub), mailbox: await mailboxFields(ledger) });
     return ledger.owner;
   }
 
-  /** Owner: replace members ({owner, encPub}; omitted = unchanged) and/or change the policy. */
-  async function updateLedger(ledger, { treasurer, payer, auditor, allocCap = ledger.config.allocCap, dualThreshold = ledger.config.dualThreshold }) {
+  /**
+   * Owner: replace members ({owner, encPub}; omitted = unchanged) and/or change the policy. scope: a
+   * new Payer allow list and budget (payerScope; omitted = unchanged). Either change resets what the
+   * Payer has spent in the current window.
+   */
+  async function updateLedger(ledger, { treasurer, payer, auditor, allocCap = ledger.config.allocCap, dualThreshold = ledger.config.dualThreshold, scope }) {
     let current = ledger.config;
+    // The policy first, then the roles: a new Payer (an agent) never holds the role before its scope
+    // and threshold apply. An unchanged scope keeps its window start; any policy or roles change still
+    // resets what the Payer spent in the current window (TreasuryLedger resets the accumulator).
+    let nextScope = scope ? await payerScope(scope) : {};
+    const was = scopeOf(current);
+    if (scope && allowHash(nextScope.allow) === allowHash(was.allow) && nextScope.budget === was.budget && nextScope.budgetPeriod === was.budgetPeriod) nextScope = {};
+    const policyChanges = allocCap !== current.allocCap || dualThreshold !== current.dualThreshold || Object.keys(nextScope).length > 0;
+    // A Payer being replaced must not see the new policy (a fresh budget, new recipients): the Owner
+    // takes the role first.
+    if (policyChanges && payer && payer.owner !== current.payer && current.payer !== current.owner) {
+      const next = { ...current, payer: current.owner, rolesSalt: randomField() };
+      await relayAuth({ ledger, config: current, action: AUTH.rotate, newValue: rolesOf(next), configCt: encryptConfig(next, ledger.encPub) });
+      current = next;
+    }
+    if (policyChanges) {
+      const next = { ...current, allocCap, dualThreshold, ...nextScope, policySalt: randomField() };
+      await relayAuth({ ledger, config: current, action: AUTH.setPolicy, newValue: policyHash(next), configCt: encryptConfig(next, ledger.encPub) });
+      current = next;
+    }
     const changed = { treasurer, payer, auditor };
     const roles = Object.fromEntries(Object.entries(changed).filter(([k, m]) => m && m.owner !== current[k]).map(([k, m]) => [k, m.owner]));
     if (Object.keys(roles).length) {
       const next = { ...current, ...roles, rolesSalt: randomField() };
       const joining = Object.entries(changed).filter(([k]) => k in roles).map(([, m]) => m);
       await relayAuth({ ledger, config: current, action: AUTH.rotate, newValue: rolesOf(next), shares: shareTo(ledger.lsk, joining), configCt: encryptConfig(next, ledger.encPub) });
-      current = next;
-    }
-    if (allocCap !== current.allocCap || dualThreshold !== current.dualThreshold) {
-      const next = { ...current, allocCap, dualThreshold, policySalt: randomField() };
-      await relayAuth({ ledger, config: current, action: AUTH.setPolicy, newValue: policyHash(next), configCt: encryptConfig(next, ledger.encPub) });
     }
   }
 
@@ -342,8 +406,36 @@ export function createClient({ publicClient, walletClient = null, address = null
    * dual-control threshold a non-owner needs the Owner's approval; if you hold Owner too, it is
    * given first automatically.
    */
-  async function ledgerAct(ledger, role, { action, amount, asset = deployment.usdg, to = null, recipient = null }) {
+  // Every treasury transfer replaces the ledger's spending accumulator and every governance change
+  // moves its counter, so two at once race: the one that lands second is proven again (a few times,
+  // with a short pause). Only these refusals, which the relay gives before using the fee voucher, retry.
+  const retryable = (error) => /StaleBudget|spending record changed|another change to this treasury/i.test(error?.message ?? '');
+  async function againWhenBusy(fn) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await fn(attempt);
+      } catch (error) {
+        if (!retryable(error) || attempt >= 4) throw error;
+        status('Another treasury change landed first: proving again…');
+        await new Promise((r) => setTimeout(r, 2000 * attempt));
+      }
+    }
+  }
+  /** memo: kept across attempts, so a retry spends the same notes with the same outputs (the same intent). */
+  const ledgerAct = (ledger, role, action) => { const memo = {}; return againWhenBusy(() => ledgerActOnce(ledger, role, action, memo)); };
+
+  /** The ledger as of the last sync (its spending accumulator moves with every transfer). */
+  const current = (ledger) => ledgers().find((l) => l.owner === ledger.owner) ?? ledger;
+
+  async function ledgerActOnce(ledger, role, { action, amount, asset = deployment.usdg, to = null, recipient = null }, memo = {}) {
     await sync();
+    ledger = current(ledger);
+    // A retry never pays twice: if the notes an earlier attempt spent are gone, that attempt (or another
+    // payment) used them, so stop and let the caller check.
+    if (memo.inputs && memo.inputs.some((c) => ledgerNotes(ledger).find((n) => n.commitment === c)?.status !== 'unspent')) {
+      throw new Error('An earlier attempt of this treasury payment may have gone through (its funds moved). Check the treasury before paying again.');
+    }
+    const t = await chainTime();
     let args;
     if (action === 'allocate' || action === 'deallocate') {
       const [from, into] = action === 'allocate' ? [deployment.usdg, deployment.vault] : [deployment.vault, deployment.usdg];
@@ -353,12 +445,18 @@ export function createClient({ publicClient, walletClient = null, address = null
       args = { action: ACTIONS.transfer, asset: big(asset), inputs: pickInputs(asset, amount, ledgerUnspent(ledger, asset)),
         out: to ? { amount, owner: to.owner } : { amount: 0n, owner: ledger.owner }, ext: to ? {} : { recipient, extAmount: -amount } };
     }
-    const base = { tree: state.tree, ledger, sk: keys.sk, role, ...args };
+    if (memo.inputs) args.inputs = memo.inputs.map((c) => ledgerNotes(ledger).find((n) => n.commitment === c));
+    const base = { tree: state.tree, ledger, sk: keys.sk, role, t, ...args };
     const empty = { recipient: zeroAddress, extAmount: 0n, encryptedOutput1: '0x', encryptedOutput2: '0x', ...args.ext };
-    const draft = buildLedger({ ...base, ext: empty });
-    const [o1, o2] = draft.outputs;
-    const ext = { ...empty, encryptedOutput1: encryptNote(o1, ledger.encPub), encryptedOutput2: encryptNote(o2, to?.encPub ?? ledger.encPub) };
-    const built = buildLedger({ ...base, ext, blindings: { outputs: draft.outputs.map((o) => o.blinding) } });
+    if (!memo.inputs) {
+      const draft = buildLedger({ ...base, ext: empty });
+      const [o1, o2] = draft.outputs;
+      memo.ext = { ...empty, encryptedOutput1: encryptNote(o1, ledger.encPub), encryptedOutput2: encryptNote(o2, to?.encPub ?? ledger.encPub) };
+      memo.blindings = { outputs: draft.outputs.map((o) => o.blinding), dummies: draft.dummies };
+      memo.inputs = args.inputs.map((n) => n.commitment);
+    }
+    const ext = memo.ext;
+    const built = buildLedger({ ...base, ext, blindings: memo.blindings });
     if (built.needsOwner) {
       if (!ledger.roles.includes('Owner')) {
         if (!requests) throw new Error('This is above the dual-control threshold: the treasury Owner must approve it.');
@@ -371,34 +469,49 @@ export function createClient({ publicClient, walletClient = null, address = null
         await postRequest(ledger, sealRequest(request, ledger.requestKey));
         return { requested: true, intent: built.intent };
       }
-      status('Approving as Owner (dual control)…');
-      await relayAuth({ ledger, config: ledger.config, action: AUTH.approve, newValue: built.intent });
+      // The same intent on every attempt, so an approval from an earlier attempt still counts.
+      if (!ledger.approved.has(built.intent)) {
+        status('Approving as Owner (dual control)…');
+        await relayAuth({ ledger, config: ledger.config, action: AUTH.approve, newValue: built.intent });
+      }
     }
     return submitLedger(built, ext);
   }
 
   async function submitLedger(built, ext) {
     const paid = await voucher(); // personal notes only; the proof spends treasury notes
+    try {
+      return await submitLedgerWith(built, ext, paid);
+    } catch (error) {
+      keepVoucher(paid, error);
+      throw error;
+    }
+  }
+  async function submitLedgerWith(built, ext, paid) {
     status('Generating proof…');
     const { proof } = await prove('ledger', built.witness);
     const p = built.public;
     const hexAddr = (x) => '0x' + x.toString(16).padStart(40, '0');
     return submitRelay({
       kind: 'ledger',
-      proof: { proof, root: s(p.root), ledgerId: s(p.ledgerId), action: Number(p.action), asset: hexAddr(p.asset), outAsset: hexAddr(p.outAsset), publicAmount: s(p.publicAmount), publicAmountOut: s(p.publicAmountOut), extDataHash: s(p.extDataHash), inputNullifiers: p.inputNullifiers.map(s), outputCommitments: p.outputCommitments.map(s), cosignIntent: s(p.cosignIntent) },
+      proof: {
+        proof, root: s(p.root), ledgerId: s(p.ledgerId), action: Number(p.action), asset: hexAddr(p.asset), outAsset: hexAddr(p.outAsset), publicAmount: s(p.publicAmount),
+        publicAmountOut: s(p.publicAmountOut), extDataHash: s(p.extDataHash), inputNullifiers: p.inputNullifiers.map(s), outputCommitments: p.outputCommitments.map(s),
+        cosignIntent: s(p.cosignIntent), t: s(p.t), budgetOld: s(p.budgetOld), budgetNew: s(p.budgetNew), budgetCt: p.budgetCt.map(s),
+      },
       ext: { ...ext, extAmount: s(ext.extAmount) },
       voucher: paid,
     });
   }
 
   /** Rebuilds a request exactly as proposed; null if it does not reproduce its intent. */
-  function rebuildRequest(ledger, r, sk, check) {
+  function rebuildRequest(ledger, r, sk, check, t) {
     const notes = ledgerNotes(ledger);
     const inputs = r.inputs.map((c) => notes.find((n) => n.commitment === c));
     if (inputs.some((n) => !n)) return null;
     const out = r.to ? { amount: r.amount, owner: r.to.owner } : { amount: 0n, owner: ledger.owner };
     try {
-      const built = buildLedger({ tree: state.tree, ledger, sk, role: r.role, action: ACTIONS.transfer, asset: r.asset, inputs, out, ext: r.ext, blindings: { outputs: r.outputs, dummies: r.dummies }, check });
+      const built = buildLedger({ tree: state.tree, ledger, sk, role: r.role, action: ACTIONS.transfer, asset: r.asset, inputs, out, ext: r.ext, t, blindings: { outputs: r.outputs, dummies: r.dummies }, check });
       return built.intent === r.intent && built.needsOwner ? { built, inputs } : null;
     } catch {
       return null;
@@ -416,7 +529,7 @@ export function createClient({ publicClient, walletClient = null, address = null
     for (const row of rows) {
       const r = openRequest(row.ciphertext, ledger.requestKey);
       if (!r || r.v !== 1) continue;
-      const rebuilt = rebuildRequest(ledger, r, keys.sk, false);
+      const rebuilt = rebuildRequest(ledger, r, keys.sk, false, BigInt(Math.floor(Date.now() / 1000)));
       if (!rebuilt) continue;
       const spent = rebuilt.inputs.some((n) => n.status === 'spent');
       const approved = ledger.approved.has(r.intent);
@@ -439,11 +552,14 @@ export function createClient({ publicClient, walletClient = null, address = null
 
   /** Requester: send an approved request (re-proven on the current tree with the same blindings). */
   async function completeRequest(ledger, request) {
-    await sync();
-    if (request.from !== keys.owner) throw new Error('Only the member who requested this transfer can complete it.');
-    const rebuilt = rebuildRequest(ledger, request, keys.sk, true);
-    if (!rebuilt) throw new Error('This request no longer matches the treasury notes.');
-    return submitLedger(rebuilt.built, request.ext);
+    const once = async () => {
+      await sync();
+      if (request.from !== keys.owner) throw new Error('Only the member who requested this transfer can complete it.');
+      const rebuilt = rebuildRequest(current(ledger), request, keys.sk, true, await chainTime());
+      if (!rebuilt) throw new Error('This request no longer matches the treasury notes.');
+      return submitLedger(rebuilt.built, request.ext);
+    };
+    return againWhenBusy(once); // approved transfers also move the spending accumulator
   }
 
   /** Treasury statement: the ledger's assets cover `liabilities` (USDG base units). Publishes only that. */
@@ -463,12 +579,26 @@ export function createClient({ publicClient, walletClient = null, address = null
   const mandates = (ledger) => ledgerMandates(state, ledger);
   const chainTime = async () => (await publicClient.getBlock({ blockTag: 'latest' })).timestamp;
 
-  async function relayMandateAuth(ledger, role, action, mandate, ciphertext = '0x') {
+  const relayMandateAuth = (ledger, role, action, mandate, ciphertext = '0x') => againWhenBusy(() => relayMandateAuthOnce(ledger, role, action, mandate, ciphertext));
+  async function relayMandateAuthOnce(ledger, role, action, mandate, ciphertext) {
+    const commit = mandateCommit(ledger.owner, mandate);
+    // The mandate's change counter: each proof applies once (v3.4).
+    const nonce = action === MANDATE_ACTIONS.commit ? 0n : await read(deployment.mandates, abis.mandates, 'changes', [commit]);
+    const built = buildMandateAuth({ ledger, sk: keys.sk, role, action, mandate, ciphertext, nonce }); // its checks run before any fee
     const paid = await voucher();
-    const built = buildMandateAuth({ ledger, sk: keys.sk, role, action, mandate, ciphertext });
-    status('Generating proof…');
-    const { proof } = await prove('mandate_auth', built.witness);
-    return submitRelay({ kind: 'mandate_auth', proof: { proof, ledgerId: s(ledger.owner), action, mandateCommit: s(built.commit) }, ext: { ciphertext }, voucher: paid });
+    try {
+      status('Generating proof…');
+      const { proof } = await prove('mandate_auth', built.witness);
+      try {
+        return await submitRelay({ kind: 'mandate_auth', proof: { proof, ledgerId: s(ledger.owner), action, mandateCommit: s(built.commit), nonce: s(nonce) }, ext: { ciphertext }, voucher: paid });
+      } catch (error) {
+        if (action !== MANDATE_ACTIONS.commit && (await read(deployment.mandates, abis.mandates, 'changes', [commit])) !== nonce) throw new Error('Another change to this treasury landed first.');
+        throw error;
+      }
+    } catch (error) {
+      keepVoucher(paid, error);
+      throw error;
+    }
   }
 
   /**
@@ -580,6 +710,9 @@ const FRIENDLY = {
   AlreadyPaid: 'This mandate is already paid for this period.',
   NotActive: 'This mandate is paused or revoked.',
   StaleTime: 'The payment proof took too long. Please try again.',
+  StaleBudget: "The treasury's spending record changed while proving (another payment landed first). Please try again.",
+  spend_in_flight: 'Another payment using these funds is still being confirmed. Please try again in a moment.',
+  ledger_busy: 'Another change to this treasury is still being confirmed. Please try again in a moment.',
   BadMandate: 'This mandate cannot change to that state.',
   NotApproved: 'The treasury Owner has not approved this transfer yet.',
   StaleRoles: 'The treasury roles or policy changed. Please refresh and try again.',

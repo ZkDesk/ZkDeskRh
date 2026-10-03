@@ -278,7 +278,7 @@ ZKDESK_SEED=0x… node agent/mcp.mjs             # MCP server (stdio) for Claude
 - **Environment:** `ZKDESK_NETWORK` (default `mainnet`), `ZKDESK_API`, `ZKDESK_RPC`.
 - **Local guards** (`off` removes one): `ZKDESK_MAX_PER_TX` (default 50 USDG), `ZKDESK_MAX_PER_DAY` (rolling 24 h with fees, default 100, kept in a 0600 file), `ZKDESK_ALLOW_TO` (allowed recipients), `ZKDESK_TREASURIES` (allowed treasuries), `ZKDESK_MAX_FEE` (per relay step, default 2).
 - **Getting paid:** only payments in the pool count as received. A deposit in screening can still be taken back by its sender, so it is reported as pending.
-- **Binding limits** come from making the agent a treasury's **Payer**: mandate caps, the Owner's approval threshold and the transfer-count limit are enforced on-chain. The local guards protect against a confused or prompt-injected model; anyone with the seed controls the agent's account.
+- **Binding limits** come from making the agent a treasury's **Payer**: mandate caps, the Owner's approval threshold, the transfer-count limit and (since contract set v3.4) the Owner's list of allowed recipients and budget per day, week or 30 days are enforced on-chain, the last two inside the payment proof. Payments the Owner approves are outside the list and the budget. The local guards protect against a confused or prompt-injected model; anyone with the seed controls the agent's account.
 
 ### Pay-per-call APIs
 
@@ -319,26 +319,26 @@ Invariants (`contracts/test/Invariants.t.sol`, 1,600 runs of 64 random calls ove
 
 ## Deployed contracts
 
-Robinhood Chain mainnet (chain 4663), v3 (contract set v3.3), deployed in block 78408404. Every contract and library source is verified on [Sourcify](https://repo.sourcify.dev/4663/0xc1D05420b6EA4128F4D4eeb33152fe671D7326A9), which the explorer imports.
+Robinhood Chain mainnet (chain 4663), v3 (contract set v3.4), deployed in block 78978681. Every contract and library source is verified on [Sourcify](https://repo.sourcify.dev/4663/0x5844696eaE3656F7625A488b371b013C5Ad5152C), which the explorer imports.
 
-**Build of record:** `c2c00380d7578e505ecfc1749eb090d63c16c717869d6b4fd37b7d36d60834a4`, reproducible from a clone. `node scripts/build-hash.mjs mainnet` (after `forge build` in `contracts/`) compares the runtime code of all 42 deployed contracts and libraries with your build, with immutables, library links and metadata masked, and prints this hash of the build. `node scripts/check-deployment.mjs mainnet` runs the same comparison together with the governance and wiring checks, and CI runs it daily.
+**Build of record:** `127afe9b8c0261847699f3d5c30c7ee5fd3b1291372c31dc2d0d211e9dcbcc72`, reproducible from a clone. `node scripts/build-hash.mjs mainnet` (after `forge build` in `contracts/`) compares the runtime code of all 42 deployed contracts and libraries with your build, with immutables, library links and metadata masked, and prints this hash of the build. `node scripts/check-deployment.mjs mainnet` runs the same comparison together with the governance and wiring checks, and CI runs it daily.
 
 | Contract | Address |
 | --- | --- |
-| ZKDeskPool (shielded pool) | [0xc1D05420b6EA4128F4D4eeb33152fe671D7326A9](https://robinhoodchain.blockscout.com/address/0xc1D05420b6EA4128F4D4eeb33152fe671D7326A9) |
-| AssetGate | [0xA8E32CC5A6c1bA0Cc7841c50E4Df2a88cc55CaC4](https://robinhoodchain.blockscout.com/address/0xA8E32CC5A6c1bA0Cc7841c50E4Df2a88cc55CaC4) |
-| CreditDesk | [0xF8eCB1f27F5878Db30ca46c4d299339AF2331bF3](https://robinhoodchain.blockscout.com/address/0xF8eCB1f27F5878Db30ca46c4d299339AF2331bF3) |
-| DeskGuardian | [0xaa843bbb5ac69A17116CBAa2939fd09a0896b326](https://robinhoodchain.blockscout.com/address/0xaa843bbb5ac69A17116CBAa2939fd09a0896b326) |
-| LendingPoolUSDG | [0xDB3b9703D7555E03aC7228D3B3bCC5f476cd4Cf1](https://robinhoodchain.blockscout.com/address/0xDB3b9703D7555E03aC7228D3B3bCC5f476cd4Cf1) |
-| UniswapV3Venue | [0xcdd4672C71FFC602A647CBDBBC582A2dE65809E3](https://robinhoodchain.blockscout.com/address/0xcdd4672C71FFC602A647CBDBBC582A2dE65809E3) |
-| TreasuryLedger | [0x388b313fcaeA4831A69B8A9E0FaDF43132FBf429](https://robinhoodchain.blockscout.com/address/0x388b313fcaeA4831A69B8A9E0FaDF43132FBf429) |
-| MandateRegistry | [0xBb25Beeba78dF54BBB8C4b03411d00B01e4e4722](https://robinhoodchain.blockscout.com/address/0xBb25Beeba78dF54BBB8C4b03411d00B01e4e4722) |
+| ZKDeskPool (shielded pool) | [0x5844696eaE3656F7625A488b371b013C5Ad5152C](https://robinhoodchain.blockscout.com/address/0x5844696eaE3656F7625A488b371b013C5Ad5152C) |
+| AssetGate | [0x8Fe078a8a3f9Fa388B1d5EFC1D0f2da6496b4Aef](https://robinhoodchain.blockscout.com/address/0x8Fe078a8a3f9Fa388B1d5EFC1D0f2da6496b4Aef) |
+| CreditDesk | [0x4C403FAd44fdc358fE859c3Ec8358aC6a140110F](https://robinhoodchain.blockscout.com/address/0x4C403FAd44fdc358fE859c3Ec8358aC6a140110F) |
+| DeskGuardian | [0xAe4d74483C6F115fD4565656108f5b54EDC7dfe2](https://robinhoodchain.blockscout.com/address/0xAe4d74483C6F115fD4565656108f5b54EDC7dfe2) |
+| LendingPoolUSDG | [0x172c21b2997C0c97974D688431273865fc381FfA](https://robinhoodchain.blockscout.com/address/0x172c21b2997C0c97974D688431273865fc381FfA) |
+| UniswapV3Venue | [0x3B49337Fe4009eeec87fFcb8664Cb7bAb3A3D9d6](https://robinhoodchain.blockscout.com/address/0x3B49337Fe4009eeec87fFcb8664Cb7bAb3A3D9d6) |
+| TreasuryLedger | [0x165763D0F57DC29c77e87b73380b0102d3a5F16F](https://robinhoodchain.blockscout.com/address/0x165763D0F57DC29c77e87b73380b0102d3a5F16F) |
+| MandateRegistry | [0xF68159A388De6B7BbD1e737e16D2dCB2e2AE79C5](https://robinhoodchain.blockscout.com/address/0xF68159A388De6B7BbD1e737e16D2dCB2e2AE79C5) |
 | Marker (shared with earlier releases) | [0xC3061368E66b5a4253E5E98346677c6Ce093A735](https://robinhoodchain.blockscout.com/address/0xC3061368E66b5a4253E5E98346677c6Ce093A735) |
 | Governance Safe (2-of-3) | [0x1abAE714C8A68c73627b021F18FB3A68d9BE4EF8](https://robinhoodchain.blockscout.com/address/0x1abAE714C8A68c73627b021F18FB3A68d9BE4EF8) |
 | TimelockController | [0xe89b6689d8C1C30fD9FF47b4dbcFe5c4b790c0fF](https://robinhoodchain.blockscout.com/address/0xe89b6689d8C1C30fD9FF47b4dbcFe5c4b790c0fF) |
 | $ZKD token (ZkProof) | [0x2c612e2f811f106f1Baa1Dbc5fbaE88F1ac561C7](https://robinhoodchain.blockscout.com/address/0x2c612e2f811f106f1Baa1Dbc5fbaE88F1ac561C7) |
 
-Earlier releases remain on-chain so their notes can always be withdrawn: v2 pool [0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F](https://robinhoodchain.blockscout.com/address/0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F) and v1 pool (tag `v1-final`) [0x804170e2A552EFF5b29710E9378E7c7Df31D607A](https://robinhoodchain.blockscout.com/address/0x804170e2A552EFF5b29710E9378E7c7Df31D607A). Earlier v3 contract sets, replaced while the desk held no positions, are recorded under `v3-replaced`, `v3-replaced-2` and `v3-replaced-3` in `src/lib/chain/deployments/4663.json`. Testnet (46630) addresses are in `src/lib/chain/deployments/46630.json`.
+Earlier releases remain on-chain so their notes can always be withdrawn: v2 pool [0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F](https://robinhoodchain.blockscout.com/address/0x21c3f3acd89B90E5fee0c8dd2Cf472CEcB2FC28F) and v1 pool (tag `v1-final`) [0x804170e2A552EFF5b29710E9378E7c7Df31D607A](https://robinhoodchain.blockscout.com/address/0x804170e2A552EFF5b29710E9378E7c7Df31D607A). Earlier v3 contract sets, replaced while the desk held no positions, are recorded under `v3-replaced`, `v3-replaced-2`, `v3-replaced-3` and `v3` (contract set v3.3) in `src/lib/chain/deployments/4663.json`. Testnet (46630) addresses are in `src/lib/chain/deployments/46630.json`.
 
 ## Operations
 

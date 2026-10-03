@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.17.0 (October 2026)
+
+- **Limits for AI agents, enforced on-chain (contract set v3.4):** a treasury Owner can give the agent that pays from the treasury (its Payer) a list of up to 8 allowed recipients (`zkd:` or 0x addresses) and a budget per day, week or 30 days. The payment proof enforces both. An agent payment to anyone else, or over the budget, cannot be proven, so the chain never accepts it, even if the agent's key leaks or its SDK is modified. Before, the agent's recipient list and daily cap were checks on the agent's own machine only.
+  - Nobody on-chain can see the list, the budget, the amounts or which member paid. Each treasury keeps one spending record. Every payment updates it, whoever pays, and only members can read it.
+  - Payments you approve above your threshold are outside the limits. So are your own and the Treasurer's payments. A limited agent can only pause mandates; mandates already active keep paying.
+  - Changing the agent, the threshold, the recipients or the budget starts the budget from zero.
+  - Dashboard: *Treasury → AI agent* has the recipient list and the budget, and shows what the agent has spent this period. Agents see their limits in `zkdesk_treasuries` (`payerLimits`) and get a clear refusal before anything is proven.
+  - Two treasury payments at the same moment: the second is proven again automatically.
+- **Fix (found by the review): a treasury governance proof now applies only once.** Before, anyone could resend the Owner's last "payments without approval" limit transaction, which restarted the count, or resend an older, looser one. Each treasury now has a governance counter that every Owner proof binds (`authNonce`).
+- **Fix (found by the review): adding an agent applies its limits before it gets the Payer role,** so there is no moment where it holds the role without them.
+- **Fix (found by the review): a mandate pause, resume or revoke now applies only once.** Before, anyone could resend an earlier "resume" after the Owner paused a mandate again, and it would start paying again. Each mandate now has a change counter that every proof binds (`MandateRegistry.changes`).
+- **Relay (found by the review):** setting the same treasury limit again later is no longer mistaken for a duplicate; treasury payments and governance changes of one treasury go through one at a time, claimed only after the relay has checked the proof, and a payment that loses that race is proven again without paying a second fee or spending other funds.
+- This is a new contract set: treasuries, mandates and notes in the previous set stay there and need the previous app version. Receipts from earlier sets still verify.
+
 ## 3.16.0 (October 2026)
 
 - **Check a receipt is meant for you:** a payment receipt is made out to one verifier (or to anyone, verifier 0), and the proof binds it. `verifyReceipt(record, { expectedVerifier })` and `zkdesk_verify_receipt`'s `expected_verifier` refuse a receipt made out to anyone else, so a receipt shown to one party cannot be passed off to another. A receipt for anyone is refused too, because anyone could have been shown it. The refusal names who the receipt is for and happens before any chain read.

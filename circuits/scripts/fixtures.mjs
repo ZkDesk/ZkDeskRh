@@ -11,6 +11,10 @@
 //     threshold (Payer) -> transfer over it + Owner approval -> deallocate -> rotate Payer -> new Payer acts.
 // M5: treasury -> USDG + SPY deposits -> payroll / invoice (Owner, above the threshold) / SPY payroll
 //     mandates -> pulls -> pause / resume / revoke -> Rita proves payments to her bank.
+// M6 (v3.4): a treasury whose Payer is an AI agent with an allow list and a daily budget -> listed
+//     payments (private and unshield) -> off-list / over-budget / forged-accumulator proofs rejected ->
+//     the Owner pays anyone -> an Owner-approved payment is outside the scope -> next day's budget ->
+//     the agent cannot commit a mandate -> a policy change resets the accumulator.
 // Run after `nargo compile --workspace`: pnpm zk:fixtures
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { Barretenberg, UltraHonkBackend } from '@aztec/bb.js';
@@ -21,7 +25,7 @@ import { buildTransact } from '../../src/lib/zk/transact.js';
 import { buildPosition, debtOf, WAD } from '../../src/lib/zk/position.js';
 import { operatorPublicKey } from '../../src/lib/zk/grumpkin.js';
 import { buildEvict, buildHealth, buildLiquidation, planLiquidations, replaySlots, SLOTS } from '../../src/lib/zk/desk.js';
-import { ACTIONS, AUTH, authExtHash, buildAttest, buildLedger, buildRoleAuth, ledgerKeys, rolesOf } from '../../src/lib/zk/ledger.js';
+import { ACTIONS, AUTH, authExtHash, buildAttest, buildLedger, buildRoleAuth, ledgerKeys, openBudget, rolesOf } from '../../src/lib/zk/ledger.js';
 import { policyHash } from '../../src/lib/zk/notes.js';
 import { buildMandateAuth, buildPull, buildReceipt, MANDATE_ACTIONS } from '../../src/lib/zk/mandate.js';
 
@@ -65,6 +69,12 @@ async function prove(kind, label, witness, extra = {}, name) {
   if (!(await C[kind].backend.verifyProof(proof, EVM))) throw new Error(`${label}: proof did not verify`);
   console.log(`${label}: ${kind} proof ok in ${Math.round(performance.now() - t0)} ms (${proof.publicInputs.length} public inputs)`);
   fixtures.push({ label, kind, proof: '0x' + Buffer.from(proof.proof).toString('hex'), publicInputs: proof.publicInputs, ...jsonable(extra) });
+}
+/** The circuit accepts this witness (a Noir test only; no proof or Solidity fixture). */
+async function accepts(kind, label, witness, name) {
+  keepTest(kind, label, witness, true, name);
+  await C[kind].noir.execute(witness);
+  console.log(`${label}: circuit accepts ✓`);
 }
 /** The circuit must refuse this witness (it cannot be proven). */
 async function rejects(kind, label, witness, name) {
@@ -229,14 +239,24 @@ const cfg = { name: 'Ops treasury', owner: ownerPk(A), treasurer: ownerPk(Bb), p
 ledger.config = cfg;
 const ATTEST_ASSETS_FIX = [USDG, VAULT, SPY, 0x9991n, NVDA, 0x7e51an];
 const ledgerExt = (o) => ({ recipient: ZERO, extAmount: 0n, encryptedOutput1: '0x01', encryptedOutput2: '0x02', ...o });
+// Each ledger's governance nonce (TreasuryLedger.authNonce): a governance proof binds the next one.
+const nonces = new Map();
+const nextNonce = (on) => { const n = nonces.get(on.owner) ?? 0n; nonces.set(on.owner, n + 1n); return n; };
 async function auth(label, { sk, config, action, newValue = 0n, shares, bytes = '0x06', on = ledger }) {
-  const built = buildRoleAuth({ ledger: on, sk, config, action, newValue, extHash: authExtHash(shares, bytes) });
+  const built = buildRoleAuth({ ledger: on, sk, config, action, newValue, extHash: authExtHash(shares, bytes, undefined, nextNonce(on)) });
   await prove('role_auth', label, built.witness, { ext: { shares, config: bytes } });
 }
+const T4 = 1_790_000_000n; // ledger transfers are proven at T4 (forge warps there)
+// The ledger's spending accumulator after a transfer, as members read it from BudgetNote.
+const afterTransfer = (on, built) => {
+  if (built.public.action !== BigInt(ACTIONS.transfer)) return;
+  on.budget = openBudget(on.lsk, { commit: built.public.budgetNew, nonce: built.public.inputNullifiers[0], ct: built.public.budgetCt });
+};
 async function act(label, args) {
   const ext = ledgerExt(args.ext);
-  const built = buildLedger({ tree, ledger, ...args, ext });
+  const built = buildLedger({ tree, ledger, t: T4, ...args, ext });
   await prove('ledger', label, built.witness, { ext });
+  afterTransfer(ledger, built);
   return { notes: insert(built), built };
 }
 
@@ -261,13 +281,14 @@ const vAssetsOf = (s) => (s * (vAssets + 1n)) / (vSupply + 10n ** 6n);
 const shares600 = vShares(600_000000n);
 await rejects('ledger', 'Payer cannot allocate', buildLedger({ tree, ledger, sk: Cc, role: 'Payer', ...alloc, out: { amount: shares600 }, ext: ledgerExt(alloc.ext), check: false }).witness);
 await rejects('ledger', 'allocation above the policy cap', buildLedger({ tree, ledger, sk: Bb, role: 'Treasurer', ...alloc, out: { amount: vShares(900_000000n) }, ext: ledgerExt({ extAmount: -900_000000n }), check: false }).witness);
+await rejects('ledger', 'a convert that moves the spending accumulator', { ...buildLedger({ tree, ledger, sk: Bb, role: 'Treasurer', ...alloc, out: { amount: shares600 }, ext: ledgerExt(alloc.ext), t: T4 }).witness, budget_new: '5' }, 'rejects_convert_moving_the_accumulator');
 const allocated = await act('allocate 600 USDG to the vault (Treasurer)', { sk: Bb, role: 'Treasurer', ...alloc, out: { amount: shares600 } });
 vSupply += shares600; vAssets += 600_000000n;
 const [liquid, vaultNote] = allocated.notes;
 
 await rejects('ledger', 'Auditor cannot transfer', buildLedger({ tree, ledger, sk: D, role: 'Auditor', action: ACTIONS.transfer, asset: USDG, inputs: [liquid], out: { amount: 10_000000n, owner: ownerPk(D) }, ext: ledgerExt({}), check: false }).witness);
 const small = await act('transfer 50 USDG to Carol (Payer, under the threshold)', { sk: Cc, role: 'Payer', action: ACTIONS.transfer, asset: USDG, inputs: [liquid], out: { amount: 50_000000n, owner: ownerPk(Cc) } });
-const bigArgs = { tree, ledger, sk: Cc, role: 'Payer', action: ACTIONS.transfer, asset: USDG, inputs: [small.notes[0]], out: { amount: 200_000000n, owner: ownerPk(Cc) }, ext: ledgerExt({}) };
+const bigArgs = { tree, ledger, sk: Cc, role: 'Payer', action: ACTIONS.transfer, asset: USDG, inputs: [small.notes[0]], out: { amount: 200_000000n, owner: ownerPk(Cc) }, ext: ledgerExt({}), t: T4 };
 const bigDraft = buildLedger(bigArgs);
 if (!bigDraft.needsOwner) throw new Error('expected dual control');
 await rejects('ledger', 'over the threshold without the owner intent', { ...bigDraft.witness, cosign_intent: '0' });
@@ -279,6 +300,7 @@ await act('deallocate all vault shares (Treasurer)', { sk: Bb, role: 'Treasurer'
 const cfg2 = { ...cfg, payer: ownerPk(E), rolesSalt: 73n };
 await auth('rotate: Eve replaces Carol as Payer (Owner)', { sk: A, config: cfg, action: AUTH.rotate, newValue: rolesOf(cfg2), shares: ['0x05'] });
 ledger.config = cfg2;
+ledger.budget = undefined; // a rotation resets the accumulator
 const eve = await act('transfer 10 USDG to Eve (new Payer)', { sk: E, role: 'Payer', action: ACTIONS.transfer, asset: USDG, inputs: [big.notes[0]], out: { amount: 10_000000n, owner: ownerPk(E) } });
 
 // Audit M-4: Carol (Payer of the Ops treasury) owns a second ledger and "approves" the Ops intent there.
@@ -290,7 +312,7 @@ await auth('approve the Ops intent from the second ledger (Carol)', { sk: Cc, co
 const LIMIT = 1n | (86_400n << 64n);
 await auth('limit: 1 transfer without approval per day (Owner)', { sk: A, config: cfg2, action: 4, newValue: LIMIT, shares: [], bytes: '0x' });
 const t1 = await act('transfer 5 USDG to Eve (1st under the limit)', { sk: E, role: 'Payer', action: ACTIONS.transfer, asset: USDG, inputs: [eve.notes[0]], out: { amount: 5_000000n, owner: ownerPk(E) } });
-await act('transfer 5 USDG to Eve (2nd: over the limit)', { sk: E, role: 'Payer', action: ACTIONS.transfer, asset: USDG, inputs: [t1.notes[0]], out: { amount: 5_000000n, owner: ownerPk(E) } });
+await act('transfer 5 USDG to Eve (2nd: over the limit)', { sk: E, role: 'Payer', action: ACTIONS.transfer, asset: USDG, inputs: [t1.notes[0]], out: { amount: 5_000000n, owner: ownerPk(E) }, t: T4 + 86_400n + 60n });
 const m4 = fixtures;
 
 // ---------------- M5 ----------------
@@ -309,8 +331,13 @@ const payroll = mandate({});
 const invoice = mandate({ kind: 1n, cap: 150_000000n, period: 0n, reference: 0x494e562d37n, salt: 92n }); // "INV-7"
 const spyPay = mandate({ asset: SPY, cap: 100_000000n, period: 7n * DAY, salt: 93n });
 const ledger5 = { tree: null };
+// Each mandate's change counter (MandateRegistry.changes): a mandate proof binds the next one.
+const changes = new Map();
 async function mauth(label, { sk, role, action, m, ct = '0x0a' }) {
-  const built = buildMandateAuth({ ledger: L5, sk, role, action, mandate: m, ciphertext: ct });
+  const key = JSON.stringify(m, (_, v) => (typeof v === 'bigint' ? v.toString() : v));
+  const nonce = changes.get(key) ?? 0n;
+  changes.set(key, nonce + 1n);
+  const built = buildMandateAuth({ ledger: L5, sk, role, action, mandate: m, ciphertext: ct, nonce });
   await prove('mandate_auth', label, built.witness, { ext: { ciphertext: ct } });
   return built.commit;
 }
@@ -324,7 +351,7 @@ async function pull(label, args) {
 }
 
 {
-  const b = buildRoleAuth({ ledger: L5, sk: A, config: L5.config, action: AUTH.create, extHash: authExtHash(['0x01'], '0x06') });
+  const b = buildRoleAuth({ ledger: L5, sk: A, config: L5.config, action: AUTH.create, extHash: authExtHash(['0x01'], '0x06', undefined, nextNonce(L5)) });
   await prove('role_auth', 'create payroll treasury (Owner)', b.witness, { ext: { shares: ['0x01'], config: '0x06' } });
 }
 const [cash5] = await tx('deposit 1000 USDG into the treasury', { asset: USDG, outputs: [{ amount: 1000_000000n, owner: L5.owner }], ext: { extAmount: 1000_000000n } });
@@ -361,6 +388,67 @@ await prove('receipt', 'Rita proves the SPY payment (nothing disclosed)', rc(p3,
 await rejects('receipt', 'someone else claims Rita\'s receipt', { ...r1.witness, sk: '778' });
 await rejects('receipt', 'a disclosed amount that was not paid', { ...r1.witness, amount_out: '90000000' });
 const m5 = fixtures;
+
+// ---------------- M6 (v3.4) ----------------
+// Alice OWNER, Bob TREASURER, an AI agent PAYER, Dave AUDITOR. The agent may pay Vic (private) and one
+// public address, at most 120 USDG per day; Alice may pay anyone.
+tree = new LeanIMT((a, b) => hash2(a, b));
+fixtures = [];
+const [AG, VIC, MAL] = [666n, 888n, 999n];
+const VADDR = 0x7e4d02n;
+const addr = (x) => '0x' + x.toString(16).padStart(40, '0');
+const T6 = 1_790_000_000n;
+const L6 = { ...ledgerKeys(0x6ed6e5n) };
+const allow6 = [ownerPk(VIC), VADDR, 0n, 0n, 0n, 0n, 0n, 0n];
+const cfg6 = { name: 'Agent treasury', owner: ownerPk(A), treasurer: ownerPk(Bb), payer: ownerPk(AG), auditor: ownerPk(D), rolesSalt: 61n, allocCap: 800_000000n, dualThreshold: 100_000000n, policySalt: 62n, allow: allow6, budget: 120_000000n, budgetPeriod: DAY, budgetStart: T6 };
+L6.config = cfg6;
+async function act6(label, args) {
+  const ext = ledgerExt(args.ext);
+  const built = buildLedger({ tree, ledger: L6, action: ACTIONS.transfer, asset: USDG, ...args, ext });
+  await prove('ledger', label, built.witness, { ext });
+  afterTransfer(L6, built);
+  return { notes: insert(built), built };
+}
+const draft6 = (args) => buildLedger({ tree, ledger: L6, action: ACTIONS.transfer, asset: USDG, ...args, ext: ledgerExt(args.ext), check: false });
+{
+  const b = buildRoleAuth({ ledger: L6, sk: A, config: cfg6, action: AUTH.create, extHash: authExtHash(['0x01'], '0x06', undefined, nextNonce(L6)) });
+  await prove('role_auth', 'create the agent treasury (Owner)', b.witness, { ext: { shares: ['0x01'], config: '0x06' } });
+}
+const [cash6] = await tx('deposit 1000 USDG into the agent treasury', { asset: USDG, outputs: [{ amount: 1000_000000n, owner: L6.owner }], ext: { extAmount: 1000_000000n } });
+const a1 = await act6('agent pays Vic 60 USDG (listed, day 0)', { sk: AG, role: 'Payer', inputs: [cash6], out: { amount: 60_000000n, owner: ownerPk(VIC) }, t: T6 + 100n });
+const a2 = await act6('agent unshields 50 USDG to the listed address', { sk: AG, role: 'Payer', inputs: [a1.notes[0]], out: { amount: 0n, owner: L6.owner }, ext: { recipient: addr(VADDR), extAmount: -50_000000n }, t: T6 + 200n });
+if (L6.budget.spent !== 110_000000n) throw new Error('accumulator should hold 110 USDG');
+const next = a2.notes[0];
+await rejects('ledger', 'agent over its daily budget (110 + 20 > 120)', draft6({ sk: AG, role: 'Payer', inputs: [next], out: { amount: 20_000000n, owner: ownerPk(VIC) }, t: T6 + 300n }).witness, 'rejects_scoped_payer_over_budget');
+await rejects('ledger', 'agent pays a recipient not on the list', draft6({ sk: AG, role: 'Payer', inputs: [next], out: { amount: 5_000000n, owner: ownerPk(MAL) }, t: T6 + 300n }).witness, 'rejects_scoped_payer_off_list_private');
+await rejects('ledger', 'agent unshields to an address not on the list', draft6({ sk: AG, role: 'Payer', inputs: [next], out: { amount: 0n, owner: L6.owner }, ext: { recipient: addr(0xbadn), extAmount: -5_000000n }, t: T6 + 300n }).witness, 'rejects_scoped_payer_off_list_unshield');
+await rejects('ledger', 'agent forges a lower spent amount', { ...draft6({ sk: AG, role: 'Payer', inputs: [next], out: { amount: 5_000000n, owner: ownerPk(VIC) }, t: T6 + 300n }).witness, old_spent: '0' }, 'rejects_forged_accumulator_opening');
+await rejects('ledger', 'agent claims the next budget window early', { ...draft6({ sk: AG, role: 'Payer', inputs: [next], out: { amount: 20_000000n, owner: ownerPk(VIC) }, t: T6 + DAY + 300n }).witness, t: (T6 + 300n).toString() }, 'rejects_budget_window_before_its_time');
+await rejects('ledger', 'agent claims an older window than its time', { ...draft6({ sk: AG, role: 'Payer', inputs: [next], out: { amount: 5_000000n, owner: ownerPk(VIC) }, t: T6 + 300n }).witness, t: (T6 + DAY + 300n).toString() }, 'rejects_budget_window_older_than_its_time');
+await accepts('ledger', 'agent spends exactly up to its budget (110 + 10 = 120)', draft6({ sk: AG, role: 'Payer', inputs: [next], out: { amount: 10_000000n, owner: ownerPk(VIC) }, t: T6 + 300n }).witness, 'accepts_scoped_payer_spending_exactly_the_budget');
+await rejects('mandate_auth', 'scoped agent commits a mandate', buildMandateAuth({ ledger: L6, sk: AG, role: 'Payer', action: MANDATE_ACTIONS.commit, mandate: mandate({ recipient: ownerPk(MAL), cap: 50_000000n, salt: 94n }), check: false }).witness, 'rejects_scoped_payer_commits_mandate');
+await rejects('mandate_auth', 'scoped agent resumes a mandate', buildMandateAuth({ ledger: L6, sk: AG, role: 'Payer', action: MANDATE_ACTIONS.resume, mandate: mandate({ recipient: ownerPk(MAL), cap: 50_000000n, salt: 94n }), check: false }).witness, 'rejects_scoped_payer_resumes_mandate');
+await rejects('mandate_auth', 'scoped agent revokes a mandate', buildMandateAuth({ ledger: L6, sk: AG, role: 'Payer', action: MANDATE_ACTIONS.revoke, mandate: mandate({ recipient: ownerPk(MAL), cap: 50_000000n, salt: 94n }), check: false }).witness, 'rejects_scoped_payer_revokes_mandate');
+await accepts('mandate_auth', 'scoped agent pauses a mandate', buildMandateAuth({ ledger: L6, sk: AG, role: 'Payer', action: MANDATE_ACTIONS.pause, mandate: mandate({ recipient: ownerPk(MAL), cap: 50_000000n, salt: 94n }) }).witness, 'accepts_scoped_payer_pausing_a_mandate');
+const o6 = await act6('Owner pays Mallory 300 USDG (the Owner is not scoped)', { sk: A, role: 'Owner', inputs: [next], out: { amount: 300_000000n, owner: ownerPk(MAL) }, t: T6 + 300n });
+const big6 = await act6('agent pays Mallory 200 USDG with the Owner\'s approval (outside the scope)', { sk: AG, role: 'Payer', inputs: [o6.notes[0]], out: { amount: 200_000000n, owner: ownerPk(MAL) }, t: T6 + 400n });
+if (!big6.built.needsOwner || L6.budget.spent !== 110_000000n) throw new Error('approved payment should need the Owner and not count');
+{
+  const b = buildRoleAuth({ ledger: L6, sk: A, config: cfg6, action: AUTH.approve, newValue: big6.built.public.cosignIntent, extHash: authExtHash([], '0x', undefined, nextNonce(L6)) });
+  await prove('role_auth', 'Owner approves the agent\'s 200 USDG payment', b.witness, { ext: { shares: [], config: '0x' } });
+}
+const d1 = await act6('agent pays Vic 100 USDG the next day (new window)', { sk: AG, role: 'Payer', inputs: [big6.notes[0]], out: { amount: 100_000000n, owner: ownerPk(VIC) }, t: T6 + DAY + 100n });
+if (L6.budget.spent !== 100_000000n || L6.budget.window !== 1n) throw new Error('the new window should start from 0');
+await rejects('ledger', 'budget window goes backwards', draft6({ sk: AG, role: 'Payer', inputs: [d1.notes[0]], out: { amount: 1_000000n, owner: ownerPk(VIC) }, t: T6 + 500n }).witness, 'rejects_budget_window_going_backwards');
+const cfg6b = { ...cfg6, allow: Array(8).fill(0n), budget: 0n, budgetPeriod: 0n, budgetStart: 0n, policySalt: 63n };
+{
+  const b = buildRoleAuth({ ledger: L6, sk: A, config: cfg6, action: AUTH.setPolicy, newValue: policyHash(cfg6b), extHash: authExtHash([], '0x06', undefined, nextNonce(L6)) });
+  await prove('role_auth', 'Owner lifts the agent\'s scope (policy change resets the accumulator)', b.witness, { ext: { shares: [], config: '0x06' } });
+}
+L6.config = cfg6b;
+L6.budget = undefined;
+await act6('agent pays Mallory 10 USDG under the new policy', { sk: AG, role: 'Payer', inputs: [d1.notes[0]], out: { amount: 10_000000n, owner: ownerPk(MAL) }, t: T6 + DAY + 200n });
+const m6 = fixtures;
 
 for (const [name, file] of Object.entries(CIRCUITS)) {
   const vk = await C[name].backend.getVerificationKey(EVM);
@@ -401,6 +489,7 @@ const common = { usdg: toHex(USDG), spy: toHex(SPY), nvda: toHex(NVDA), lending:
 writeFileSync('circuits/fixtures/m2.json', JSON.stringify({ ...common, mark: MARK.toString(), ltvBps: LTV, shares: shares.toString(), redeemAssets: back.toString(), closedLeaf: closed.position === null, txs: m2 }, null, 2));
 writeFileSync('circuits/fixtures/m4.json', JSON.stringify(jsonable({ ...common, vault: toHex(VAULT), ledgerId: ledger.owner, ledgerId2: L2.owner, limit: LIMIT, rolesCommit: rolesOf(cfg), rolesCommit2: rolesOf(cfg2), policyHash: policyHash(cfg), intent: big.built.public.cosignIntent, attestAssets: ATTEST_ASSETS_FIX.map(toHex), prices: PRICES, shares600, vaultBack, txs: m4 }), null, 2));
 writeFileSync('circuits/fixtures/m5.json', JSON.stringify(jsonable({ ...common, ledgerId: L5.owner, T, commits: { payroll: cPay, invoice: cInv, spy: cSpy }, receiptRoot: receipts.root, spyRaw: p3.built.raw, txs: m5 }), null, 2));
+writeFileSync('circuits/fixtures/m6.json', JSON.stringify(jsonable({ ...common, ledgerId: L6.owner, T: T6, vaddr: addr(VADDR), policyHash: policyHash(cfg6), policyHash2: policyHash(cfg6b), intent: big6.built.public.cosignIntent, txs: m6 }), null, 2));
 writeFileSync('circuits/fixtures/m3.json', JSON.stringify(jsonable({ ...common, price: PRICE, batch: batch.public, offHours: offHours.public, cureLeaf: cure.public.newLeaf, txs: m3 }), null, 2));
-console.log(`wrote ${m2.length} M2, ${m3.length} M3, ${m4.length} M4 and ${m5.length} M5 fixtures`);
+console.log(`wrote ${m2.length} M2, ${m3.length} M3, ${m4.length} M4, ${m5.length} M5 and ${m6.length} M6 fixtures`);
 await api.destroy();

@@ -1,6 +1,6 @@
 // Shared ZKDesk note primitives. Must stay byte-identical with src/lib/zk/notes.js
 // and the on-chain PoseidonT3 (circomlib-compatible Poseidon over bn254).
-use poseidon::poseidon::bn254::{hash_11, hash_2, hash_3, hash_4, hash_6};
+use poseidon::poseidon::bn254::{hash_11, hash_2, hash_3, hash_4, hash_5, hash_6, hash_8, hash_9};
 use std::embedded_curve_ops::{EmbeddedCurvePoint, EmbeddedCurveScalar, fixed_base_scalar_mul, multi_scalar_mul};
 
 // Domain separators: ASCII "ZKD.owner" / "ZKD.nk" / "ZKD.pos".
@@ -21,6 +21,10 @@ pub global DOM_INTENT: Field = 0x5a4b442e696e74656e74;
 pub global DOM_MANDATE: Field = 0x5a4b442e6d616e64617465;
 pub global DOM_PULL: Field = 0x5a4b442e70756c6c;
 pub global DOM_RECEIPT: Field = 0x5a4b442e72656365697074;
+// ASCII "ZKD.allow" / "ZKD.budget" (a scoped Payer's recipient list and spending accumulator).
+pub global DOM_ALLOW: Field = 0x5a4b442e616c6c6f77;
+pub global DOM_BUDGET: Field = 0x5a4b442e627564676574;
+pub global ALLOW_SLOTS: u32 = 8;
 pub global WAD: Field = 1000000000000000000;
 // value6 = coll * mark / 1e20, so debt <= value6 * bps / 1e4  <=>  debt_scaled * index * 1e6 <= coll * mark * bps
 pub global HEALTH_SCALE: Field = 1000000;
@@ -53,8 +57,53 @@ pub fn roles_commit(pks: [Field; 4], salt: Field) -> Field {
     hash_6([DOM_ROLES, pks[0], pks[1], pks[2], pks[3], salt])
 }
 
-pub fn policy_hash(alloc_cap: Field, dual_threshold: Field, salt: Field) -> Field {
-    hash_4([DOM_POLICY, alloc_cap, dual_threshold, salt])
+/// The ledger policy. allow_hash (0 = any recipient), budget (0 = none), budget_period (seconds; 0 = one
+/// window for the policy's lifetime) and budget_start scope the PAYER; they never limit the Owner or Treasurer.
+pub fn policy_hash(
+    alloc_cap: Field,
+    dual_threshold: Field,
+    allow_hash: Field,
+    budget: Field,
+    budget_period: Field,
+    budget_start: Field,
+    salt: Field,
+) -> Field {
+    hash_8([DOM_POLICY, alloc_cap, dual_threshold, allow_hash, budget, budget_period, budget_start, salt])
+}
+
+/// The Payer's allowed recipients: personal owner keys or public addresses, unused slots 0. An empty
+/// list hashes to 0 (no restriction).
+pub fn allow_hash(list: [Field; ALLOW_SLOTS]) -> Field {
+    let mut empty = true;
+    for i in 0..ALLOW_SLOTS {
+        empty = empty & (list[i] == 0);
+    }
+    if empty {
+        0
+    } else {
+        hash_9([DOM_ALLOW, list[0], list[1], list[2], list[3], list[4], list[5], list[6], list[7]])
+    }
+}
+
+/// x is a non-zero entry of the list.
+pub fn listed(list: [Field; ALLOW_SLOTS], x: Field) -> bool {
+    let mut product = 1;
+    for i in 0..ALLOW_SLOTS {
+        product *= list[i] - x;
+    }
+    (x != 0) & (product == 0)
+}
+
+/// The ledger's spending accumulator: what the Payer spent in budget window `window`.
+pub fn budget_commit(ledger_id: Field, window: Field, spent: Field, blinding: Field) -> Field {
+    hash_5([DOM_BUDGET, ledger_id, window, spent, blinding])
+}
+
+/// Members open the accumulator with a key from the ledger secret: blinding = pad(2), and the
+/// window and spent amount are published masked with pad(0) and pad(1). nonce: the transfer's first
+/// input nullifier, unique per step.
+pub fn budget_pad(lsk: Field, nonce: Field, i: Field) -> Field {
+    hash_3([hash_2([DOM_BUDGET, lsk]), nonce, i])
 }
 
 /// A payment mandate: a ledger may pay `recipient` (a personal owner key) up to `cap` per period.
@@ -228,6 +277,19 @@ fn merkle_root_two_leaves() {
     assert_eq(merkle_root_swap(11, 1, 0, siblings), hash_2([11, 22]));
     assert_eq(merkle_root_swap(22, 1, 1, [11; MAX_DEPTH]), hash_2([11, 22]));
     assert_eq(merkle_root_swap(33, 0, 0, siblings), 33);
+}
+
+#[test]
+fn allow_list() {
+    let mut list = [0; ALLOW_SLOTS];
+    assert_eq(allow_hash(list), 0);
+    assert(!listed(list, 0));
+    assert(!listed(list, 5));
+    list[3] = 5;
+    assert(allow_hash(list) != 0);
+    assert(listed(list, 5));
+    assert(!listed(list, 6));
+    assert(!listed(list, 0));
 }
 
 #[test]

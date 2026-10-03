@@ -7,7 +7,10 @@ import { G, mul, operatorDecrypt, operatorEncrypt, operatorPublicKey } from './g
 import { applyLiquidation, buildHealth, isBreached } from './desk.js';
 import { liquidatedBlinding, liquidationPad, positionCommitment, ownerPk } from './notes.js';
 import { decryptConfig, decryptKeyShare, encryptConfig, encryptKeyShare } from './crypto.js';
-import { heldRoles, ledgerKeys } from './ledger.js';
+import { ACTIONS, buildLedger, budgetWindow, heldRoles, ledgerKeys, openBudget, payerScoped, payerSpent } from './ledger.js';
+import { buildMandateAuth, MANDATE_ACTIONS } from './mandate.js';
+import { allowHash, policyHash } from './notes.js';
+import { LeanIMT } from '@zk-kit/lean-imt';
 
 // Same circomlib vector as circuits/lib and contracts/test.
 assert.equal(hash2(1n, 2n), 0x115cc0f5e7d690413df64c6b9662e9cf2a3617f2743245519e19607a4417189an);
@@ -81,7 +84,43 @@ const lk = ledgerKeys(0xabcn);
 assert.equal(decryptKeyShare(encryptKeyShare(0xabcn, a.encPub), a.encSecret), 0xabcn);
 assert.equal(decryptKeyShare(encryptKeyShare(0xabcn, a.encPub), b.encSecret), null);
 const config = { name: 'Ops treasury', owner: a.owner, treasurer: b.owner, payer: a.owner, auditor: b.owner, rolesSalt: 1n, allocCap: 5n, dualThreshold: 6n, policySalt: 7n };
-assert.deepEqual(decryptConfig(encryptConfig(config, lk.encPub), lk.encSecret), config);
+const unscoped = { budget: 0n, budgetPeriod: 0n, budgetStart: 0n, allow: Array(8).fill(0n), allowPubs: Array(8).fill(null) };
+assert.deepEqual(decryptConfig(encryptConfig(config, lk.encPub), lk.encSecret), { ...config, ...unscoped });
+assert.equal(policyHash(config), policyHash({ ...config, ...unscoped }), 'no scope is the default');
+// v3.4 Payer scope: the config round-trips, and the scope changes the policy hash.
+{
+  const vendor = '0x' + '11'.repeat(20);
+  const scoped = { ...config, allow: [b.owner, BigInt(vendor), 0n, 0n, 0n, 0n, 0n, 0n], allowPubs: [b.encPub, null, null, null, null, null, null, null], budget: 120_000000n, budgetPeriod: 86_400n, budgetStart: 1_790_000_000n };
+  assert.deepEqual(decryptConfig(encryptConfig(scoped, lk.encPub), lk.encSecret), scoped);
+  assert.notEqual(policyHash(scoped), policyHash(config));
+  assert.equal(allowHash(Array(8).fill(0n)), 0n, 'an empty list is no restriction');
+  assert.ok(payerScoped(scoped) && !payerScoped(config));
+  assert.equal(budgetWindow(scoped, 1_790_000_000n + 86_399n), 0n);
+  assert.equal(budgetWindow(scoped, 1_790_000_000n + 86_400n), 1n);
+  assert.throws(() => budgetWindow(scoped, 1_789_999_999n), /not started/);
+
+  // The accumulator a transfer publishes opens for members, and only with the ledger secret.
+  const tree = new LeanIMT((x, y) => hash2(x, y));
+  const L = { ...ledgerKeys(0xabcn), config: { ...scoped, payer: a.owner, dualThreshold: 500_000000n } };
+  const note = { asset: 0xa55e7n, amount: 1000_000000n, owner: L.owner, blinding: 9n };
+  tree.insert((await import('./notes.js')).noteCommitment(note));
+  const pay = (o) => buildLedger({ tree, ledger: L, sk: deriveKeys(sig).sk, role: 'Payer', action: ACTIONS.transfer, asset: 0xa55e7n, inputs: [{ ...note, leafIndex: 0 }], out: { amount: 60_000000n, owner: b.owner }, t: 1_790_000_100n, ...o, ext: { encryptedOutput1: '0x', encryptedOutput2: '0x', ...o.ext } });
+  const built = pay({});
+  assert.equal(built.spent, 60_000000n);
+  const opened = openBudget(L.lsk, { commit: built.public.budgetNew, nonce: built.public.inputNullifiers[0], ct: built.public.budgetCt });
+  assert.deepEqual([opened.window, opened.spent], [0n, 60_000000n]);
+  assert.equal(openBudget(0xdefn, { commit: built.public.budgetNew, nonce: built.public.inputNullifiers[0], ct: built.public.budgetCt }), null, 'another key cannot open it');
+  L.budget = opened;
+  assert.equal(payerSpent(L, 1_790_000_100n), 60_000000n);
+  assert.equal(payerSpent(L, 1_790_086_400n), 0n, 'a new window starts at zero');
+  // Friendly checks before proving (the circuit enforces the same; see circuits/ledger tests).
+  assert.throws(() => pay({ out: { amount: 61_000000n, owner: b.owner } }), /over the treasury budget/);
+  assert.throws(() => pay({ out: { amount: 1n, owner: ownerPk(0x5n) } }), /not on the treasury's list/);
+  assert.throws(() => pay({ out: { amount: 0n, owner: L.owner }, ext: { recipient: '0x' + '22'.repeat(20), extAmount: -1n } }), /not on the treasury's list/);
+  assert.equal(pay({ out: { amount: 0n, owner: L.owner }, ext: { recipient: vendor, extAmount: -60_000000n } }).spent, 120_000000n, 'a listed address');
+  assert.equal(pay({ t: 1_790_086_500n, out: { amount: 100_000000n, owner: b.owner } }).spent, 100_000000n, 'the next window');
+  assert.throws(() => buildMandateAuth({ ledger: L, sk: deriveKeys(sig).sk, role: 'Payer', action: MANDATE_ACTIONS.commit, mandate: { kind: 0n, recipient: 1n, asset: 0xa55e7n, cap: 1n, period: 0n, start: 0n, expiry: 1n, reference: 0n, salt: 1n } }), /can only pause mandates/);
+}
 assert.deepEqual(heldRoles(config, a.owner), ['Owner', 'Payer']);
 assert.notEqual(lk.owner, ownerPk(0xabcn), 'ledger notes live outside the personal owner domain');
 // Passkey keys: same seed, same keys; the chain and the "passkey" label separate them.
@@ -100,4 +139,4 @@ assert.notEqual(lk.owner, ownerPk(0xabcn), 'ledger notes live outside the person
   assert.equal(wordsSeed(words.replace(/^legal/, 'legall')), null, 'an unknown word is rejected');
   assert.equal(wordsSeed('legal winner'), null, 'too few words are rejected');
 }
-console.log('zk primitives passed: poseidon vector, public amount, key derivation (signature and passkey, recovery words), note encryption, grumpkin + operator encryption, liquidation replay, health witness, ledger key shares/config/roles.');
+console.log('zk primitives passed: poseidon vector, public amount, key derivation (signature and passkey, recovery words), note encryption, grumpkin + operator encryption, liquidation replay, health witness, ledger key shares/config/roles, Payer scope and spending accumulator.');

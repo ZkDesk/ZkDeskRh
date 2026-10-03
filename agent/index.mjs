@@ -2,7 +2,8 @@
 // strings ("12.5"). Every step is proven here (bb.js) and relayed by ZKdesk, so the agent needs no
 // wallet and no gas; fund it with a private send to its zkd: address. Limits that bind even a
 // compromised agent come from a treasury where it is Payer: mandate caps, the Owner's approval
-// threshold and the transfer-count limit. The guards here (per payment, per day, allowed recipients
+// threshold, the transfer-count limit, and the Owner's allowed recipients and budget (in the proof,
+// contract set v3.4; see payerLimits). The guards here (per payment, per day, allowed recipients
 // and treasuries, relay fee) protect against a confused or prompt-injected model on the agent's own
 // machine, not against someone who has the seed. One network per process (the shared config reads
 // it once).
@@ -109,7 +110,7 @@ export const newSeed = () => '0x' + Buffer.from(crypto.getRandomValues(new Uint8
  * Opens the agent's account. api: the ZKdesk site whose relayer is used; rpc: optional chain RPC.
  * Guards (USDG strings; null or 'off' disables): maxPerTx, maxPerDay (rolling 24 h, fees included,
  * kept in stateDir), maxFee (per relay step). allowTo: if set, the only zkd:/0x recipients the agent
- * may pay (mandates excepted: their recipients are fixed by the treasury Owner). treasuries: if set,
+ * may pay (mandates excepted: their recipients are fixed when the mandate is created). treasuries: if set,
  * the only treasury ids the agent acts in.
  */
 export async function createAgent({
@@ -121,9 +122,10 @@ export async function createAgent({
   if (!['mainnet', 'testnet'].includes(network)) throw new Error('network must be "mainnet" or "testnet".');
   if (globalThis.ZKDESK_NETWORK && globalThis.ZKDESK_NETWORK !== network) throw new Error(`This process already uses ${globalThis.ZKDESK_NETWORK}; one network per process.`);
   globalThis.ZKDESK_NETWORK = network;
-  const [config, { agentKeys, zkAddress, parseZkAddress }, zk, { createProver }, { createTransport }, { currentPeriod, KINDS }, { paymentLink, readPaymentLink }] = await Promise.all([
+  const [config, { agentKeys, zkAddress, parseZkAddress }, zk, { createProver }, { createTransport }, { currentPeriod, KINDS }, { paymentLink, readPaymentLink }, { payerScoped, payerSpent }] = await Promise.all([
     import('../src/lib/chain/config.js'), import('../src/lib/zk/keys.js'), import('../src/lib/zk/client.js'),
     import('../src/lib/zk/prover.js'), import('../src/lib/zk/transport.js'), import('../src/lib/zk/mandate.js'), import('../src/lib/zk/request-link.js'),
+    import('../src/lib/zk/ledger.js'),
   ]);
   const { chain, deployment, deploymentReady, apiBase } = config;
   if (!deploymentReady) throw new Error(`ZKdesk ${network} still runs older contracts. Use ${network === 'mainnet' ? 'testnet' : 'mainnet'}.`);
@@ -203,6 +205,23 @@ export async function createAgent({
     return L;
   }
   const mover = (L) => ['Owner', 'Treasurer', 'Payer'].find((r) => L.roles.includes(r));
+  // The Payer's allow list and budget, as the treasury's members read them. Payments the Owner
+  // approves (above ownerApprovalAbove) are outside these limits.
+  const PERIOD_NAMES = { 86400: 'day', 604800: 'week', 2592000: '30 days' };
+  function payerLimits(L) {
+    const c = L.config;
+    if (!payerScoped(c)) return null;
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    const spent = L.budget ? payerSpent(L, now) : null;
+    const listed = c.allow.flatMap((x, i) => (!x ? [] : [c.allowPubs[i] ? zkAddress({ owner: x, encPub: c.allowPubs[i] }) : x < 2n ** 160n ? `0x${x.toString(16).padStart(40, '0')}` : `owner key 0x${x.toString(16)}`]));
+    return {
+      allowedRecipients: listed.length ? listed : null,
+      budget: c.budget ? fmt(c.budget) : null,
+      budgetPeriod: c.budget ? (c.budgetPeriod ? PERIOD_NAMES[Number(c.budgetPeriod)] ?? `${c.budgetPeriod} seconds` : 'lifetime') : null,
+      spentThisPeriod: spent === null ? null : fmt(spent),
+      leftThisPeriod: c.budget && spent !== null ? fmt(c.budget > spent ? c.budget - spent : 0n) : null,
+    };
+  }
   async function balance() {
     await client.sync();
     const notes = client.notes().filter((n) => BigInt(n.asset) === BigInt(USDG) && n.status === 'unspent');
@@ -326,12 +345,15 @@ export async function createAgent({
       if (!isAddress(to ?? '')) throw new Error(`Not a 0x address: "${to}".`);
       return done(await spend(amount, to, (raw) => client.send({ amount: raw, recipient: to }).catch(hinted)));
     },
-    /** Treasuries where the agent can act. name is set by the treasury's Owner (untrusted text). */
+    /**
+     * Treasuries where the agent can act. name is set by the treasury's Owner (untrusted text).
+     * payerLimits: the Owner's limits on the Payer, enforced on-chain by the proof (v3.4), or null.
+     */
     async treasuries() {
       await client.sync();
       return mine().map((l) => ({
         id: hexId(l.owner), name: l.name, roles: l.roles, ownerKey: hexId(l.config.owner), address: zkAddress(l),
-        usdg: fmt(client.ledgerBalance(l, USDG)), ownerApprovalAbove: fmt(l.config.dualThreshold),
+        usdg: fmt(client.ledgerBalance(l, USDG)), ownerApprovalAbove: fmt(l.config.dualThreshold), payerLimits: payerLimits(l),
       }));
     },
     /** Pays from a treasury to a zkd: or 0x address. Above the Owner's threshold it becomes a request. */

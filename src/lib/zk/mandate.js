@@ -1,9 +1,9 @@
 // Payment mandates and receipts: witness builders for circuits/mandate_auth, circuits/mandate_pull
 // and circuits/receipt. Pure: nothing leaves the caller.
 import { encodeAbiParameters, keccak256 } from 'viem';
-import { FIELD, mandateCommit, MAX_DEPTH, noteCommitment, nullifier, ownerPk, policyHash, pullNullifier, randomField, receiptLeaf } from './notes.js';
+import { allowHash, FIELD, mandateCommit, MAX_DEPTH, noteCommitment, nullifier, ownerPk, policyHash, pullNullifier, randomField, receiptLeaf } from './notes.js';
 import { inputPaths, pad, padInputs } from './transact.js';
-import { ROLES, rolePks, rolesOf } from './ledger.js';
+import { payerScoped, ROLES, rolePks, rolesOf, scopeOf } from './ledger.js';
 
 export const KINDS = ['Payroll', 'Invoice', 'Vendor'];
 export const PERIODS = { Monthly: 30n * 86_400n, Weekly: 7n * 86_400n, 'One-time': 0n };
@@ -16,7 +16,8 @@ export const currentPeriod = (m, now) => (m.period ? (BigInt(now) - m.start) / m
 /** Stock payroll: raw token units paid for `usdg` at an 8-decimal mark (floor). */
 export const rawForUsdg = (usdg, mark) => (mark ? (usdg * VALUE_DIV) / mark : usdg);
 
-export const mandateExtHash = (ciphertext) => BigInt(keccak256(encodeAbiParameters([{ type: 'bytes' }], [ciphertext]))) % FIELD;
+/** Binds a mandate governance proof to its ciphertext and the mandate's change counter (MandateRegistry.changes, v3.4). */
+export const mandateExtHash = (ciphertext, nonce = 0n) => BigInt(keccak256(encodeAbiParameters([{ type: 'bytes' }, { type: 'uint64' }], [ciphertext, BigInt(nonce)]))) % FIELD;
 // Must match MandateRegistry.PullExt field order.
 const PULL_EXT = [{ type: 'tuple', components: [{ name: 'encryptedOutput1', type: 'bytes' }, { name: 'encryptedOutput2', type: 'bytes' }] }];
 export const pullExtHash = (ext) => BigInt(keccak256(encodeAbiParameters(PULL_EXT, [{ encryptedOutput1: '0x', encryptedOutput2: '0x', ...ext }]))) % FIELD;
@@ -33,18 +34,23 @@ const mandateWitness = (m) => ({
 });
 
 /** mandate: {kind, recipient, asset, cap, period, start, expiry, reference, salt}; action from MANDATE_ACTIONS. */
-export function buildMandateAuth({ ledger, sk, role, action, mandate, ciphertext = '0x', check = true }) {
+export function buildMandateAuth({ ledger, sk, role, action, mandate, ciphertext = '0x', nonce = 0n, check = true }) {
   const c = ledger.config;
   const r = check ? roleOf(ledger, sk, role) : ROLES.indexOf(role);
   if (check && action === MANDATE_ACTIONS.commit && mandate.cap > c.dualThreshold && r !== 0) {
     throw new Error(`A cap above the ${Number(c.dualThreshold) / 1e6} tUSDG dual-control threshold needs the Owner.`);
   }
+  if (check && action !== MANDATE_ACTIONS.pause && r === 2 && payerScoped(c)) {
+    throw new Error('The Payer of this treasury has an allow list or a budget, so it can only pause mandates; the Owner or Treasurer creates, resumes or revokes them.');
+  }
+  const scope = scopeOf(c);
   const commit = mandateCommit(ledger.owner, mandate);
-  const extHash = mandateExtHash(ciphertext);
+  const extHash = mandateExtHash(ciphertext, nonce);
   const witness = {
     ledger_id: str(ledger.owner), roles_commit: str(rolesOf(c)), policy_hash: str(policyHash(c)), action: str(action),
     mandate_commit: str(commit), ext_data_hash: str(extHash), lsk: str(ledger.lsk), sk: str(sk), role: r,
     role_pks: rolePks(c).map(str), roles_salt: str(c.rolesSalt), alloc_cap: str(c.allocCap), dual_threshold: str(c.dualThreshold),
+    allow_hash: str(allowHash(scope.allow)), budget: str(scope.budget), budget_period: str(scope.budgetPeriod), budget_start: str(scope.budgetStart),
     policy_salt: str(c.policySalt), asset: str(mandate.asset), ...mandateWitness(mandate),
   };
   return { witness, public: { ledgerId: ledger.owner, action, mandateCommit: commit }, commit };

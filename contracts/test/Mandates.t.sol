@@ -229,6 +229,21 @@ contract MandatesTest is Test {
         registry.manage(a, ct);
     }
 
+    /// v3.4: a mandate proof applies once. After pause and resume, replaying the old pause (or, after a
+    /// new pause, the old resume) fails: the mandate's change counter has moved on.
+    function test_v34_mandateProofAppliesOnce() public {
+        _ready();
+        uint256 payroll = vm.parseJsonUint(json, ".commits.payroll");
+        _manage(9); // pause
+        _manage(10); // resume
+        assertEq(registry.changes(payroll), 3, "commit, pause, resume");
+        (MandateRegistry.AuthProof memory a, bytes memory ct) = _auth(9);
+        vm.expectRevert(); // the pause proof bound counter 1
+        registry.manage(a, ct);
+        (, uint8 status) = registry.mandates(payroll);
+        assertEq(status, 1, "still active");
+    }
+
     function test_mandateCommitsOnceAndStaysWithItsLedger() public {
         _ready();
         (MandateRegistry.AuthProof memory a, bytes memory ct) = _auth(3);

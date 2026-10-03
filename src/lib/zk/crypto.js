@@ -63,17 +63,27 @@ export const decryptPosition = (ciphertextHex, encSecret) => open(POSITION_FIELD
 // policy and their salts, a display name) is encrypted to the ledger's own key, so every member
 // with the secret can prove and read. Both are posted on-chain by TreasuryLedger.
 const SHARE_FIELDS = [['lsk', 32]];
-const CONFIG_FIELDS = [['name', 32], ['owner', 32], ['treasurer', 32], ['payer', 32], ['auditor', 32], ['rolesSalt', 32], ['allocCap', 16], ['dualThreshold', 16], ['policySalt', 32]];
+// v3.4 Payer scope: allow list (owner keys / addresses, plus each private entry's encryption key so the
+// list round-trips as zkd: addresses), budget, its period and start.
+const ALLOW = [0, 1, 2, 3, 4, 5, 6, 7];
+const CONFIG_FIELDS = [['name', 32], ['owner', 32], ['treasurer', 32], ['payer', 32], ['auditor', 32], ['rolesSalt', 32], ['allocCap', 16], ['dualThreshold', 16], ['policySalt', 32],
+  ...ALLOW.flatMap((i) => [[`allow${i}`, 32], [`allowPub${i}`, 32]]), ['budget', 16], ['budgetPeriod', 8], ['budgetStart', 8]];
 export const KEY_SHARE_BYTES = OVERHEAD + size(SHARE_FIELDS);
 export const CONFIG_BYTES = OVERHEAD + size(CONFIG_FIELDS);
 export const encryptKeyShare = (lsk, memberEncPub) => seal(SHARE_FIELDS, { lsk }, memberEncPub);
 export const decryptKeyShare = (ciphertextHex, encSecret) => open(SHARE_FIELDS, ciphertextHex, encSecret)?.lsk ?? null;
 const nameToBig = (name) => BigInt('0x' + (bytesToHex(enc.encode(name).slice(0, 32)) || '0'));
 const bigToName = (x) => { const h = x.toString(16); return new TextDecoder().decode(hexToBytes(h.length % 2 ? `0${h}` : h)); };
-export const encryptConfig = (config, ledgerEncPub) => seal(CONFIG_FIELDS, { ...config, name: nameToBig(config.name) }, ledgerEncPub);
+export const encryptConfig = (config, ledgerEncPub) => seal(CONFIG_FIELDS, {
+  budget: 0n, budgetPeriod: 0n, budgetStart: 0n, ...config, name: nameToBig(config.name),
+  ...Object.fromEntries(ALLOW.flatMap((i) => [[`allow${i}`, config.allow?.[i] ?? 0n], [`allowPub${i}`, config.allowPubs?.[i] ? bytesToBig(config.allowPubs[i]) : 0n]])),
+}, ledgerEncPub);
 export function decryptConfig(ciphertextHex, ledgerEncSecret) {
   const c = open(CONFIG_FIELDS, ciphertextHex, ledgerEncSecret);
-  return c && { ...c, name: c.name ? bigToName(c.name) : '' };
+  if (!c) return null;
+  const out = { ...c, name: c.name ? bigToName(c.name) : '', allow: ALLOW.map((i) => c[`allow${i}`]), allowPubs: ALLOW.map((i) => (c[`allowPub${i}`] ? toBytes(c[`allowPub${i}`], 32) : null)) };
+  for (const i of ALLOW) { delete out[`allow${i}`]; delete out[`allowPub${i}`]; }
+  return out;
 }
 
 // Payment mandates: the full mandate (plus the recipient's encryption key and a display label) is

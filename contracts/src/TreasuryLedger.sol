@@ -18,12 +18,18 @@ import {Marker} from "./Marker.sol";
 /// Governance (RoleAuthProof, OWNER only): create, rotate roles, set policy, approve a transfer above
 /// the dual-control threshold, set the outflow limit. Key shares (the ledger secret, encrypted to
 /// each member) and the config (encrypted to the ledger key) are posted as events and bound into the
-/// proof. An approval belongs to one ledger and is used once (audit M-4).
+/// proof, together with the ledger's governance nonce, so a governance proof applies once (v3.4: a
+/// replayed SET_LIMIT could otherwise restart or loosen the limit). An approval belongs to one ledger
+/// and is used once (audit M-4).
 /// Outflow limit (audit M-4): the Owner may cap how many transfers leave the ledger without the
 /// Owner's approval per period. Each such transfer is below the dual-control threshold, so the cap
 /// bounds the cumulative outflow (count x threshold) without revealing any amount.
 /// Treasury statements (AttestProof): unspent ledger notes at contract prices cover declared
 /// liabilities; only the statement is published.
+/// Payer scope (v3.4): the hidden policy may give the PAYER an allow list of recipients and a budget
+/// per window, both enforced in the LedgerProof. The contract keeps one spending-accumulator
+/// commitment per ledger; every transfer out replaces it (whoever acts), and a roles rotation or a
+/// policy change resets it. Its opening is published masked so only members can read it.
 contract TreasuryLedger is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -38,6 +44,7 @@ contract TreasuryLedger is ReentrancyGuard {
     uint8 public constant SET_LIMIT = 4; // newValue = maxTransfers | period << 64 (0 = no limit)
     uint256 public constant ATTEST_NOTES = 8; // circuits/treasury_attest K
     uint256 public constant ATTEST_ASSETS = 6; // circuits/treasury_attest A
+    uint64 public constant MAX_PROOF_AGE = 1 hours; // a transfer's time `t` may lag the block by this much
 
     struct Ledger {
         uint256 rolesCommit;
@@ -58,6 +65,10 @@ contract TreasuryLedger is ReentrancyGuard {
         uint256[2] inputNullifiers;
         uint256[2] outputCommitments;
         uint256 cosignIntent;
+        uint256 t; // proof time (budget window); transfers only
+        uint256 budgetOld; // the accumulator the proof opens; transfers only
+        uint256 budgetNew;
+        uint256[2] budgetCt; // the new accumulator's window and spent, masked for members
     }
 
     /// Field order must match src/lib/zk/ledger.js LEDGER_EXT.
@@ -104,6 +115,10 @@ contract TreasuryLedger is ReentrancyGuard {
     mapping(uint256 id => Ledger) public ledgers;
     mapping(uint256 id => mapping(uint256 intent => bool)) public approved;
     mapping(uint256 id => Limit) public limits;
+    /// The ledger's spending accumulator (0 = fresh).
+    mapping(uint256 id => uint256) public budgetCommit;
+    /// Governance proofs applied to the ledger; the next one must bind this value (v3.4).
+    mapping(uint256 id => uint64) public authNonce;
 
     event LedgerCreated(uint256 indexed id, uint256 rolesCommit, uint256 policyHash);
     event RolesRotated(uint256 indexed id, uint256 rolesCommit);
@@ -116,6 +131,8 @@ contract TreasuryLedger is ReentrancyGuard {
     event MailboxKey(uint256 indexed id, address signer);
     event LedgerAction(uint256 indexed id, uint8 action);
     event TreasuryAttested(uint256 indexed id, uint64 epoch, uint256 liabilities);
+    /// The accumulator after a transfer (nonce: the transfer's first input nullifier) or a reset (all 0).
+    event BudgetNote(uint256 indexed id, uint256 commit, uint256 nonce, uint256[2] ct);
 
     error UnknownLedger();
     error LedgerExists();
@@ -130,6 +147,8 @@ contract TreasuryLedger is ReentrancyGuard {
     error UnknownRoot();
     error InvalidProof();
     error LimitReached();
+    error StaleBudget();
+    error StaleTime();
 
     /// verifiers: [ledger, role_auth, treasury_attest]
     constructor(IVerifier[3] memory verifiers, ZKDeskPool pool_, Marker marker_, IERC4626 vault_, address[4] memory stocks_) {
@@ -161,8 +180,9 @@ contract TreasuryLedger is ReentrancyGuard {
         x[2] = bytes32(p.policyHash);
         x[3] = bytes32(uint256(p.action));
         x[4] = bytes32(p.newValue);
-        x[5] = bytes32(uint256(keccak256(abi.encode(shares, config, mailbox))) % FIELD);
+        x[5] = bytes32(uint256(keccak256(abi.encode(shares, config, mailbox, authNonce[p.ledgerId]))) % FIELD);
         if (!authVerifier.verify(p.proof, x)) revert InvalidProof();
+        ++authNonce[p.ledgerId];
 
         if (p.action == CREATE) {
             (l.rolesCommit, l.policyHash) = (p.rolesCommit, p.policyHash);
@@ -171,9 +191,11 @@ contract TreasuryLedger is ReentrancyGuard {
         } else if (p.action == ROTATE) {
             l.rolesCommit = p.newValue;
             emit RolesRotated(p.ledgerId, p.newValue);
+            _resetBudget(p.ledgerId);
         } else if (p.action == SET_POLICY) {
             l.policyHash = p.newValue;
             emit PolicySet(p.ledgerId, p.newValue);
+            _resetBudget(p.ledgerId);
         } else if (p.action == APPROVE) {
             approved[p.ledgerId][p.newValue] = true;
             emit IntentApproved(p.ledgerId, p.newValue);
@@ -207,10 +229,17 @@ contract TreasuryLedger is ReentrancyGuard {
         } else if (p.action == TRANSFER_OUT) {
             // A transfer out never checks the asset listing: a de-listed asset can always leave (M-3).
             if (p.asset != p.outAsset || (amount > 0) != (e.recipient != address(0))) revert BadAsset();
+            if (p.t > block.timestamp || p.t + MAX_PROOF_AGE < block.timestamp) revert StaleTime();
+            // A non-canonical accumulator (>= FIELD) could never be opened again.
+            if (p.budgetOld != budgetCommit[p.ledgerId] || p.budgetNew >= FIELD) revert StaleBudget();
         } else {
             revert BadAction();
         }
-        if (!ledgerVerifier.verify(p.proof, _ledgerInputs(p, l))) revert InvalidProof();
+        if (!ledgerVerifier.verify(p.proof, _ledgerInputs(p, e, l))) revert InvalidProof();
+        if (p.action == TRANSFER_OUT) {
+            budgetCommit[p.ledgerId] = p.budgetNew;
+            emit BudgetNote(p.ledgerId, p.budgetNew, p.inputNullifiers[0], p.budgetCt);
+        }
 
         pool.moduleSpend(p.root, p.inputNullifiers);
         pool.moduleInsert(p.outputCommitments[0], e.encryptedOutput1);
@@ -231,6 +260,12 @@ contract TreasuryLedger is ReentrancyGuard {
         }
         pool.moduleInsert(p.outputCommitments[1], e.encryptedOutput2);
         emit LedgerAction(p.ledgerId, p.action);
+    }
+
+    function _resetBudget(uint256 id) internal {
+        if (budgetCommit[id] == 0) return;
+        delete budgetCommit[id];
+        emit BudgetNote(id, 0, 0, [uint256(0), 0]);
     }
 
     function _countTransfer(uint256 id) internal {
@@ -278,8 +313,8 @@ contract TreasuryLedger is ReentrancyGuard {
     }
 
     /// Order must match the `pub` parameters of circuits/ledger/src/main.nr.
-    function _ledgerInputs(LedgerProof calldata p, Ledger storage l) internal view returns (bytes32[] memory x) {
-        x = new bytes32[](15);
+    function _ledgerInputs(LedgerProof calldata p, LedgerExt calldata e, Ledger storage l) internal view returns (bytes32[] memory x) {
+        x = new bytes32[](21);
         x[0] = bytes32(p.root);
         x[1] = bytes32(p.ledgerId);
         x[2] = bytes32(l.rolesCommit);
@@ -295,5 +330,11 @@ contract TreasuryLedger is ReentrancyGuard {
         x[12] = bytes32(p.outputCommitments[0]);
         x[13] = bytes32(p.outputCommitments[1]);
         x[14] = bytes32(p.cosignIntent);
+        x[15] = bytes32(uint256(uint160(e.recipient)));
+        x[16] = bytes32(p.t);
+        x[17] = bytes32(p.budgetOld);
+        x[18] = bytes32(p.budgetNew);
+        x[19] = bytes32(p.budgetCt[0]);
+        x[20] = bytes32(p.budgetCt[1]);
     }
 }
